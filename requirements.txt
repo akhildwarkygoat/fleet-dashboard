@@ -1,0 +1,3 @@
+# Python optimiser dependencies — install with:  pip install -r requirements.txt
+ortools>=9.10
+pypdf>=4.0

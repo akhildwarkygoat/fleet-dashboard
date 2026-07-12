@@ -1,0 +1,103 @@
+  Using per-stop headcounts from CSV (registered 3054, active x0.7727570399476097, effective demand 2141)
+  Using cached Google road matrix via MatrixIdx (692 of 823 nodes).
+Solving 691 stops, 2141 riders, 69 buses available (29 own + 40 rent)  -  up to 300s ...
+  phase A done (54 buses) -> warm-starting goal model
+
+==================  FLEET METRICS  ==================
+                              OWNED       RENTAL     COMBINED
+  Buses used                     27           40           67
+  Riders carried              1,401          740        2,141
+  Utilisation                   97%         125%         105%
+  Avg stops / bus              12.9          8.6         10.3
+  Max ride (min)                 92           96           96
+  Avg ride (min)                 56           66           62
+  Total km/day                1,507        3,211        4,718
+  Cost Rs/day                77,549       73,481      151,030
+  Cost Rs/head/day             55.4         99.3         70.5
+
+  OVERALL (whole fleet, all zones):  Rs 70.5/head/day  (Rs 1,834/mo) | 105% util | max ride 96 min | 67 buses
+
+  bus           type    stops  riders  km     ride   Rs
+  TN57CA3636    own      19     53   70.3    71   3,116
+  TN57CB3434    own      18     54   95.6    91   3,542
+  TN57CF3636    own      17     58   43.1    55   2,659
+  TN58BP3434    own      16     53   30.9    44   2,454
+  TN57CB3636    own      16     46   30.5    39   2,446
+  TN57CK3636    own      16     59   90.2    77   3,450
+  TN58BL3636    own      15     59   90.3    92   3,452
+  TN57BQ3636    own      15     42   63.9    59   3,008
+  TN57CL3434    own      14     44   42.7    47   2,651
+  TN60AP3434    own      14     60   53.0    61   2,824
+  TN58BS3434    own      14     47   86.9    77   3,395
+  TN57BP3434    own      13     49   50.7    55   2,786
+  TN57CH3636    own      13     42   46.6    50   2,718
+  TN57CJ3636    own      13     60   65.9    62   3,041
+  TN57CC3636    own      13     45   42.9    45   2,654
+  TN58BK3636    own      12     52   32.9    39   2,487
+  TN57BQ3434    own      12     48   44.4    44   2,680
+  TN57BS3434    own      11     59   30.2    40   2,442
+  TN60AS3434    own      11     53   82.8    74   3,325
+  TN58BM3636    own      11     57   71.0    65   3,128
+  TN58BR3434    own      11     55   53.7    45   2,838
+  TN57CF3434    own      10     50   62.2    59   2,980
+  TN57BC3636    own       9     55   55.9    53   2,873
+  TN57CE3434    own       9     31   46.5    50   2,716
+  TN58BL3434    own       9     54   35.3    36   2,528
+  TN57CD3434    own       8     60   52.9    40   2,824
+  TN58BM3434    own       8     56   35.5    36   2,531
+  TN31AY8208    rent     14     20  101.6    89   1,900
+  TN23AC2721    rent     12     19   90.8    72   1,900
+  TN41T5270     rent     12     18  107.7    83   2,014
+  TN74AW0645    rent     12     19   75.9    67   1,700
+  TN31AB3789    rent     11     19   81.0    66   1,900
+  TN69M1957     rent     11     20  108.5    84   2,029
+  TN02AB5688    rent     10     16   61.7    46   1,700
+  TN31J6001     rent     10     16  103.7    87   1,938
+  TN36L5458     rent     10     20  119.3    85   2,231
+  TN40W3708     rent     10     20   79.1    68   1,700
+  TN41W8996     rent     10     20   96.0    95   1,900
+  TN54T2368     rent     10     19   90.4    71   1,900
+  TN63U4754     rent     10     20   33.1    37   1,700
+  TN030857      rent      9     19  102.7    74   1,920
+  TN20AU6396    rent      9     18   45.3    42   1,700
+  TN25M4073     rent      9     18   56.5    45   1,700
+  TN31CD6636    rent      9     20   83.3    70   1,900
+  TN42A3533     rent      9     20  107.7    95   2,013
+  TN49AW5908    rent      9     20  126.7    96   2,370
+  TN59AH9703    rent      9     15   67.7    53   1,700
+  TN63E9861     rent      9     19  102.0    94   1,907
+  TN20AK5513    rent      8     15   87.8    59   1,900
+  TN20AL3611    rent      8     20   53.4    45   1,700
+  TN39AZ4680    rent      8     20   56.8    48   1,700
+  TN59AB3444    rent      8     20  104.7    93   1,958
+  TN58BC3494    rent      8     13   58.0    47   1,700
+  TN32X3929     rent      8     20   64.0    57   1,700
+  TN05V6697     rent      7     19   61.4    45   1,700
+  TN25M4928     rent      7     18   54.5    50   1,700
+  TN32AA4015    rent      7     20   51.1    50   1,700
+  TN39AP2287    rent      7     20   72.5    67   1,700
+  TN41S5818     rent      7     20   88.9    67   1,900
+  TN58S5303     rent      7     20   74.4    53   1,700
+  TN31AC0182    rent      6     16   70.6    46   1,700
+  TN45AP3948    rent      6     20   93.3    78   1,900
+  TN46F3361     rent      6     18   85.9    73   1,900
+  TN57P6909     rent      6     17   93.9    83   1,900
+  TN74AY1634    rent      6     20   53.7    40   1,700
+  TN20AJ3944    rent      5     20   81.5    58   1,900
+  TN57L8446     rent      5      9   63.9    58   1,700
+
+================  LONGEST ROUTE: TN49AW5908  (9 stops, 126.7 km/day both trips, 96 min chain)  ================
+  FACTORY (evening drop start) 10.207550, 77.806206
+  1. Vijay Theatre                10.350372, 77.984147
+  2. Nallampatti Junction         10.343208, 77.991337
+  3. Sanarpatti Bus Stand         10.279852, 78.071742
+  4. Gopalpatti                   10.257357, 78.120977
+  5. Vadugapatti                  10.256560, 78.130328
+  6. Thalayarpatti                10.265357, 78.136113
+  7. V.Pudur                      10.269058, 78.140987
+  8. Servedu                      10.251152, 78.143988
+  9. Natham                       10.240495, 78.220110  <- parks overnight
+
+  Google Maps: https://www.google.com/maps/dir/?api=1&origin=10.20755,77.806206&destination=10.240495,78.22011&waypoints=10.350372,77.984147|10.343208,77.991337|10.279852,78.071742|10.257357,78.120977|10.25656,78.130328|10.265357,78.136113|10.269058,78.140987|10.251152,78.143988&travelmode=driving
+
+Wrote public/solver_result.json  (67 routes)

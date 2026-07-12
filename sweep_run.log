@@ -1,0 +1,20 @@
+
+=== t45  p25 ===
+  Rs74.3/head | buses 69 | util 99.5% | avg 60.8 | max 155.6 | <=60: 42 | maxstops 34
+
+=== t60  p25 ===
+  Rs73.4/head | buses 69 | util 99.5% | avg 62.3 | max 152.0 | <=60: 40 | maxstops 30
+
+=== t60  p60 ===
+  Rs73.8/head | buses 69 | util 99.5% | avg 61.8 | max 144.5 | <=60: 40 | maxstops 29
+
+=== t75  p25 ===
+  Rs74.3/head | buses 69 | util 99.5% | avg 63.7 | max 135.3 | <=60: 34 | maxstops 20
+
+=== t90  p25 ===
+  Rs73.1/head | buses 68 | util 102.1% | avg 66.2 | max 117.6 | <=60: 27 | maxstops 19
+
+=== t75  p25 cap15 ===
+  Rs75.1/head | buses 69 | util 99.5% | avg 65.5 | max 157.7 | <=60: 33 | maxstops 15
+
+Dashboard plan RESTORED. Results in sweep_results.json

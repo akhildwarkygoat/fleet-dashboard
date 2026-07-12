@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+body {
+  margin: 0;
+}
+
+/* Native date-picker calendar icon — adapt to the active theme.
+   The default icon is dark; invert it to white in dark mode so it's visible. */
+.theme-dark input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.6);
+  opacity: 0.85;
+  cursor: pointer;
+}
+.theme-light input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: none;
+  opacity: 0.65;
+  cursor: pointer;
+}
+.theme-dark input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+.theme-light input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 0.9;
+}
+
+/* Leaflet zoom controls — Apple "liquid glass": translucent, frosted, so the map
+   shows through them (matches the Enlarge button and the stop-order panel). */
+.leaflet-control-zoom {
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.6) !important;
+}
+.leaflet-control-zoom a {
+  background: rgba(255, 255, 255, 0.4) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(180%);
+  backdrop-filter: blur(10px) saturate(180%);
+  color: #0f172a !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.4) !important;
+}
+.leaflet-control-zoom a:last-child {
+  border-bottom: none !important;
+}
+.leaflet-control-zoom a:hover {
+  background: rgba(255, 255, 255, 0.6) !important;
+}
