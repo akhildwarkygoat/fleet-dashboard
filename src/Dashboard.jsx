@@ -8,11 +8,59 @@ import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  BarChart, Bar, Cell, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter
+  BarChart, Bar, Cell, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter,
+  ReferenceLine, LabelList
 } from "recharts";
 import * as math from "mathjs";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
+import { gsap } from "gsap";
+import { useGSAP } from "@gsap/react";
+
+/* ============================ MOTION (GSAP) ============================ */
+gsap.registerPlugin(useGSAP);
+gsap.config({ nullTargetWarn: false }); // page timeline selectors may legitimately match nothing on some tabs
+const prefersReduced = () =>
+  typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* micro-interactions (transform-only → compositor-friendly) */
+const fxLift = (e) => { if (prefersReduced()) return; gsap.to(e.currentTarget, { y: -3, scale: 1.02, duration: 0.22, ease: "power2.out", overwrite: "auto" }); };
+const fxDrop = (e) => { if (prefersReduced()) return; gsap.to(e.currentTarget, { y: 0, scale: 1, duration: 0.28, ease: "power2.out", overwrite: "auto" }); };
+const fxPress = (e) => { if (prefersReduced()) return; gsap.fromTo(e.currentTarget, { scale: 0.96 }, { scale: 1, duration: 0.4, ease: "elastic.out(1, 0.55)", overwrite: "auto" }); };
+
+/* animated number — tweens from the previously shown value; keeps prefix/suffix (₹, %, L, /yr…) */
+function CountUp({ value }) {
+  const ref = useRef(null);
+  const prevRef = useRef(null);
+  const tweenRef = useRef(null);
+  const str = String(value);
+  useGSAP(() => {
+    const m = str.match(/^([^0-9-]*)(-?[\d,]+(?:\.\d+)?)(.*)$/);
+    if (!m || prefersReduced()) { prevRef.current = null; return; }
+    const target = parseFloat(m[2].replace(/,/g, ""));
+    const dec = (m[2].split(".")[1] || "").length;
+    const obj = { v: prevRef.current == null ? 0 : prevRef.current };
+    prevRef.current = target;
+    const fmt = (n) => m[1] + n.toLocaleString("en-IN", { minimumFractionDigits: dec, maximumFractionDigits: dec }) + m[3];
+    if (ref.current) ref.current.textContent = fmt(obj.v); // avoid a first-paint flash of the final value
+    tweenRef.current?.kill();
+    tweenRef.current = gsap.to(obj, {
+      v: target, duration: 0.8, ease: "power2.out",
+      onUpdate: () => { if (ref.current) ref.current.textContent = fmt(obj.v); },
+    });
+  }, [str]);
+  return <span ref={ref}>{str}</span>;
+}
+
+/* fade+rise wrapper for conditionally-mounted panels */
+function Reveal({ children, y = 10, ...rest }) {
+  const ref = useRef(null);
+  useGSAP(() => {
+    if (prefersReduced()) return;
+    gsap.from(ref.current, { autoAlpha: 0, y, duration: 0.35, ease: "power2.out", clearProps: "transform,opacity,visibility" });
+  }, { scope: ref });
+  return <div ref={ref} {...rest}>{children}</div>;
+}
 
 /* ============================ THEME ============================ */
 const THEMES = {
@@ -25,44 +73,25 @@ const THEMES = {
     goodSoft: "rgba(5,150,105,.10)", watchSoft: "rgba(217,119,6,.12)", poorSoft: "rgba(225,29,90,.10)",
     grid: "#e8edf4", inputBg: "#f8fafc",
   },
+  // Dark — Cool Grey neutrals + Blue (Vivid) primary, with palette semantic colours.
   dark: {
-    name: "dark", label: "Dark", dark: true, bg: "#0b1120", surface: "#111a2e", surface2: "#16213a", raised: "#1c2a47",
-    border: "#26324d", text: "#e8edf6", muted: "#94a3b8", faint: "#5b6b86",
-    primary: "#6366f1", primarySoft: "rgba(99,102,241,.16)", onPrimary: "#ffffff",
-    good: "#10b981", watch: "#f59e0b", poor: "#f43f5e",
-    gainup: "#38bdf8", techno: "#a78bfa",
-    goodSoft: "rgba(16,185,129,.14)", watchSoft: "rgba(245,158,11,.14)", poorSoft: "rgba(244,63,94,.16)",
-    grid: "#1f2a42", inputBg: "#0d1626",
+    name: "dark", label: "Dark", dark: true, bg: "#1a222c", surface: "#222e3a", surface2: "#2b3846", raised: "#374553",
+    border: "#3a4a59", text: "#f5f7fa", muted: "#9aa5b1", faint: "#616e7c",
+    primary: "#2186eb", primarySoft: "rgba(33,134,235,.18)", onPrimary: "#ffffff",
+    good: "#3ebd93", watch: "#f7d070", poor: "#ef4e4e",
+    gainup: "#47a3f3", techno: "#8888fc",
+    goodSoft: "rgba(62,189,147,.14)", watchSoft: "rgba(247,208,112,.14)", poorSoft: "rgba(239,78,78,.16)",
+    grid: "#2b3846", inputBg: "#151d26",
   },
-  // Black · grey · white — high-contrast monochrome
-  carbon: {
-    name: "carbon", label: "Carbon", dark: true, bg: "#0a0a0a", surface: "#151515", surface2: "#1d1d1d", raised: "#262626",
-    border: "#2f2f2f", text: "#fafafa", muted: "#a3a3a3", faint: "#6b6b6b",
-    primary: "#e5e5e5", primarySoft: "rgba(229,229,229,.12)", onPrimary: "#0a0a0a",
-    good: "#4ade80", watch: "#fbbf24", poor: "#fb7185",
-    gainup: "#d4d4d8", techno: "#9ca3af",
-    goodSoft: "rgba(74,222,128,.12)", watchSoft: "rgba(251,191,36,.12)", poorSoft: "rgba(251,113,133,.14)",
-    grid: "#262626", inputBg: "#101010",
-  },
-  // Black with neon orange / red / yellow — heat / hazard
-  ember: {
-    name: "ember", label: "Ember", dark: true, bg: "#0c0703", surface: "#190d05", surface2: "#241408", raised: "#30190b",
-    border: "#42260f", text: "#fff7ed", muted: "#e7b48f", faint: "#9c7459",
-    primary: "#fb923c", primarySoft: "rgba(251,146,60,.16)", onPrimary: "#1a0a00",
-    good: "#fde047", watch: "#f97316", poor: "#dc2626",
-    gainup: "#fbbf24", techno: "#f87171",
-    goodSoft: "rgba(253,224,71,.14)", watchSoft: "rgba(249,115,22,.14)", poorSoft: "rgba(220,38,38,.16)",
-    grid: "#2a1810", inputBg: "#140b06",
-  },
-  // Black with neon green — radioactive
-  radioactive: {
-    name: "radioactive", label: "Radioactive", dark: true, bg: "#000000", surface: "#081208", surface2: "#0c1d0c", raised: "#112a11",
-    border: "#1c421c", text: "#dcffdc", muted: "#7ee787", faint: "#4d8a4d",
-    primary: "#39ff14", primarySoft: "rgba(57,255,20,.14)", onPrimary: "#001400",
-    good: "#39ff14", watch: "#eab308", poor: "#ff3b3b",
-    gainup: "#22d3ee", techno: "#a3e635",
-    goodSoft: "rgba(57,255,20,.13)", watchSoft: "rgba(234,179,8,.14)", poorSoft: "rgba(255,59,59,.16)",
-    grid: "#0f2a0f", inputBg: "#020802",
+  // Neutral — light, low-chroma Cool Grey neutrals with a slate primary and muted semantic colours.
+  neutral: {
+    name: "neutral", label: "Neutral", dark: false, bg: "#eceff3", surface: "#ffffff", surface2: "#f5f7fa", raised: "#e4e7eb",
+    border: "#cbd2d9", text: "#1f2933", muted: "#616e7c", faint: "#9aa5b1",
+    primary: "#52606d", primarySoft: "rgba(82,96,109,.12)", onPrimary: "#ffffff",
+    good: "#199473", watch: "#c99a2e", poor: "#ba2525",
+    gainup: "#186faf", techno: "#4c63b6",
+    goodSoft: "rgba(25,148,115,.10)", watchSoft: "rgba(201,154,46,.12)", poorSoft: "rgba(186,37,37,.10)",
+    grid: "#e6e9ed", inputBg: "#f5f7fa",
   },
 };
 
@@ -283,7 +312,7 @@ function sampleData() {
 /* ============================ UI PRIMITIVES ============================ */
 function Card({ t, children, className = "", title, hint, right }) {
   return (
-    <div className={"rounded-2xl border " + className} style={{ background: t.surface, borderColor: t.border }}>
+    <div data-fx="card" className={"rounded-2xl border " + className} style={{ background: t.surface, borderColor: t.border }}>
       {(title || right) && (
         <div className="flex items-center justify-between px-5 pt-4 pb-1 gap-3">
           <div>
@@ -298,11 +327,11 @@ function Card({ t, children, className = "", title, hint, right }) {
   );
 }
 function Btn({ t, children, onClick, variant = "primary", className = "", disabled, title }) {
-  const base = "inline-flex items-center gap-2 rounded-xl font-semibold px-4 py-2.5 text-sm transition disabled:opacity-50 disabled:cursor-not-allowed";
+  const base = "inline-flex items-center gap-2 rounded-xl font-semibold px-4 py-2.5 text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
   const style = variant === "primary" ? { background: t.primary, color: t.onPrimary || "#fff" } :
     variant === "danger" ? { background: "transparent", color: t.poor, border: "1px solid " + t.poor } :
     { background: "transparent", color: t.text, border: "1px solid " + t.border };
-  return <button title={title} disabled={disabled} onClick={onClick} className={base + " " + className} style={style}>{children}</button>;
+  return <button title={title} disabled={disabled} onClick={onClick} onMouseDown={fxPress} className={base + " " + className} style={style}>{children}</button>;
 }
 function Pill({ t, kind }) {
   const map = { good: [t.good, t.goodSoft, "Good"], watch: [t.watch, t.watchSoft, "Watch"], poor: [t.poor, t.poorSoft, "Poor"] };
@@ -311,10 +340,10 @@ function Pill({ t, kind }) {
 }
 function Tile({ t, label, value, sub, accent, deltaColor }) {
   return (
-    <div className="rounded-2xl border p-4 relative overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
+    <div data-fx="tile" className="rounded-2xl border p-4 relative overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
       <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent || t.primary }} />
       <div className="text-xs uppercase tracking-widest" style={{ color: t.muted }}>{label}</div>
-      <div className="text-3xl font-bold mt-2 tabular-nums" style={{ color: t.text }}>{value}</div>
+      <div className="text-3xl font-bold mt-2 tabular-nums" style={{ color: t.text }}>{typeof value === "string" || typeof value === "number" ? <CountUp value={value} /> : value}</div>
       {sub && <div className="text-xs mt-1" style={{ color: deltaColor || t.muted }}>{sub}</div>}
     </div>
   );
@@ -350,9 +379,15 @@ function Empty({ t, title, sub }) {
   return <Card t={t}><div className="text-center py-10"><div className="text-xl font-semibold" style={{ color: t.text }}>{title}</div><div className="text-sm mt-1" style={{ color: t.muted }}>{sub}</div></div></Card>;
 }
 function Modal({ t, title, onClose, children }) {
+  const overlayRef = useRef(null);
+  useGSAP(() => {
+    if (prefersReduced()) return;
+    gsap.from(overlayRef.current, { autoAlpha: 0, duration: 0.25, ease: "power1.out" });
+    gsap.from(".fx-modal-card", { autoAlpha: 0, y: 24, scale: 0.96, duration: 0.35, ease: "back.out(1.6)", clearProps: "transform" });
+  }, { scope: overlayRef });
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
-      <div className="w-full max-w-md rounded-2xl border" style={{ background: t.surface, borderColor: t.border }} onClick={(e) => e.stopPropagation()}>
+    <div ref={overlayRef} className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
+      <div className="fx-modal-card w-full max-w-md rounded-2xl border" style={{ background: t.surface, borderColor: t.border }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid " + t.border }}>
           <div className="font-semibold" style={{ color: t.text }}>{title}</div>
           <button onClick={onClose} className="rounded-lg p-1.5" style={{ border: "1px solid " + t.border, color: t.muted }}><X size={15} /></button>
@@ -596,7 +631,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
   const inputBase = { background: t.inputBg, border: "1px solid " + t.border, color: t.text };
 
   const detail = (x) => (
-    <div className="rounded-2xl border p-4 mt-2" style={{ background: t.surface2, borderColor: t.primary }}>
+    <Reveal className="rounded-2xl border p-4 mt-2" style={{ background: t.surface2, borderColor: t.primary }}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <div><div className="font-semibold flex items-center gap-2" style={{ color: t.text }}><UnitDot t={t} unit={x.bus.unit} />{x.bus.vehicle} <Pill t={t} kind={x.h} /></div>
           <div className="text-xs mt-0.5" style={{ color: t.muted }}>{x.bus.route} · {x.bus.driver} · {x.date}</div></div>
@@ -615,7 +650,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
           return <span key={e.id} title={e.code} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs" style={{ background: t.surface, border: "1px solid " + t.border, color: t.text }}><span className="w-2 h-2 rounded-full" style={{ background: c }} />{e.name}</span>; })}</div>
       ) : <div className="text-xs" style={{ color: t.muted }}>No employees mapped.</div>; })()}
       {formulas.length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs" style={{ color: t.muted }}>{formulas.map((f) => <span key={f.id}>{f.name}: <b style={{ color: t.text }}>{fmtFormula(evalFormula(f.expr, x.m, vmap), f)}</b></span>)}</div>}
-    </div>
+    </Reveal>
   );
 
   return (
@@ -650,7 +685,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         const accent = u === "Gainup" ? t.gainup : t.techno;
         const openHere = openBus && list.find((x) => x.bus.id === openBus);
         return (
-          <div key={u} className="mb-4 rounded-2xl border overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
+          <div key={u} data-fx="card" className="mb-4 rounded-2xl border overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
             <button onClick={() => setCollapsed({ ...collapsed, [u]: !isCol })} className="w-full flex items-center gap-2.5 px-4 py-3 text-left" style={{ background: t.surface2 }}>
               <ChevronRight size={16} style={{ color: accent, transform: isCol ? "none" : "rotate(90deg)", transition: "transform .15s" }} />
               <span className="w-2.5 h-2.5 rounded-sm" style={{ background: accent }} />
@@ -669,7 +704,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(108px, 1fr))", gap: 8 }}>
                     {list.map((x) => { const col = hc(x.h); const on = openBus === x.bus.id;
                       return (
-                        <button key={x.bus.id} onClick={() => setOpenBus(on ? null : x.bus.id)} className="relative text-left rounded-xl p-2.5" style={{ background: t.surface2, border: "1.5px solid " + col, boxShadow: on ? `0 0 0 2px ${t.primary}` : "none" }}>
+                        <button key={x.bus.id} data-fx="bus" onClick={() => setOpenBus(on ? null : x.bus.id)} onMouseEnter={fxLift} onMouseLeave={fxDrop} className="relative text-left rounded-xl p-2.5" style={{ background: t.surface2, border: "1.5px solid " + col, boxShadow: on ? `0 0 0 2px ${t.primary}` : "none" }}>
                           <span className="absolute rounded-full" style={{ right: 8, top: 8, width: 8, height: 8, background: col }} />
                           <div className="text-xs font-semibold truncate" style={{ color: t.text, maxWidth: "84%" }}>{x.bus.vehicle}</div>
                           <div className="text-xl font-bold tabular-nums mt-1" style={{ color: t.text }}>{pct(x.m.util)}</div>
@@ -1074,47 +1109,102 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
   const data = cfg.axis === "time" ? timeData : busData;
   const valLabel = formula.unit === "₹" ? "₹" : formula.unit === "%" ? "%" : "";
 
+  /* ---- visual helpers: gradients per series, avg reference line, short value formatter ---- */
+  const gid = (k) => `eqg-${formula.id}-${k}`; // unique per chart instance (several charts share the page)
+  const fmtShort = (v) => v == null ? "" : formula.unit === "₹" ? inrK(v) : formula.unit === "%" ? Math.round(v) + "%" : Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + "k" : (Math.round(v * 10) / 10).toLocaleString("en-IN");
+  const GRAD_KEYS = ["Gainup", "Technotek", "Combined", "value"];
+  const Grads = () => (
+    <defs>
+      {GRAD_KEYS.map((k) => {
+        const c = colorFor(k);
+        return (
+          <React.Fragment key={k}>
+            {/* soft wash for lines/areas */}
+            <linearGradient id={gid(k)} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={c} stopOpacity={0.55} />
+              <stop offset="100%" stopColor={c} stopOpacity={0.04} />
+            </linearGradient>
+            {/* punchier fill for bars */}
+            <linearGradient id={gid("b" + k)} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={c} stopOpacity={0.95} />
+              <stop offset="100%" stopColor={c} stopOpacity={0.45} />
+            </linearGradient>
+          </React.Fragment>
+        );
+      })}
+    </defs>
+  );
+  const vals = (cfg.axis === "bus" ? busData.map((d) => d.value) : timeData.map((d) => d.Combined)).filter((v) => v != null);
+  const avgVal = vals.length > 2 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  const AvgLine = () => avgVal == null ? null : (
+    <ReferenceLine y={avgVal} stroke={t.watch} strokeDasharray="5 4" strokeOpacity={0.75}
+      label={{ value: "avg " + fmtShort(avgVal), fill: t.watch, fontSize: 10, fontWeight: 600, position: "insideTopRight" }} />
+  );
+  const yTick = { tick: { fill: t.muted, fontSize: 11 }, tickLine: false, axisLine: false, width: 52, tickFormatter: fmtShort };
+
   let chart = null;
   const noData = (cfg.axis === "bus" ? busData.length === 0 : timeData.every((d) => d.Combined == null));
   if (noData) chart = <div className="text-sm py-10 text-center" style={{ color: t.muted }}>No data to plot.</div>;
   else if (cfg.type === "line") chart = (
-    <ResponsiveContainer width="100%" height={260}><LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+    <ResponsiveContainer width="100%" height={260}><AreaChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+      {Grads()}
       <CartesianGrid strokeDasharray="3 3" stroke={t.grid} vertical={false} />
       <XAxis dataKey="name" tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={{ stroke: t.border }} interval="preserveStartEnd" />
-      <YAxis tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
+      <YAxis {...yTick} />
       <Tooltip content={TT} />{cfg.axis === "time" && unit === "all" && <Legend wrapperStyle={{ fontSize: 12, color: t.muted }} />}
-      {seriesKeys.map((k) => <Line key={k} type="monotone" dataKey={k} name={k === "value" ? formula.name : k} stroke={colorFor(k)} strokeWidth={2} dot={{ r: 2.4 }} connectNulls />)}
-    </LineChart></ResponsiveContainer>
+      {AvgLine()}
+      {seriesKeys.map((k) => <Area key={k} type="monotone" dataKey={k} name={k === "value" ? formula.name : k}
+        stroke={colorFor(k)} strokeWidth={2.5} fill={`url(#${gid(k)})`} fillOpacity={0.35}
+        dot={{ r: 3, fill: colorFor(k), strokeWidth: 0 }} activeDot={{ r: 5.5, stroke: t.surface, strokeWidth: 2 }}
+        connectNulls animationDuration={900} animationEasing="ease-out" />)}
+    </AreaChart></ResponsiveContainer>
   );
   else if (cfg.type === "area") chart = (
     <ResponsiveContainer width="100%" height={260}><AreaChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+      {Grads()}
       <CartesianGrid strokeDasharray="3 3" stroke={t.grid} vertical={false} />
       <XAxis dataKey="name" tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={{ stroke: t.border }} interval="preserveStartEnd" />
-      <YAxis tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
+      <YAxis {...yTick} />
       <Tooltip content={TT} />{cfg.axis === "time" && unit === "all" && <Legend wrapperStyle={{ fontSize: 12, color: t.muted }} />}
-      {seriesKeys.map((k) => <Area key={k} type="monotone" dataKey={k} name={k === "value" ? formula.name : k} stroke={colorFor(k)} fill={colorFor(k)} fillOpacity={0.22} strokeWidth={2} connectNulls />)}
+      {AvgLine()}
+      {seriesKeys.map((k) => <Area key={k} type="monotone" dataKey={k} name={k === "value" ? formula.name : k}
+        stroke={colorFor(k)} strokeWidth={2.5} fill={`url(#${gid(k)})`}
+        activeDot={{ r: 5.5, stroke: t.surface, strokeWidth: 2 }}
+        connectNulls animationDuration={900} animationEasing="ease-out" />)}
     </AreaChart></ResponsiveContainer>
   );
   else if (cfg.type === "bar") chart = (
-    <ResponsiveContainer width="100%" height={260}><BarChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+    <ResponsiveContainer width="100%" height={260}><BarChart data={data} margin={{ top: 18, right: 12, left: 0, bottom: 0 }}>
+      {Grads()}
       <CartesianGrid strokeDasharray="3 3" stroke={t.grid} vertical={false} />
       <XAxis dataKey="name" tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={{ stroke: t.border }} interval={0} angle={cfg.axis === "bus" ? -15 : 0} textAnchor={cfg.axis === "bus" ? "end" : "middle"} height={cfg.axis === "bus" ? 50 : 30} />
-      <YAxis tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
+      <YAxis {...yTick} />
       <Tooltip content={TT} cursor={{ fill: t.primarySoft }} />{cfg.axis === "time" && unit === "all" && <Legend wrapperStyle={{ fontSize: 12, color: t.muted }} />}
+      {AvgLine()}
       {cfg.axis === "bus"
-        ? <Bar dataKey="value" name={formula.name} radius={[6, 6, 0, 0]} maxBarSize={70}>{busData.map((d, i) => <Cell key={i} fill={d.unit === "Gainup" ? t.gainup : t.techno} />)}</Bar>
-        : seriesKeys.map((k) => <Bar key={k} dataKey={k} name={k} fill={colorFor(k)} radius={[6, 6, 0, 0]} maxBarSize={36} />)}
+        ? <Bar dataKey="value" name={formula.name} radius={[8, 8, 2, 2]} maxBarSize={70} animationDuration={900} animationEasing="ease-out">
+            {busData.map((d, i) => <Cell key={i} fill={`url(#${gid("b" + (d.unit === "Gainup" ? "Gainup" : "Technotek"))})`} stroke={d.unit === "Gainup" ? t.gainup : t.techno} strokeWidth={1} />)}
+            <LabelList dataKey="value" position="top" formatter={fmtShort} fill={t.muted} fontSize={10} fontWeight={600} />
+          </Bar>
+        : seriesKeys.map((k) => <Bar key={k} dataKey={k} name={k} fill={`url(#${gid("b" + k)})`} stroke={colorFor(k)} strokeWidth={1} radius={[6, 6, 2, 2]} maxBarSize={36} animationDuration={900} animationEasing="ease-out" />)}
     </BarChart></ResponsiveContainer>
   );
   else if (cfg.type === "pie") {
     const pieData = (cfg.axis === "bus" ? busData.map((d) => ({ name: d.name, value: Math.max(0, d.value), color: d.unit === "Gainup" ? t.gainup : t.techno }))
       : timeData.filter((d) => d.Combined != null).map((d, i) => ({ name: d.name, value: Math.max(0, d.Combined), color: PIE_PALETTE[i % PIE_PALETTE.length] })));
+    const total = pieData.reduce((a, b) => a + b.value, 0);
     chart = (
       <ResponsiveContainer width="100%" height={280}><PieChart>
         <Tooltip content={TT} />
-        <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} innerRadius={50} paddingAngle={2}>
-          {pieData.map((d, i) => <Cell key={i} fill={d.color} />)}
+        <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={105} innerRadius={62}
+          paddingAngle={3} cornerRadius={6} stroke={t.surface} strokeWidth={2}
+          animationDuration={900} animationEasing="ease-out"
+          label={({ name, percent }) => percent > 0.06 ? `${name} ${(percent * 100).toFixed(0)}%` : ""}
+          labelLine={{ stroke: t.faint, strokeWidth: 1 }} fontSize={10}>
+          {pieData.map((d, i) => <Cell key={i} fill={d.color} fillOpacity={0.9} />)}
         </Pie>
+        <text x="50%" y="47%" textAnchor="middle" dominantBaseline="central" fill={t.text} fontSize={20} fontWeight={700}>{fmtShort(total)}</text>
+        <text x="50%" y="47%" dy={20} textAnchor="middle" dominantBaseline="central" fill={t.muted} fontSize={10} style={{ textTransform: "uppercase", letterSpacing: 1 }}>total</text>
       </PieChart></ResponsiveContainer>
     );
   }
@@ -1122,21 +1212,23 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
     const TTs = makeTooltip(t);
     if (cfg.axis === "bus") chart = (
       <ResponsiveContainer width="100%" height={280}><ScatterChart margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-        <CartesianGrid stroke={t.grid} />
+        <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
         <XAxis type="number" dataKey="capacity" name="capacity" tick={{ fill: t.muted, fontSize: 11 }} axisLine={{ stroke: t.border }} label={{ value: "capacity", fill: t.muted, fontSize: 11, position: "insideBottom", dy: 12 }} />
-        <YAxis type="number" dataKey="value" name={formula.name} tick={{ fill: t.muted, fontSize: 11 }} axisLine={false} width={48} />
-        <Tooltip content={TTs} cursor={{ stroke: t.border }} />
-        <Scatter data={busData}>{busData.map((d, i) => <Cell key={i} fill={d.unit === "Gainup" ? t.gainup : t.techno} />)}</Scatter>
+        <YAxis type="number" dataKey="value" name={formula.name} {...yTick} />
+        <Tooltip content={TTs} cursor={{ stroke: t.border, strokeDasharray: "4 4" }} />
+        {AvgLine()}
+        <Scatter data={busData} animationDuration={900} animationEasing="ease-out" shape={(p) => <circle cx={p.cx} cy={p.cy} r={9} fill={p.payload.unit === "Gainup" ? t.gainup : t.techno} fillOpacity={0.5} stroke={p.payload.unit === "Gainup" ? t.gainup : t.techno} strokeWidth={2} />} />
       </ScatterChart></ResponsiveContainer>
     );
     else { const pts = timeData.filter((d) => d.Combined != null).map((d, i) => ({ idx: i, name: d.name, value: d.Combined }));
       chart = (
         <ResponsiveContainer width="100%" height={280}><ScatterChart margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-          <CartesianGrid stroke={t.grid} />
+          <CartesianGrid strokeDasharray="3 3" stroke={t.grid} />
           <XAxis type="number" dataKey="idx" name="day" tick={{ fill: t.muted, fontSize: 11 }} axisLine={{ stroke: t.border }} tickFormatter={(i) => pts[i] ? pts[i].name : ""} />
-          <YAxis type="number" dataKey="value" name={formula.name} tick={{ fill: t.muted, fontSize: 11 }} axisLine={false} width={48} />
-          <Tooltip content={TTs} cursor={{ stroke: t.border }} />
-          <Scatter data={pts} fill={t.primary} />
+          <YAxis type="number" dataKey="value" name={formula.name} {...yTick} />
+          <Tooltip content={TTs} cursor={{ stroke: t.border, strokeDasharray: "4 4" }} />
+          {AvgLine()}
+          <Scatter data={pts} animationDuration={900} animationEasing="ease-out" shape={(p) => <circle cx={p.cx} cy={p.cy} r={8} fill={t.primary} fillOpacity={0.5} stroke={t.primary} strokeWidth={2} />} />
         </ScatterChart></ResponsiveContainer>
       );
     }
@@ -1316,11 +1408,11 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, toast, them
   return (
     <div className="space-y-4">
       <Card t={t} title="Appearance" hint="Pick a theme for the whole dashboard. It applies instantly and is saved automatically.">
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {Object.values(THEMES).map((th) => {
             const on = themeName === th.name;
             return (
-              <button key={th.name} onClick={() => setThemeName(th.name)} className="rounded-xl p-3 text-left transition"
+              <button key={th.name} data-fx="swatch" onMouseDown={fxPress} onMouseEnter={fxLift} onMouseLeave={fxDrop} onClick={() => setThemeName(th.name)} className="rounded-xl p-3 text-left transition-colors"
                 style={{ background: th.surface, border: "2px solid " + (on ? t.primary : th.border), boxShadow: on ? `0 0 0 3px ${t.primarySoft}` : "none" }}>
                 <div className="flex items-center gap-1.5 mb-2">
                   {[th.primary, th.good, th.watch, th.poor].map((c, i) => (
@@ -1384,6 +1476,17 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, toast, them
 }
 
 /* ============================ APP ============================ */
+function Toast({ t, msg }) {
+  const ref = useRef(null);
+  useGSAP(() => {
+    if (prefersReduced()) { gsap.set(ref.current, { xPercent: -50 }); return; }
+    gsap.fromTo(ref.current,
+      { xPercent: -50, autoAlpha: 0, y: 16, scale: 0.95 },
+      { xPercent: -50, autoAlpha: 1, y: 0, scale: 1, duration: 0.4, ease: "back.out(1.8)", overwrite: "auto" });
+  }, [msg]);
+  return <div ref={ref} className="fixed left-1/2 bottom-6 rounded-xl px-4 py-3 text-sm z-50 shadow-lg" style={{ background: t.raised, border: "1px solid " + t.border, color: t.text }}>{msg}</div>;
+}
+
 export default function App() {
   const [themeName, setThemeName] = useState("light");
   const t = THEMES[themeName];
@@ -1400,6 +1503,40 @@ export default function App() {
   const [toastMsg, setToastMsg] = useState("");
   const toastTimer = useRef();
   const toast = (m) => { setToastMsg(m); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToastMsg(""), 2400); };
+
+  /* ---- GSAP entrances (clearProps limited to animated props so theme inline styles survive) ---- */
+  const headerRef = useRef(null);
+  const mainRef = useRef(null);
+  const FX_CLEAR = "transform,opacity,visibility";
+  useGSAP(() => { // one-time header entrance
+    if (prefersReduced()) return;
+    gsap.timeline({ defaults: { ease: "power2.out" } })
+      .from('[data-fx="logo"]', { scale: 0.5, rotation: -12, autoAlpha: 0, duration: 0.45, ease: "back.out(1.7)", clearProps: FX_CLEAR })
+      .from('[data-fx="brand"]', { x: -10, autoAlpha: 0, duration: 0.35, clearProps: FX_CLEAR }, "-=0.25")
+      .from('[data-fx="tab"]', { y: -8, autoAlpha: 0, duration: 0.3, stagger: 0.05, clearProps: FX_CLEAR }, "-=0.2");
+  }, { scope: headerRef });
+  useGSAP(() => { // per-tab content entrance: title → KPI tiles → cards → bus grid
+    if (!loaded || prefersReduced()) return;
+    gsap.timeline({ defaults: { ease: "power2.out" } })
+      .from('[data-fx="page-title"]', { y: 10, autoAlpha: 0, duration: 0.35, clearProps: FX_CLEAR })
+      .from('[data-fx="tile"]', { y: 18, autoAlpha: 0, duration: 0.45, stagger: { amount: 0.25 }, clearProps: FX_CLEAR }, "-=0.2")
+      .from('[data-fx="card"]', { y: 22, autoAlpha: 0, duration: 0.5, stagger: { amount: 0.3 }, clearProps: FX_CLEAR }, "-=0.3")
+      .from('[data-fx="swatch"]', { y: 14, scale: 0.9, autoAlpha: 0, duration: 0.4, ease: "back.out(1.6)", stagger: 0.06, clearProps: FX_CLEAR }, "-=0.35")
+      .from('[data-fx="bus"]', { scale: 0.92, autoAlpha: 0, duration: 0.35, stagger: { amount: 0.4, grid: "auto", from: "start" }, clearProps: FX_CLEAR }, "-=0.35");
+  }, { dependencies: [tab, loaded], scope: mainRef });
+
+  // Smooth whole-app colour crossfade on theme change: briefly enable CSS colour transitions
+  // (only during the switch, so they never interfere with GSAP transforms or hover feel).
+  const rootRef = useRef(null);
+  const firstTheme = useRef(true);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || firstTheme.current) { firstTheme.current = false; return; }
+    if (prefersReduced()) return;
+    el.classList.add("theme-switching");
+    const id = setTimeout(() => el.classList.remove("theme-switching"), 480);
+    return () => clearTimeout(id);
+  }, [themeName]);
 
   useEffect(() => {
     (async () => {
@@ -1419,7 +1556,7 @@ export default function App() {
       } else {
         const s = sampleData(); setBuses(s.buses); setEmployees(s.employees); setAttendance(s.attendance); setRecords(s.records); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings);
       }
-      const th = await Store.get("theme"); if (th) setThemeName(th);
+      const th = await Store.get("theme"); if (th && THEMES[th]) setThemeName(th); // ignore any removed/old theme name
       setLoaded(true);
     })();
     return () => {};
@@ -1441,23 +1578,23 @@ export default function App() {
   const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", equations: "Equations", metrics: "Custom metrics", optimiser: "", settings: "Settings" };
 
   return (
-    <div className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif" }}>
-      <div className="sticky top-0 z-20" style={{ background: t.surface, borderBottom: "1px solid " + t.border }}>
+    <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif" }}>
+      <div ref={headerRef} className="sticky top-0 z-20" style={{ background: t.surface, borderBottom: "1px solid " + t.border }}>
         <div className="w-full px-6 flex items-center gap-4">
           <div className="flex-1 flex items-center gap-3 py-2 min-w-0 overflow-hidden">
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: t.primary }}><Bus size={20} color={t.onPrimary || "#fff"} /></div>
-            <div className="font-bold text-lg leading-tight tracking-tight truncate">Transport dashboard</div>
+            <div data-fx="logo" className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: t.primary }}><Bus size={20} color={t.onPrimary || "#fff"} /></div>
+            <div data-fx="brand" className="font-bold text-lg leading-tight tracking-tight truncate">Transport dashboard</div>
           </div>
           <div className="flex gap-1 overflow-x-auto shrink-0">
-            {TABS.map(([k, l, Icon]) => { const on = tab === k; return <button key={k} onClick={() => setTab(k)} className="flex items-center gap-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition" style={{ color: on ? t.primary : t.muted, borderBottom: "2px solid " + (on ? t.primary : "transparent") }}><Icon size={16} /> {l}</button>; })}
+            {TABS.map(([k, l, Icon]) => { const on = tab === k; return <button key={k} data-fx="tab" onClick={() => setTab(k)} className="flex items-center gap-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition" style={{ color: on ? t.primary : t.muted, borderBottom: "2px solid " + (on ? t.primary : "transparent") }}><Icon size={16} /> {l}</button>; })}
           </div>
           <div className="flex-1" />
         </div>
       </div>
 
-      <div className="w-full px-6 py-6">
+      <div ref={mainRef} className="w-full px-6 py-6">
         {titleMap[tab] && <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-          <h2 className="text-2xl font-bold tracking-tight">{titleMap[tab]}</h2>
+          <h2 data-fx="page-title" className="text-2xl font-bold tracking-tight">{titleMap[tab]}</h2>
           {["live", "compare", "equations"].includes(tab) && <UnitDropdown t={t} value={unit} onChange={setUnit} />}
         </div>}
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (
@@ -1479,7 +1616,7 @@ export default function App() {
         )}
       </div>
 
-      {toastMsg && <div className="fixed left-1/2 bottom-6 -translate-x-1/2 rounded-xl px-4 py-3 text-sm z-50 shadow-lg" style={{ background: t.raised, border: "1px solid " + t.border, color: t.text }}>{toastMsg}</div>}
+      {toastMsg && <Toast t={t} msg={toastMsg} />}
     </div>
   );
 }

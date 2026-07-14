@@ -9,6 +9,15 @@ body {
   margin: 0;
 }
 
+/* Smooth colour crossfade while switching themes. The class is added only for ~0.5s during a
+   switch (see Dashboard App), so these transitions never run during normal interaction and can't
+   interfere with GSAP transforms (transform/opacity are intentionally excluded). */
+.theme-switching,
+.theme-switching * {
+  transition: background-color 0.4s ease, border-color 0.4s ease, color 0.4s ease,
+    fill 0.4s ease, stroke 0.4s ease, box-shadow 0.4s ease !important;
+}
+
 /* Native date-picker calendar icon — adapt to the active theme.
    The default icon is dark; invert it to white in dark mode so it's visible. */
 .theme-dark input[type="date"]::-webkit-calendar-picker-indicator {
@@ -48,4 +57,18 @@ body {
 }
 .leaflet-control-zoom a:hover {
   background: rgba(255, 255, 255, 0.6) !important;
+}
+
+/* Dark-theme liquid glass for the zoom controls so they match the dark map overlays. */
+.theme-dark .leaflet-control-zoom {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.08) !important;
+}
+.theme-dark .leaflet-control-zoom a {
+  background: rgba(20, 28, 38, 0.6) !important;
+  color: #f5f7fa !important;
+  border-bottom-color: rgba(255, 255, 255, 0.12) !important;
+}
+.theme-dark .leaflet-control-zoom a:hover {
+  background: rgba(40, 52, 66, 0.78) !important;
 }

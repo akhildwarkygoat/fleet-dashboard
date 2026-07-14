@@ -83,6 +83,9 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
         `<div style="font:600 12px/1.35 Inter,system-ui,sans-serif"><b>${esc(s.name)}</b>` +
         (s.village ? `<br><span style="color:#64748b">${esc(s.village)}</span>` : "") +
         (s.headcount != null ? `<br><span style="color:#0e7490">&#128101; ${s.headcount} rider${s.headcount === 1 ? "" : "s"}</span>` : "") +
+        (s.busName
+          ? `<br><span style="color:${s.busColor || "#334155"};font-weight:700">&#128652; ${esc(s.busName)}</span>`
+          : (s.busName === null && "busName" in s ? `<br><span style="color:#94a3b8">&#128652; unassigned</span>` : "")) +
         `</div>`,
         { direction: "top", offset: [0, -12] }
       );

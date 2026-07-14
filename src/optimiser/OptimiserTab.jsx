@@ -1216,10 +1216,11 @@ function FleetPlanView({ t }) {
             <div className="absolute z-[500] top-14 right-3 rounded-2xl overflow-hidden flex flex-col" style={{
               width: stopsPanelOpen ? 208 : "auto", maxHeight: "calc(100% - 4.5rem)",
               // Apple "liquid glass": translucent tint + frosted backdrop so the route shows through
-              background: "rgba(255,255,255,0.26)",
+              // (theme-aware: dark frosted glass on the dark map, bright frosted glass otherwise)
+              background: t.dark ? "rgba(20,28,38,0.62)" : "rgba(255,255,255,0.26)",
               backdropFilter: "blur(12px) saturate(185%)", WebkitBackdropFilter: "blur(12px) saturate(185%)",
-              border: "1px solid rgba(255,255,255,0.5)",
-              boxShadow: "0 8px 30px rgba(15,23,42,.22), inset 0 1px 1px rgba(255,255,255,0.75), inset 0 -1px 2px rgba(255,255,255,0.35)",
+              border: "1px solid " + (t.dark ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.5)"),
+              boxShadow: t.dark ? "0 8px 30px rgba(0,0,0,.5), inset 0 1px 1px rgba(255,255,255,0.08)" : "0 8px 30px rgba(15,23,42,.22), inset 0 1px 1px rgba(255,255,255,0.75), inset 0 -1px 2px rgba(255,255,255,0.35)",
             }}>
               <button type="button" onClick={() => setStopsPanelOpen((o) => !o)} title={stopsPanelOpen ? "Minimize" : "Show stop order"}
                 className="px-3 pt-2 pb-1 flex items-center justify-between gap-3 flex-shrink-0" style={{ color: t.muted, cursor: "pointer" }}>
@@ -1231,7 +1232,7 @@ function FleetPlanView({ t }) {
                 {selRows.map((r) => (
                   <div key={r.name}>
                     {selRows.length > 1 && (
-                      <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide flex items-center gap-1.5" style={{ background: "rgba(255,255,255,0.35)", color: t.text }}>
+                      <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide flex items-center gap-1.5" style={{ background: t.dark ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.35)", color: t.text }}>
                         <span className="inline-block rounded-full flex-shrink-0" style={{ width: 8, height: 8, background: masterColors[r.name] }} />{names[r.name] || r.name}
                       </div>
                     )}

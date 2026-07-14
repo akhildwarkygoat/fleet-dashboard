@@ -19,7 +19,7 @@ export default function EnlargeableMap({ t, render, height = 460 }) {
       {!big && (
         <button type="button" onClick={() => setBig(true)} title="Enlarge map"
           className="absolute top-3 right-3 z-[600] rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5"
-          style={{ background: "rgba(255,255,255,0.4)", backdropFilter: "blur(10px) saturate(180%)", WebkitBackdropFilter: "blur(10px) saturate(180%)", border: "1px solid rgba(255,255,255,0.55)", color: t.text, cursor: "pointer", boxShadow: "0 2px 8px rgba(15,23,42,.18), inset 0 1px 1px rgba(255,255,255,0.7)" }}>
+          style={{ background: t.dark ? "rgba(20,28,38,0.55)" : "rgba(255,255,255,0.4)", backdropFilter: "blur(10px) saturate(180%)", WebkitBackdropFilter: "blur(10px) saturate(180%)", border: "1px solid " + (t.dark ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.55)"), color: t.text, cursor: "pointer", boxShadow: t.dark ? "0 2px 8px rgba(0,0,0,.4), inset 0 1px 1px rgba(255,255,255,0.08)" : "0 2px 8px rgba(15,23,42,.18), inset 0 1px 1px rgba(255,255,255,0.7)" }}>
           <Maximize2 size={13} /> Enlarge
         </button>
       )}

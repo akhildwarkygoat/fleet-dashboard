@@ -19,6 +19,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   const [activeBus, setActiveBus] = useState(null);
   const [busQuery, setBusQuery] = useState("");
   const busColor = useMemo(() => { const m = {}; fleet.forEach((b, i) => (m[b.id] = PALETTE[i % PALETTE.length])); return m; }, [fleet]);
+  const busById = useMemo(() => { const m = {}; fleet.forEach((b) => (m[b.id] = b)); return m; }, [fleet]);
 
   const busOfStop = useMemo(() => {
     const m = new Map();
@@ -35,10 +36,17 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   // map stops — coloured by their assigned bus (grey if none)
   // With a bus active, hide stops that belong to OTHER buses — only show what's assignable
   // (unassigned = red) plus this bus's own stops (green). With no bus active, show everything.
+  // Each assigned stop is coloured by its OWNING bus (so its dot matches that bus's route line and
+  // its card) and carries the bus name/colour for the hover tooltip. Unassigned stops stay red.
   const mapStops = useMemo(() => allStops
     .filter((s) => { const b = busOfStop.get(s.id); return !activeBus || !b || b === activeBus; })
-    .map((s) => ({ ...s, route: busOfStop.has(s.id) ? "added" : "un", headcount: demandOf(s) })), [allStops, busOfStop, demandOf, activeBus]);
-  const routeColors = useMemo(() => ({ added: ADDED, un: UNADDED }), []);
+    .map((s) => {
+      const b = busOfStop.get(s.id);
+      return { ...s, route: b || "un", headcount: demandOf(s),
+        busName: b ? (busById[b] && busById[b].name) || "" : null,
+        busColor: b ? busColor[b] : null };
+    }), [allStops, busOfStop, demandOf, activeBus, busById, busColor]);
+  const routeColors = useMemo(() => ({ ...busColor, un: UNADDED }), [busColor]);
 
   // route lines to draw — all buses normally, but ONLY the active bus while one is selected
   // (so lines don't trace to the now-hidden other-bus stops).
@@ -58,14 +66,25 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   // route chain matches the order you built it), or (if already on it) remove it AND every stop after
   // it in that chain — breaking a link detaches the tail. Use the bus card's ↯ to optimise the order.
   const onStopClick = (stopId) => {
-    if (!activeBus) { toast && toast("Pick a bus first, then click stops on the map"); return; }
-    const list = editor.assign.get(activeBus) || [];
-    const i = list.indexOf(stopId);
-    if (i >= 0) {
-      const tail = list.length - i;
-      editor.truncateFrom(activeBus, stopId);
-      if (tail > 1 && toast) toast(`Removed this stop and ${tail - 1} after it`);
-    } else editor.assignStop(stopId, activeBus, { sequence: false });
+    const owner = busOfStop.get(stopId); // bus this stop is currently on (undefined if unassigned)
+    if (activeBus) {
+      const list = editor.assign.get(activeBus) || [];
+      const i = list.indexOf(stopId);
+      if (i >= 0) {
+        const tail = list.length - i;
+        editor.truncateFrom(activeBus, stopId);
+        if (tail > 1 && toast) toast(`Removed this stop and ${tail - 1} after it`);
+        return;
+      }
+      // clicked a stop that belongs to a DIFFERENT bus → jump focus to its bus instead of adding
+      if (owner && owner !== activeBus) { setActiveBus(owner); return; }
+      editor.assignStop(stopId, activeBus, { sequence: false });
+      return;
+    }
+    // no bus active: clicking an already-assigned stop selects (highlights + tops) its bus, so you
+    // can instantly see and work on it. Clicking an unassigned stop still needs a target bus first.
+    if (owner) { setActiveBus(owner); return; }
+    toast && toast("Pick a bus first, then click stops on the map");
   };
 
   // KPI scope — active bus if one is picked, else the whole plan
@@ -91,8 +110,11 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
 
   const busList = useMemo(() => {
     const q = busQuery.trim().toLowerCase();
-    return editor.perBus.filter((r) => !q || r.bus.name.toLowerCase().includes(q));
-  }, [editor.perBus, busQuery]);
+    // Pin the active bus to the top so a stop you just clicked is right there for easy access.
+    return editor.perBus
+      .filter((r) => !q || r.bus.name.toLowerCase().includes(q))
+      .sort((a, b) => (b.bus.id === activeBus) - (a.bus.id === activeBus));
+  }, [editor.perBus, busQuery, activeBus]);
 
   // fill most of the viewport — the New-plan tab opens as a big map cockpit; a toggle blows it up to
   // true fullscreen (covers the header/tabs). Height tracks the window so it stays right on resize.
@@ -107,13 +129,23 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   const containerH = full ? winH : Math.max(540, winH - 200);
   const PAD = 16; // consistent inset for the floating overlays
 
-  // Apple "liquid glass" for the floating overlays
+  // Apple "liquid glass" for the floating overlays — theme-aware so it stays readable on the dark
+  // map (dark frosted glass) as well as on the light/neutral maps (bright frosted glass).
+  const glassDark = t.dark;
   const glass = {
-    background: "rgba(255,255,255,0.62)",
+    background: glassDark ? "rgba(20,28,38,0.74)" : "rgba(255,255,255,0.62)",
     backdropFilter: "blur(16px) saturate(180%)", WebkitBackdropFilter: "blur(16px) saturate(180%)",
-    border: "1px solid rgba(255,255,255,0.55)",
-    boxShadow: "0 8px 30px rgba(15,23,42,.20), inset 0 1px 1px rgba(255,255,255,0.75), inset 0 -1px 2px rgba(255,255,255,0.35)",
+    border: "1px solid " + (glassDark ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.55)"),
+    boxShadow: glassDark
+      ? "0 8px 30px rgba(0,0,0,.5), inset 0 1px 1px rgba(255,255,255,0.10)"
+      : "0 8px 30px rgba(15,23,42,.20), inset 0 1px 1px rgba(255,255,255,0.75), inset 0 -1px 2px rgba(255,255,255,0.35)",
   };
+  // frosted tints for the tiles / cards / inputs / tracks nested inside the glass panels
+  const glassInner = glassDark ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.5)";
+  const glassInnerBorder = glassDark ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.6)";
+  const glassBtn = glassDark ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.7)";
+  const glassTrack = glassDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.08)";
+  const glassDivider = glassDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.1)";
   const PANEL_W = 300; // right bus panel width
 
   return (
@@ -150,12 +182,12 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
           {activeBus
             ? <><b>Assigning to {busName}</b> — click stops on the map to add/remove (click several for multiple).</>
             : <>Pick a bus on the right, then click stops on the map to assign them.</>}
-          {activeBus && <button type="button" onClick={() => setActiveBus(null)} className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-semibold" style={{ border: "1px solid " + t.border, background: "rgba(255,255,255,0.7)", color: t.text, cursor: "pointer" }}><X size={11} /> Done</button>}
+          {activeBus && <button type="button" onClick={() => setActiveBus(null)} className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-semibold" style={{ border: "1px solid " + t.border, background: glassBtn, color: t.text, cursor: "pointer" }}><X size={11} /> Done</button>}
           <button type="button" onClick={() => setShowKpis(false)} title="Hide stats" className={activeBus ? "" : "ml-auto"} style={{ color: t.muted, cursor: "pointer" }}><EyeOff size={13} /></button>
         </div>
         <div className="grid grid-cols-4 gap-2">
           {tiles.map((c, i) => (
-            <div key={i} className="rounded-xl px-2.5 py-1.5 relative overflow-hidden" style={{ background: "rgba(255,255,255,0.5)", border: "1px solid rgba(255,255,255,0.6)" }}>
+            <div key={i} className="rounded-xl px-2.5 py-1.5 relative overflow-hidden" style={{ background: glassInner, border: "1px solid " + glassInnerBorder }}>
               <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: c.accent || t.primary }} />
               <div className="text-[9px] uppercase tracking-wider pl-1.5 truncate" style={{ color: t.muted }}>{c.label}</div>
               <div className="text-lg font-bold tabular-nums pl-1.5 leading-tight" style={{ color: t.text }}>{c.value}</div>
@@ -178,7 +210,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
         </div>
         <div className="px-3 pb-2">
           <input value={busQuery} onChange={(e) => setBusQuery(e.target.value)} placeholder="Find a bus…"
-            className="w-full rounded-lg px-3 py-2 text-sm outline-none" style={{ border: "1px solid " + t.border, background: "rgba(255,255,255,0.6)", color: t.text }} />
+            className="w-full rounded-lg px-3 py-2 text-sm outline-none" style={{ border: "1px solid " + t.border, background: glassInner, color: t.text }} />
         </div>
         <div className="grid grid-cols-2 gap-2 overflow-y-auto px-3 pb-3">
           {busList.map((r) => {
@@ -187,15 +219,15 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
             return (
               <button key={r.bus.id} type="button" onClick={() => setActiveBus(on ? null : r.bus.id)}
                 className="text-left rounded-xl p-2.5 transition-all" style={{
-                  border: "1.5px solid " + (on ? t.primary : r.overCap ? t.poor : "rgba(255,255,255,0.6)"),
-                  background: on ? t.primarySoft : "rgba(255,255,255,0.5)",
+                  border: "1.5px solid " + (on ? t.primary : r.overCap ? t.poor : glassInnerBorder),
+                  background: on ? t.primarySoft : glassInner,
                   boxShadow: on ? "0 0 0 3px " + t.primarySoft : "none", cursor: "pointer",
                 }}>
                 <div className="flex items-center gap-1.5 mb-1">
                   <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: busColor[r.bus.id] }} />
                   <span className="text-xs font-semibold truncate" style={{ color: t.text }}>{r.bus.name}</span>
                 </div>
-                <div className="h-1 rounded-full overflow-hidden mb-1" style={{ background: "rgba(15,23,42,0.08)" }}>
+                <div className="h-1 rounded-full overflow-hidden mb-1" style={{ background: glassTrack }}>
                   <div className="h-full rounded-full" style={{ width: Math.min(100, r.fill * 100) + "%", background: fillCol }} />
                 </div>
                 <div className="flex items-center justify-between text-[10px]" style={{ color: r.overCap ? t.poor : t.muted }}>
@@ -203,7 +235,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                   <span className="tabular-nums font-semibold">{r.heads}/{r.cap}</span>
                 </div>
                 {on && r.stopIds.length > 0 && (
-                  <div className="flex items-center gap-2 mt-1.5 pt-1.5" style={{ borderTop: "1px solid rgba(15,23,42,0.1)" }}>
+                  <div className="flex items-center gap-2 mt-1.5 pt-1.5" style={{ borderTop: "1px solid " + glassDivider }}>
                     <span className="text-[10px]" style={{ color: t.muted }}>{Math.round(r.ride)}m · ₹{Math.round(r.cost)}</span>
                     <span className="flex-1" />
                     <button type="button" title="Auto-sequence" onClick={(e) => { e.stopPropagation(); editor.autoSequence(r.bus.id); }} style={{ color: t.muted, cursor: "pointer" }}><Wand2 size={12} /></button>
