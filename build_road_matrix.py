@@ -76,21 +76,33 @@ def main():
     ap.add_argument("stops", nargs="?", default="data/bus_stops.csv")
     ap.add_argument("--key", default=os.environ.get("GOOGLE_MAPS_API_KEY", ""))
     ap.add_argument("--go", action="store_true", help="actually spend (default is a dry run)")
+    ap.add_argument("--triangle", action="store_true",
+                    help="assume a->b == b->a: only request upper-triangle+diagonal blocks and mirror (~half cost)")
     ap.add_argument("--probe", action="store_true", help="make ONE ~free test call, then stop")
-    ap.add_argument("--price-per-1000", type=float, default=5.0, help="USD per 1000 elements")
+    ap.add_argument("--price-per-1000", type=float, default=1.50,
+                    help="USD per 1000 elements (India basic Distance Matrix = $1.50; Advanced/traffic = $3.00)")
+    ap.add_argument("--free-cap", type=int, default=70000,
+                    help="free elements/month for this SKU (India basic Distance Matrix = 70,000)")
     ap.add_argument("--sleep", type=float, default=0.05, help="seconds between calls (rate limit)")
     args = ap.parse_args()
 
     nodes = load_nodes(args.stops)
     n = len(nodes)
-    blocks = math.ceil(n / STEP) ** 2
-    elements = n * n
-    est = elements / 1000.0 * args.price_per_1000
+    nb = math.ceil(n / STEP)
+    # block index list to request: full grid, or upper-triangle+diagonal blocks (di >= oi) for --triangle
+    starts = list(range(0, n, STEP))
+    block_pairs = [(oi, di) for oi in starts for di in starts if (not args.triangle or di >= oi)]
+    blocks = len(block_pairs)
+    sizes = {s: min(STEP, n - s) for s in starts}
+    elements = sum(sizes[oi] * sizes[di] for (oi, di) in block_pairs)
+    billable = max(0, elements - args.free_cap)
+    est = billable / 1000.0 * args.price_per_1000
 
-    print(f"Nodes: {n} (1 depot + {n-1} stops)")
-    print(f"Requests: {blocks}  ({STEP}x{STEP} blocks)   Elements billed: {elements:,}")
-    print(f"Estimated cost: ~${est:,.2f}  (at ${args.price_per_1000:.2f}/1000 elements, no traffic)")
-    print("Note: Google gives a $200/mo free credit; this one-time run is then cached forever.")
+    print(f"Nodes: {n} (1 depot + {n-1} stops){'   [TRIANGLE mode: a->b==b->a, mirrored]' if args.triangle else ''}")
+    print(f"Requests: {blocks}  ({STEP}x{STEP} blocks)   Elements: {elements:,}")
+    print(f"Billable: {billable:,}  ({elements:,} - {args.free_cap:,} free/mo)")
+    print(f"Estimated cost: ~${est:,.2f}  (at ${args.price_per_1000:.2f}/1000 elements, India basic Distance Matrix)")
+    print("Note: 70,000 elements/mo are free (per-SKU cap); this one-time run is then cached forever.")
 
     if args.probe:
         if not args.key:
@@ -126,8 +138,7 @@ def main():
 
     t0 = time.time()
     bi = 0
-    for oi in range(0, n, STEP):
-        for di in range(0, n, STEP):
+    for (oi, di) in block_pairs:            # full grid, or upper-triangle+diagonal for --triangle
             bi += 1
             if (oi, di) in done:
                 continue
@@ -143,6 +154,8 @@ def main():
                         mins[R][C] = el["duration"]["value"] / 60.0
                     else:                       # NOT_FOUND / ZERO_RESULTS -> mark; optimize.py falls back
                         km[R][C] = -1.0; mins[R][C] = -1.0
+                    if args.triangle and di > oi:   # off-diagonal upper block -> mirror into the lower half
+                        km[C][R] = km[R][C]; mins[C][R] = mins[R][C]
             done.add((oi, di))
             with open(PARTIAL, "w", encoding="utf-8") as f:
                 json.dump({"n": n, "km": km, "min": mins, "done": [list(b) for b in done]}, f)

@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>200 m stop-merge audit</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body { margin: 0; height: 100%; font-family: Inter, system-ui, sans-serif; }
+    #map { height: 100%; }
+    #panel { position: absolute; top: 10px; right: 10px; z-index: 1000; background: #fff;
+      border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; width: 260px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.15); font-size: 13px; color: #0f172a; }
+    #panel h1 { font-size: 14px; margin: 0 0 6px; }
+    .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+    .muted { color: #64748b; font-size: 12px; }
+    button { margin-top: 8px; width: 100%; padding: 6px; border: 1px solid #e2e8f0;
+      border-radius: 8px; background: #f8fafc; cursor: pointer; font-weight: 600; }
+    button.on { background: #fee2e2; border-color: #ef4444; color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="panel">
+    <h1>200 m merge audit</h1>
+    <div id="stats" class="muted">loading…</div>
+    <div class="row"><span class="sw" style="background:#6366f1"></span> anchor (kept stop)</div>
+    <div class="row"><span class="sw" style="background:#94a3b8"></span> lone stop (no merge)</div>
+    <div class="row"><span class="sw" style="background:#10b981"></span> clean merge (road ≈ straight)</div>
+    <div class="row"><span class="sw" style="background:#ef4444"></span> suspect merge (road ≫ 200 m)</div>
+    <button id="toggle">Show suspect merges only</button>
+    <div class="muted" style="margin-top:8px">Lines join a merged stop to its anchor. Red = the road route between them is far longer than the straight line (Y-road / opposite side). Click any dot for details.</div>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([10.05, 77.85], 10); // initial view so the vector renderer has bounds before markers are added
+    window.map = map; window.suspects = [];
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+    const cleanLayer = L.layerGroup().addTo(map);
+    const suspectLayer = L.layerGroup().addTo(map);
+    let suspectOnly = false;
+
+    fetch('/merge_audit.json').then(r => r.json()).then(d => {
+      const m = d.meta;
+      document.getElementById('stats').innerHTML =
+        `${m.stops_in} stops → <b>${m.stops_out}</b> after merge<br>` +
+        `${m.merged} merged · <b style="color:#ef4444">${m.suspect_merges} suspect</b> (road &gt; ${m.suspect_road_m} m)`;
+      const pts = [];
+      if (d.depot) { L.marker([d.depot.lat, d.depot.lng]).addTo(map).bindPopup('DEPOT: ' + d.depot.name); pts.push([d.depot.lat, d.depot.lng]); }
+
+      d.anchors.forEach(a => {
+        const merged = a.members.length > 0;
+        L.circleMarker([a.lat, a.lng], { radius: Math.min(4 + a.headcount / 6, 11),
+          color: merged ? '#6366f1' : '#94a3b8', weight: merged ? 2 : 1, fillOpacity: .55, fillColor: merged ? '#6366f1' : '#cbd5e1' })
+          .bindPopup(`<b>${a.name}</b><br>anchor · ${a.headcount} riders<br>${a.members.length} stop(s) merged in`)
+          .addTo(map);
+        pts.push([a.lat, a.lng]);
+
+        a.members.forEach(mm => {
+          const sus = mm.suspect;
+          const layer = sus ? suspectLayer : cleanLayer;
+          L.polyline([[a.lat, a.lng], [mm.lat, mm.lng]], { color: sus ? '#ef4444' : '#10b981', weight: sus ? 2.5 : 1.5, opacity: sus ? .9 : .5 }).addTo(layer);
+          if (sus) window.suspects.push({ name: mm.name, anchor: a.name, lat: mm.lat, lng: mm.lng, alat: a.lat, alng: a.lng, straight: mm.straight_m, road: mm.road_m });
+          L.circleMarker([mm.lat, mm.lng], { radius: 4, color: sus ? '#ef4444' : '#10b981', weight: 1.5, fillOpacity: .8, fillColor: '#fff' })
+            .bindPopup(`<b>${mm.name}</b> · ${mm.headcount} riders<br>→ merged into <b>${a.name}</b><br>straight: ${mm.straight_m} m<br>road: <b style="color:${sus ? '#ef4444' : '#10b981'}">${mm.road_m ?? '?'} m</b> ${mm.ratio ? '(×' + mm.ratio + ')' : ''}${sus ? '<br><b style="color:#ef4444">SUSPECT — review</b>' : ''}`)
+            .addTo(layer);
+          pts.push([mm.lat, mm.lng]);
+        });
+      });
+      map.fitBounds(pts);
+    });
+
+    document.getElementById('toggle').onclick = (e) => {
+      suspectOnly = !suspectOnly;
+      e.target.classList.toggle('on', suspectOnly);
+      e.target.textContent = suspectOnly ? 'Show all merges' : 'Show suspect merges only';
+      if (suspectOnly) map.removeLayer(cleanLayer); else map.addLayer(cleanLayer);
+    };
+  </script>
+</body>
+</html>

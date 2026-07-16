@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   LayoutDashboard, GitCompare, Database, Sigma, Settings as SettingsIcon,
   Sun, Moon, Bus, Plus, Trash2, Download, Server, Activity, BarChart3, Pencil, X, ChevronRight, ChevronDown, Search, Calendar, Clock, MapPin,
-  Upload, FileText
+  Upload, FileText, History
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
+import { fetchErpRaw, mapErpToDashboard, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   BarChart, Bar, Cell, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter,
@@ -124,12 +125,60 @@ const CMP_METRICS = [
   ["spend", "Total spend", "₹"], ["present", "Riders", ""],
 ];
 const GRAPH_TYPES = [["line", "Line"], ["bar", "Bar"], ["area", "Area"], ["pie", "Pie"], ["scatter", "Scatter"]];
-const GROUP_BYS = [["company", "By company"], ["bus", "By bus"], ["stop", "By stop"]];
+const GROUP_BYS = [["company", "By company"], ["bus", "By bus"]];
 
 /* hardcoded HR pools — placeholder until the ERP/HR feed is wired by IT (see IT_INTEGRATION_NOTES.md) */
 const DEPTS = ["Cutting", "Stitching", "Finishing", "Quality", "Packing", "Admin"];
 const DESIGS = ["Tailor", "Helper", "Supervisor", "Checker", "Operator", "Line Lead"];
-const GRADES = ["A", "B", "C"];
+
+/* ---- per-bus cost model (recurring profile → daily spend) ----
+   Each bus carries a cost profile { budget:{amount,period}, lines:[{id,type,amount,quantity,period}] }.
+   Every line is normalised to a per-day figure and summed → the bus's daily `spend`,
+   which feeds every existing cost KPI (cost/head, variance, net value). */
+const COST_TYPES = [
+  { key: "diesel", label: "Diesel", qty: true, qtyLabel: "litres / day", period: "day" },
+  { key: "driver", label: "Driver Salary", qty: false, period: "month" },
+  { key: "maint", label: "Maintenance", qty: false, period: "month" },
+  { key: "tires", label: "Tires", qty: true, qtyLabel: "no. of tyres", period: "year" },
+  { key: "tiremaint", label: "Tire maintenance", qty: true, qtyLabel: "no. of tyres", period: "year" },
+  { key: "fc", label: "FC Works", qty: false, period: "year" },
+  { key: "taxes", label: "Taxes", qty: false, period: "year" },
+  { key: "insurance", label: "Insurance", qty: false, period: "year" },
+];
+const COST_TYPE_MAP = Object.fromEntries(COST_TYPES.map((c) => [c.key, c]));
+const COST_PERIODS = [["day", "Per day"], ["month", "Per month"], ["year", "Per year"]];
+/* normalise one amount at a given period to ₹/working-day (wd = effective working days/year) */
+function perDay(amount, period, wd) {
+  const a = +amount || 0;
+  if (period === "day") return a;
+  if (period === "month") return (a * 12) / wd; // annualise the month, spread over working days
+  return a / wd; // per year
+}
+function lineDaily(line, wd) {
+  const spec = COST_TYPE_MAP[line.type];
+  const q = spec && spec.qty ? (line.quantity === "" || line.quantity == null ? 0 : +line.quantity || 0) : 1;
+  return perDay((+line.amount || 0) * q, line.period || (spec && spec.period) || "year", wd);
+}
+function profileDailySpend(prof, wd) { return (prof && prof.lines ? prof.lines : []).reduce((s, l) => s + lineDaily(l, wd), 0); }
+function profileDailyBudget(prof, wd) { const b = prof && prof.budget; return b && b.amount ? perDay(b.amount, b.period || "month", wd) : 0; }
+/* overlay each bus's cost profile onto its records so daily spend/budget flow to every tab */
+function mergeCostsIntoRecords(records, buses, attendance, busCosts, wd) {
+  if (!busCosts || !Object.keys(busCosts).length) return records;
+  const dates = Object.keys(attendance || {});
+  const byKey = new Map(records.map((r) => [r.busId + "|" + r.date, { ...r }]));
+  buses.forEach((b) => {
+    const prof = busCosts[b.id];
+    if (!prof) return;
+    const spend = profileDailySpend(prof, wd), budget = profileDailyBudget(prof, wd);
+    if (!spend && !budget) return;
+    dates.forEach((d) => {
+      const k = b.id + "|" + d;
+      const ex = byKey.get(k) || { busId: b.id, date: d, km: 0 };
+      byKey.set(k, { ...ex, spend, budget });
+    });
+  });
+  return [...byKey.values()];
+}
 
 function metricsFor(rec, bus, workingDays) {
   const present = +rec.present || 0, absent = +rec.absent || 0, cap = +bus.capacity || 0;
@@ -197,7 +246,10 @@ function median(arr) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 function sortedBands(bands) { return [...(bands || DEFAULT_BANDS)].sort((a, b) => b.min - a.min); }
+// up to 150% is fine (full/over-full = green); above 150% is flagged amber as heavily over-loaded
+const OVER_BAND = { id: "over", label: "Over 150%", min: 150, color: "#f59e0b" };
 function bandFor(util, bands) {
+  if (util > 150) return OVER_BAND;
   const bs = sortedBands(bands);
   return bs.find((b) => util >= b.min) || bs[bs.length - 1] || DEFAULT_BANDS[0];
 }
@@ -209,9 +261,14 @@ function bandRankPoints(util, bands) {
   return ratio >= 0.66 ? 2 : ratio >= 0.33 ? 1 : 0;
 }
 function healthOf(m, medCph, s) {
-  let sc = bandRankPoints(m.util, s.bands);
-  if (medCph > 0) { if (m.cph <= medCph) sc += 2; else if (m.cph <= medCph * 1.25) sc += 1; } else sc += 1;
-  if (m.variance >= 0) sc += 2; else if (m.variance >= -0.1 * m.budget) sc += 1;
+  // over 150% is heavily over-loaded → flag as watch; 100–150% is treated as healthy (full)
+  if (m.util > 150) return "watch";
+  const sc0 = bandRankPoints(m.util, s.bands);
+  // no cost data in scope yet → score honestly on utilisation alone (don't hand out phantom points)
+  if (medCph <= 0) return sc0 >= 2 ? "good" : sc0 >= 1 ? "watch" : "poor";
+  let sc = sc0;
+  if (m.cph <= medCph) sc += 2; else if (m.cph <= medCph * 1.25) sc += 1;
+  if (m.budget > 0) { if (m.variance >= 0) sc += 2; else if (m.variance >= -0.1 * m.budget) sc += 1; }
   return sc >= 5 ? "good" : sc >= 3 ? "watch" : "poor";
 }
 /* custom variables -> {name: value} map for the formula scope */
@@ -230,9 +287,12 @@ function fmtFormula(val, f) {
   if (f.unit === "%") return val.toFixed(f.decimals ?? 0) + "%";
   return val.toLocaleString("en-IN", { maximumFractionDigits: f.decimals ?? 1 }) + (f.unit ? " " + f.unit : "");
 }
+// cost-derived metrics return null (→ honest "no data" state) until costs / km exist, rather than a misleading flat 0
 const metricVal = (agg, key) =>
-  key === "cph" ? agg.cph : key === "util" ? agg.util : key === "cpk" ? agg.cpk :
-  key === "spend" ? agg.spend : key === "present" ? agg.present : 0;
+  key === "util" ? agg.util : key === "present" ? agg.present :
+  key === "cph" ? (agg.spend > 0 ? agg.cph : null) :
+  key === "cpk" ? (agg.spend > 0 && agg.km > 0 ? agg.cpk : null) :
+  key === "spend" ? (agg.spend > 0 ? agg.spend : null) : null;
 /* effective working days = configured working days minus declared holidays */
 function effWorkingDays(s) { return Math.max(1, (s.workingDays || 312) - ((s.holidays && s.holidays.length) || 0)); }
 
@@ -259,7 +319,7 @@ const Store = {
 
 /* ============================ SAMPLE DATA ============================ */
 const UNITS = ["Gainup", "Technotek"];
-const SCHEMA = "fleet-v5"; // bump when the data model changes, to re-seed sample data
+const SCHEMA = "fleet-v6"; // bump when the data model changes, to re-seed sample data
 const NAME_POOL = ["A. Kumar", "R. Murugan", "S. Devi", "K. Prakash", "M. Latha", "V. Raja", "P. Selvi", "T. Anand", "N. Gokul", "D. Priya", "B. Suresh", "J. Mary", "L. Karthik", "G. Divya", "H. Ramesh", "C. Anitha", "E. Vijay", "F. Sneha", "I. Manoj", "O. Kavya"];
 function sampleData() {
   const buses = [
@@ -275,7 +335,7 @@ function sampleData() {
       // department/designation/grade/travelMin are HARDCODED placeholders — see IT_INTEGRATION_NOTES.md
       employees.push({
         id: uid(), code: `${b.unit[0]}${bi + 1}-${String(j + 1).padStart(3, "0")}`, name: NAME_POOL[gi % NAME_POOL.length], busId: b.id,
-        department: DEPTS[gi % DEPTS.length], designation: DESIGS[gi % DESIGS.length], grade: GRADES[gi % GRADES.length],
+        department: DEPTS[gi % DEPTS.length], designation: DESIGS[gi % DESIGS.length],
         travelMin: 20 + ((gi * 7) % 50), // 20–69 min placeholder; real value will come from GPS/geo-stop tracking
       });
       gi++;
@@ -304,7 +364,7 @@ function sampleData() {
   ];
   // user-defined variables — independent values you set by hand (not derivable from other data)
   const variables = [{ id: uid(), name: "tailors", value: 40 }];
-  const settings = { showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })) };
+  const settings = { showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true };
   const erp = {};
   return { buses, employees, attendance, records, formulas, variables, settings, erp };
 }
@@ -593,7 +653,7 @@ function BandsEditor({ t, bands, setBands }) {
 }
 
 /* ============================ LIVE (grid + collapsible units) ============================ */
-function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables }) {
+function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onAddCosts }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const [q, setQ] = useState("");
@@ -615,7 +675,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
 
   const ql = q.trim().toLowerCase();
   const matchQ = (x) => !ql || x.bus.vehicle.toLowerCase().includes(ql) || (x.bus.route || "").toLowerCase().includes(ql) || (x.bus.driver || "").toLowerCase().includes(ql);
-  const matchH = (x) => (hfilter === "all" ? true : hfilter === "attention" ? x.h !== "good" : x.h === hfilter);
+  const matchH = (x) => (hfilter === "all" ? true : hfilter === "over" ? x.m.util > 150 : hfilter === "attention" ? x.h !== "good" : x.h === hfilter);
   const rank = { poor: 0, watch: 1, good: 2 };
   const sorters = {
     route: (a, b) => (a.bus.route || "").localeCompare(b.bus.route || ""),
@@ -628,6 +688,9 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
 
   const showUnits = unit === "all" ? UNITS : [unit];
   const agg = aggregate(filtered, wd);
+  const noCosts = agg.spend === 0 && agg.budget === 0; // no per-bus cost cards filled yet
+  const overCount = filtered.filter((x) => x.m.util > 150).length; // heavily over-loaded (>150%)
+  const punched = agg.present + agg.absent;
   const inputBase = { background: t.inputBg, border: "1px solid " + t.border, color: t.text };
 
   const detail = (x) => (
@@ -646,8 +709,8 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         {showNV && <span style={{ color: t.muted }}>Net value <b style={{ color: x.m.netAnnual >= 0 ? t.good : t.poor }}>{inr(x.m.netAnnual)}/yr</b></span>}
       </div>
       {(() => { const emps = busEmps(employees, x.bus.id), day = attendance[x.date] || {}; return emps.length ? (
-        <div className="flex flex-wrap gap-1.5">{emps.map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint;
-          return <span key={e.id} title={e.code} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs" style={{ background: t.surface, border: "1px solid " + t.border, color: t.text }}><span className="w-2 h-2 rounded-full" style={{ background: c }} />{e.name}</span>; })}</div>
+        <div className="flex flex-wrap gap-1.5">{emps.map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
+          return <span key={e.id} title={`${e.code} · ${st === "P" ? "Present" : st === "A" ? "Absent" : "No punch"}`} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs" style={{ background: t.surface, border: "1px solid " + t.border, color: t.text }}><span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold" style={{ background: c + "22", color: c }}>{lab}</span>{e.name}</span>; })}</div>
       ) : <div className="text-xs" style={{ color: t.muted }}>No employees mapped.</div>; })()}
       {formulas.length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs" style={{ color: t.muted }}>{formulas.map((f) => <span key={f.id}>{f.name}: <b style={{ color: t.text }}>{fmtFormula(evalFormula(f.expr, x.m, vmap), f)}</b></span>)}</div>}
     </Reveal>
@@ -658,9 +721,22 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <Tile t={t} label="Riders present" value={agg.present} sub={`of ${agg.cap} seats`} accent={t.good} />
         <Tile t={t} label="Capacity utilisation" value={pct(agg.util)} sub={`${agg.count} buses shown`} accent={t.primary} />
-        <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} accent={t.watch} />
-        <Tile t={t} label={showNV ? "Net value (yr)" : "Cost / km"} value={showNV ? inrK(agg.netAnnual) : inr1(agg.cpk)} sub={showNV ? "budget − spend" : `${agg.km} km`} accent={t.techno} />
+        {noCosts ? <>
+          <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" accent={overCount ? t.watch : t.good} />
+          <Tile t={t} label="Attendance" value={punched ? pct((agg.present / punched) * 100) : "—"} sub={`${agg.present}/${punched} punched`} accent={t.techno} />
+        </> : <>
+          <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} accent={t.watch} />
+          <Tile t={t} label={showNV ? "Net value (yr)" : "Cost / km"} value={showNV ? inrK(agg.netAnnual) : inr1(agg.cpk)} sub={showNV ? "budget − spend" : `${agg.km} km`} accent={t.techno} />
+        </>}
       </div>
+
+      {noCosts && (
+        <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-3 text-sm" style={{ background: t.primarySoft, borderColor: t.primary, color: t.text }}>
+          <Server size={16} style={{ color: t.primary }} />
+          <span>Cost, spend &amp; net-value figures stay blank until each bus's running costs are entered.</span>
+          {onAddCosts && <button onClick={onAddCosts} className="ml-auto rounded-lg px-3 py-1.5 text-xs font-semibold" style={{ background: t.primary, color: t.onPrimary || "#fff" }}>Add bus costs →</button>}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2 mb-4 items-center">
         <div className="relative flex-1" style={{ minWidth: 200 }}>
@@ -673,8 +749,9 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
           <option value="util">Sort: Utilisation high to low</option>
           <option value="health">Sort: Health worst first</option>
         </select>
+        <button onClick={() => setHfilter(hfilter === "over" ? "all" : "over")} className="rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: hfilter === "over" ? "#f59e0b22" : "transparent", border: "1px solid " + (hfilter === "over" ? "#f59e0b" : t.border), color: hfilter === "over" ? t.text : t.muted }}>Over 150%{overCount ? ` (${overCount})` : ""}</button>
         <button onClick={() => setHfilter(hfilter === "attention" ? "all" : "attention")} className="rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: hfilter === "attention" ? t.primarySoft : "transparent", border: "1px solid " + (hfilter === "attention" ? t.primary : t.border), color: hfilter === "attention" ? t.text : t.muted }}>Only Watch / Poor</button>
-        {hfilter !== "all" && hfilter !== "attention" && <button onClick={() => setHfilter("all")} className="rounded-xl px-3 py-2.5 text-sm" style={{ border: "1px solid " + t.border, color: t.muted }}>Clear: {hfilter}</button>}
+        {!["all", "attention", "over"].includes(hfilter) && <button onClick={() => setHfilter("all")} className="rounded-xl px-3 py-2.5 text-sm" style={{ border: "1px solid " + t.border, color: t.muted }}>Clear: {hfilter}</button>}
       </div>
 
       {showUnits.map((u) => {
@@ -702,13 +779,17 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
               <div className="p-3">
                 {list.length === 0 ? <div className="text-sm py-4 text-center" style={{ color: t.muted }}>No buses match.</div> : (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(108px, 1fr))", gap: 8 }}>
-                    {list.map((x) => { const col = hc(x.h); const on = openBus === x.bus.id;
+                    {list.map((x) => { const over = x.m.util > 150; const col = over ? OVER_BAND.color : hc(x.h); const on = openBus === x.bus.id;
+                      const tag = over ? `OVER +${Math.round(x.m.util - 100)}%` : x.h.toUpperCase();
                       return (
                         <button key={x.bus.id} data-fx="bus" onClick={() => setOpenBus(on ? null : x.bus.id)} onMouseEnter={fxLift} onMouseLeave={fxDrop} className="relative text-left rounded-xl p-2.5" style={{ background: t.surface2, border: "1.5px solid " + col, boxShadow: on ? `0 0 0 2px ${t.primary}` : "none" }}>
                           <span className="absolute rounded-full" style={{ right: 8, top: 8, width: 8, height: 8, background: col }} />
                           <div className="text-xs font-semibold truncate" style={{ color: t.text, maxWidth: "84%" }}>{x.bus.vehicle}</div>
-                          <div className="text-xl font-bold tabular-nums mt-1" style={{ color: t.text }}>{pct(x.m.util)}</div>
-                          <div className="text-xs" style={{ color: t.muted }}>util</div>
+                          <div className="flex items-baseline gap-1 mt-1">
+                            <div className="text-xl font-bold tabular-nums" style={{ color: col }}>{pct(x.m.util)}</div>
+                            <div className="text-[10px]" style={{ color: t.muted }}>util</div>
+                          </div>
+                          <div className="text-[10px] font-bold uppercase tracking-wide truncate" style={{ color: col }}>{tag}</div>
                           {showNV && <div className="text-xs font-semibold tabular-nums mt-1" style={{ color: x.m.netAnnual >= 0 ? t.good : t.poor }}>{inrK(x.m.netAnnual)}/yr</div>}
                         </button>
                       ); })}
@@ -801,17 +882,72 @@ function BusDocuments({ t, busId, busLabel, toast }) {
   );
 }
 
+/* ============================ PER-BUS COST CARD ============================ */
+/* Recurring cost profile for one bus: a Budget (amount + period) plus any number of
+   cost lines (Diesel, Driver Salary, Maintenance, Tires, …). Every value is normalised
+   to ₹/day and summed into the bus's daily spend (see mergeCostsIntoRecords). */
+function CostCard({ t, bus, profile, wd, onChange }) {
+  const prof = profile || { budget: { amount: "", period: "month" }, lines: [] };
+  const lines = prof.lines || [];
+  const budget = prof.budget || { amount: "", period: "month" };
+  const set = (next) => onChange({ ...prof, ...next });
+  const setBudget = (patch) => set({ budget: { ...budget, ...patch } });
+  const addLine = () => { const first = COST_TYPES[0]; set({ lines: [...lines, { id: uid(), type: first.key, amount: "", quantity: first.qty ? "" : undefined, period: first.period }] }); };
+  const updLine = (id, patch) => set({ lines: lines.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
+  const delLine = (id) => set({ lines: lines.filter((l) => l.id !== id) });
+  const onType = (id, key) => { const spec = COST_TYPE_MAP[key]; updLine(id, { type: key, period: spec.period, quantity: spec.qty ? (lines.find((l) => l.id === id)?.quantity ?? "") : undefined }); };
+
+  const dailySpend = profileDailySpend(prof, wd);
+  const dailyBudget = profileDailyBudget(prof, wd);
+  const inputBase = { background: t.inputBg, border: "1px solid " + t.border, color: t.text };
+  const cell = "rounded-lg px-2.5 py-2 text-sm outline-none";
+
+  return (
+    <Card t={t} title="Cost breakdown" hint={`Recurring costs for ${bus.vehicle}. Each line is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Saved per bus.`}>
+      {/* Budget */}
+      <div className="flex flex-wrap items-end gap-3 mb-4">
+        <Field t={t} label="Budget (₹)"><input type="number" min="0" value={budget.amount} onChange={(e) => setBudget({ amount: e.target.value })} placeholder="0" className={"w-40 " + cell} style={inputBase} /></Field>
+        <Field t={t} label="Per"><select value={budget.period} onChange={(e) => setBudget({ period: e.target.value })} className={cell} style={inputBase}>{COST_PERIODS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
+        <div className="text-xs pb-2" style={{ color: t.muted }}>= <b style={{ color: t.text }}>{inr(dailyBudget)}</b>/day</div>
+      </div>
+
+      {/* Cost lines */}
+      {lines.length ? (
+        <div className="space-y-2">
+          {lines.map((l) => { const spec = COST_TYPE_MAP[l.type] || {}; return (
+            <div key={l.id} className="flex flex-wrap items-end gap-2 rounded-xl p-2" style={{ background: t.surface2, border: "1px solid " + t.border }}>
+              <Field t={t} label="Type"><select value={l.type} onChange={(e) => onType(l.id, e.target.value)} className={cell} style={inputBase}>{COST_TYPES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}</select></Field>
+              <Field t={t} label={"Amount (₹" + (spec.qty ? " each" : "") + ")"}><input type="number" min="0" value={l.amount} onChange={(e) => updLine(l.id, { amount: e.target.value })} placeholder="0" className={"w-32 " + cell} style={inputBase} /></Field>
+              {spec.qty && <Field t={t} label={spec.qtyLabel || "Qty"}><input type="number" min="0" value={l.quantity ?? ""} onChange={(e) => updLine(l.id, { quantity: e.target.value })} placeholder="0" className={"w-28 " + cell} style={inputBase} /></Field>}
+              <Field t={t} label="Per"><select value={l.period} onChange={(e) => updLine(l.id, { period: e.target.value })} className={cell} style={inputBase}>{COST_PERIODS.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}</select></Field>
+              <div className="text-xs pb-2 ml-auto whitespace-nowrap" style={{ color: t.muted }}>= <b style={{ color: t.text }}>{inr(lineDaily(l, wd))}</b>/day</div>
+              <button onClick={() => delLine(l.id)} className="rounded-lg p-2 mb-0.5" style={{ border: "1px solid " + t.border, color: t.poor }}><Trash2 size={14} /></button>
+            </div>
+          ); })}
+        </div>
+      ) : <div className="text-sm rounded-xl border border-dashed py-6 text-center" style={{ borderColor: t.border, color: t.muted }}>No costs added yet — add Diesel, Driver Salary, Insurance, etc.</div>}
+
+      <div className="flex flex-wrap items-center gap-3 mt-3">
+        <Btn t={t} variant="ghost" onClick={addLine}><Plus size={15} /> Add cost</Btn>
+        <div className="ml-auto flex flex-wrap gap-4 text-sm">
+          <div>Total spend: <b style={{ color: t.text }}>{inr(dailySpend)}</b>/day · <span style={{ color: t.muted }}>{inr(dailySpend * wd / 12)}/mo</span></div>
+          <div>Variance: <b style={{ color: dailyBudget - dailySpend >= 0 ? t.good : t.poor }}>{inr(dailyBudget - dailySpend)}</b>/day</div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 /* ============================ BUS-WISE (Unit → Bus → details) ============================ */
-function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, toast }) {
+function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, onBusCost, toast }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const allDates = useMemo(() => unionDates(records, attendance), [records, attendance]);
   const visBuses = buses.filter((b) => unit === "all" || b.unit === unit);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState({}); // per-company search text: { Gainup: "", Technotek: "" }
   const [sel, setSel] = useState(visBuses[0] ? visBuses[0].id : null);
   const [range, setRange] = useState({ from: "", to: "" });
   const [openEmp, setOpenEmp] = useState(null);
-  const [collapsedUnits, setCollapsedUnits] = useState({}); // unit -> true when collapsed in the bus list
 
   // default the date range to the latest day that has data
   useEffect(() => {
@@ -825,8 +961,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
   if (!buses.length) return <Empty t={t} title="No buses yet" sub="Buses appear once the IT team connects the fleet feed." />;
 
   const medCph = median(buses.map((b) => { const d = busLatestDate(records, employees, attendance, b.id); return d ? metricsFor(resolveRec(records, employees, attendance, b.id, d), b, wd).cph : 0; }).filter((n) => n > 0));
-  const ql = q.trim().toLowerCase();
-  const matches = (b) => !ql || b.vehicle.toLowerCase().includes(ql) || (b.route || "").toLowerCase().includes(ql) || (b.driver || "").toLowerCase().includes(ql);
+  const matchQ = (b, ql) => !ql || b.vehicle.toLowerCase().includes(ql) || (b.route || "").toLowerCase().includes(ql) || (b.driver || "").toLowerCase().includes(ql);
 
   const bus = buses.find((b) => b.id === sel) || visBuses[0] || buses[0];
   const rngDates = datesInRange(records, attendance, range.from, range.to).filter((d) => busHasData(records, employees, attendance, bus.id, d));
@@ -849,46 +984,52 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
   const isRange = range.from !== range.to;
 
   const metricTile = (label, value, color) => (<div className="rounded-xl border p-3" style={{ background: t.surface2, borderColor: t.border }}><div className="text-xs uppercase tracking-wider" style={{ color: t.muted }}>{label}</div><div className="text-lg font-bold tabular-nums mt-1" style={{ color: color || t.text }}>{value}</div></div>);
-  const infoItem = (label, value) => (<div><div className="text-xs" style={{ color: t.muted }}>{label}</div><div className="font-semibold mt-0.5" style={{ color: t.text }}>{value}</div></div>);
+  const infoItem = (label, value) => {
+    const ph = value === RUN_OPTIMISER || value === NEEDS_ERP;
+    return (<div><div className="text-xs" style={{ color: t.muted }}>{label}</div>
+      {ph ? <div title={value} className="text-sm italic mt-0.5" style={{ color: t.faint }}>{value === NEEDS_ERP ? "Not in ERP" : "After optimiser"}</div>
+          : <div className="font-semibold mt-0.5" style={{ color: t.text }}>{value}</div>}</div>);
+  };
+  const optVal = <span title={RUN_OPTIMISER} className="text-sm font-semibold italic leading-tight" style={{ color: t.primary }}>Run optimiser →</span>;
 
   return (
     <div className="flex flex-col md:flex-row gap-4">
-      <div className="md:w-72 shrink-0">
-        <div className="rounded-2xl border" style={{ background: t.surface, borderColor: t.border }}>
-          <div className="p-3" style={{ borderBottom: "1px solid " + t.border }}>
-            <div className="relative">
-              <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: t.muted }} />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search buses..." className="w-full rounded-xl pl-8 pr-3 py-2 text-sm outline-none" style={inputBase} />
-            </div>
-          </div>
-          <div style={{ maxHeight: 460, overflowY: "auto" }} className="p-2">
-            {(unit === "all" ? UNITS : [unit]).map((u) => { const list = buses.filter((b) => b.unit === u && matches(b)); if (!list.length) return null;
-              const isCol = !!collapsedUnits[u];
-              return (
-                <div key={u} className="mb-2">
-                  <button onClick={() => setCollapsedUnits((c) => ({ ...c, [u]: !c[u] }))}
-                    className="w-full flex items-center gap-1.5 text-xs uppercase tracking-wider px-2 py-1.5 rounded-lg" style={{ color: t.muted }}>
-                    <ChevronRight size={13} style={{ transform: isCol ? "none" : "rotate(90deg)", transition: "transform .15s" }} />
-                    <span className="inline-block w-2 h-2 rounded-sm align-middle" style={{ background: u === "Gainup" ? t.gainup : t.techno }} />
-                    <span className="font-semibold">{u}</span>
-                    <span className="ml-auto normal-case tracking-normal">{list.length}</span>
-                  </button>
-                  {!isCol && list.map((b) => { const on = b.id === bus.id;
+      <div className="md:w-72 shrink-0 flex flex-col gap-4 md:sticky md:self-start" style={{ top: 72, maxHeight: "calc(100vh - 150px)" }}>
+        {(unit === "all" ? UNITS : [unit]).map((u) => {
+          const total = buses.filter((b) => b.unit === u).length;
+          const ql = (q[u] || "").trim().toLowerCase();
+          const list = buses.filter((b) => b.unit === u && matchQ(b, ql));
+          return (
+            <div key={u} className="rounded-2xl border flex flex-col min-h-0 flex-1" style={{ background: t.surface, borderColor: t.border }}>
+              <div className="p-3 shrink-0" style={{ borderBottom: "1px solid " + t.border }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: u === "Gainup" ? t.gainup : t.techno }} />
+                  <span className="font-semibold text-sm" style={{ color: t.text }}>{u}</span>
+                  <span className="ml-auto text-xs" style={{ color: t.muted }}>{ql ? `${list.length} / ${total}` : total}</span>
+                </div>
+                <div className="relative">
+                  <Search size={15} style={{ position: "absolute", left: 10, top: 10, color: t.muted }} />
+                  <input value={q[u] || ""} onChange={(e) => setQ((s) => ({ ...s, [u]: e.target.value }))} placeholder={`Search ${u} buses...`} className="w-full rounded-xl pl-8 pr-3 py-2 text-sm outline-none" style={inputBase} />
+                </div>
+              </div>
+              <div className="p-2 overflow-y-auto flex-1 min-h-0">
+                {list.length === 0 ? <div className="text-xs px-2 py-3" style={{ color: t.muted }}>No matching buses.</div>
+                  : list.map((b) => { const on = b.id === bus.id;
                     return <button key={b.id} onClick={() => setSel(b.id)} className="w-full text-left rounded-lg px-2.5 py-2 mb-0.5" style={{ background: on ? t.primarySoft : "transparent", border: "1px solid " + (on ? t.primary : "transparent") }}>
                       <div className="text-sm font-medium truncate" style={{ color: t.text }}>{b.vehicle}</div>
-                      <div className="text-xs truncate" style={{ color: t.muted }}>{b.route}</div>
+                      <div className="text-xs truncate" style={{ color: t.muted }}>{b.route && b.route !== RUN_OPTIMISER ? b.route : (b.type || b.unit)}</div>
                     </button>; })}
-                </div>
-              ); })}
-          </div>
-        </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="flex-1 min-w-0 space-y-4">
         <Card t={t}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div><div className="text-xl font-bold flex items-center gap-2" style={{ color: t.text }}><UnitDot t={t} unit={bus.unit} />{bus.vehicle} {m && <Pill t={t} kind={h} />}</div>
-              <div className="text-sm mt-0.5" style={{ color: t.muted }}>{bus.route} · {bus.unit} · {rangeLabel}</div></div>
+              <div className="text-sm mt-0.5" style={{ color: t.muted }}>{bus.route && bus.route !== RUN_OPTIMISER ? bus.route + " · " : ""}{bus.unit}{bus.type ? " · " + bus.type : ""} · {rangeLabel}</div></div>
             {m && bd && <span className="rounded-full px-3 py-1 text-sm font-semibold" style={{ background: bd.color + "22", color: bd.color }}>{bd.label} · {pct(m.util)}</span>}
           </div>
         </Card>
@@ -909,15 +1050,15 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
               {metricTile("Utilisation", pct(m.util), bd ? bd.color : t.text)}
               {metricTile("Absent", agg.absent)}
               {metricTile("Cost / head", inr(m.cph))}
-              {metricTile("Cost / km", inr1(m.cpk))}
+              {metricTile("Cost / km", agg.km > 0 ? inr1(m.cpk) : optVal)}
               {metricTile("Budget", inr(agg.budget))}
               {metricTile("Spend", inr(agg.spend))}
-              {metricTile("Min ride", minRide != null ? minRide + " min" : "—")}
-              {metricTile("Max ride", maxRide != null ? maxRide + " min" : "—")}
+              {metricTile("Min ride", minRide != null ? minRide + " min" : optVal)}
+              {metricTile("Max ride", maxRide != null ? maxRide + " min" : optVal)}
               {showNV && metricTile("Net value (yr)", inrK(m.netAnnual), m.netAnnual >= 0 ? t.good : t.poor)}
             </div>
           ) : <div className="text-sm" style={{ color: t.muted }}>No attendance / cost data for this bus in the selected range.</div>}
-          <p className="text-xs mt-3" style={{ color: t.muted }}>Min / Max ride time is a placeholder for now — real per-ride travel time will come from GPS / geo-stop tracking (see IT notes).</p>
+          <p className="text-xs mt-3" style={{ color: t.muted }}>Cost/km and ride times show "{RUN_OPTIMISER}" until the route is planned in the Optimiser (that's where per-bus km &amp; travel time are computed). Cost/head, budget, spend &amp; net value come from the cost card below.</p>
         </Card>
 
         {/* Bus & driver info now sit BELOW the metrics */}
@@ -930,9 +1071,11 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
           </Card>
         </div>
 
+        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} onChange={(p) => onBusCost(bus.id, p)} />
+
         <Card t={t} title={`Employees (${emps.length})`} hint="Latest punch status · click an employee for full details">
-          {emps.length ? <div className="flex flex-wrap gap-1.5">{emps.map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint;
-            return <button key={e.id} onClick={() => setOpenEmp(e)} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}><span className="w-2 h-2 rounded-full" style={{ background: c }} />{e.name}</button>; })}</div>
+          {emps.length ? <div className="flex flex-wrap gap-1.5">{emps.map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
+            return <button key={e.id} onClick={() => setOpenEmp(e)} title={st === "P" ? "Present" : st === "A" ? "Absent" : "No punch"} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}><span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold" style={{ background: c + "22", color: c }}>{lab}</span>{e.name}</button>; })}</div>
             : <div className="text-sm" style={{ color: t.muted }}>No employees mapped to this bus.</div>}
         </Card>
 
@@ -963,11 +1106,10 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
             {infoItem("Company", bus.unit)}
             {infoItem("Department", openEmp.department || "—")}
             {infoItem("Designation", openEmp.designation || "—")}
-            {infoItem("Grade", openEmp.grade || "—")}
-            {infoItem("Travel time", openEmp.travelMin != null ? openEmp.travelMin + " min" : "—")}
+            {infoItem("Travel time", openEmp.travelMin != null ? openEmp.travelMin + " min" : optVal)}
             {infoItem("Bus", bus.vehicle)}
           </div>
-          <p className="text-xs mt-4" style={{ color: t.muted }}>Department, designation, grade &amp; travel time are placeholder values until the HR / GPS feed is connected.</p>
+          <p className="text-xs mt-4" style={{ color: t.muted }}>Travel time is filled once the route is planned in the Optimiser. Department &amp; designation come from the ERP.</p>
         </Modal>
       )}
     </div>
@@ -983,7 +1125,8 @@ function ComparePanel({ t, label, buses, records, employees, attendance, setting
     ...CMP_METRICS.map(([k, l]) => ["b:" + k, l]),
     ...formulas.map((f) => ["f:" + f.id, f.name]),
   ];
-  const [cfg, setCfg] = useState({ metric: metricOptions[0] ? metricOptions[0][0] : "b:cph", group: "company", from: "", to: "", buses: [] });
+  // default to Utilisation — it always has data; Cost/head is ₹0 until per-bus cost cards are filled
+  const [cfg, setCfg] = useState({ metric: "b:util", group: "company", filter: "all", from: "", to: "", buses: [] });
   const TT = makeTooltip(t);
 
   const dates = datesInRange(records, attendance, cfg.from, cfg.to);
@@ -996,27 +1139,34 @@ function ComparePanel({ t, label, buses, records, employees, attendance, setting
   };
 
   const scopeBuses = buses.filter((b) => unit === "all" || b.unit === unit);
-  // each line = one bus. "By company" colours every bus by its company; "By bus" gives distinct colours + a picker.
+  // "By company" = one aggregated line per company (Gainup / Technotek). "By bus" = one line per picked bus.
   let series = [];
   if (cfg.group === "company") {
-    series = scopeBuses.map((b) => ({ key: b.id, label: b.vehicle, sub: b.unit + " · " + b.route, color: b.unit === "Gainup" ? t.gainup : t.techno, busId: b.id }));
+    series = (unit === "all" ? UNITS : [unit]).map((u) => ({ key: u, label: u, color: u === "Gainup" ? t.gainup : t.techno, company: u }));
   } else if (cfg.group === "bus") {
-    const chosen = cfg.buses.length ? scopeBuses.filter((b) => cfg.buses.includes(b.id)) : scopeBuses;
+    const chosen = scopeBuses.filter((b) => cfg.buses.includes(b.id)); // only what's picked — no auto-select-all
     series = chosen.map((b, i) => ({ key: b.id, label: b.vehicle, sub: b.unit + " · " + b.route, color: PIE_PALETTE[i % PIE_PALETTE.length], busId: b.id }));
   }
+  const chipBuses = scopeBuses.filter((b) => cfg.filter === "all" || b.unit === cfg.filter); // company filter for the chip list
 
-  // time-series rows: one row per date, one value per bus line
+  // time-series rows: one row per date; company lines aggregate all that company's buses, bus lines are per-bus
   const data = dates.map((d) => {
     const row = { date: d.slice(5) };
     series.forEach((s) => {
-      const bus = buses.find((b) => b.id === s.busId);
-      row[s.key] = bus && busHasData(records, employees, attendance, s.busId, d)
-        ? valueOf([{ bus, rec: resolveRec(records, employees, attendance, s.busId, d) }]) : null;
+      if (s.company) {
+        const ps = pairsForDate(buses, records, employees, attendance, d, s.company);
+        row[s.key] = ps.length ? valueOf(ps) : null;
+      } else {
+        const bus = buses.find((b) => b.id === s.busId);
+        row[s.key] = bus && busHasData(records, employees, attendance, s.busId, d)
+          ? valueOf([{ bus, rec: resolveRec(records, employees, attendance, s.busId, d) }]) : null;
+      }
     });
     return row;
   });
   const hasData = series.length > 0 && data.some((row) => series.some((s) => row[s.key] != null));
-  const toggleBus = (id) => { const cur = cfg.buses.length ? [...cfg.buses] : scopeBuses.map((b) => b.id); const nx = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]; setCfg({ ...cfg, buses: nx }); };
+  const needPick = cfg.group === "bus" && cfg.buses.length === 0;
+  const toggleBus = (id) => setCfg((c) => ({ ...c, buses: c.buses.includes(id) ? c.buses.filter((x) => x !== id) : [...c.buses, id] }));
 
   return (
     <Card t={t} title={label}>
@@ -1029,20 +1179,25 @@ function ComparePanel({ t, label, buses, records, employees, attendance, setting
 
       {cfg.group === "bus" && (
         <div className="mb-3 rounded-xl p-3" style={{ background: t.surface2, border: "1px solid " + t.border }}>
-          <div className="flex items-center gap-3 mb-2">
-            <span className="text-xs uppercase tracking-wider" style={{ color: t.muted }}>Buses</span>
-            <button onClick={() => setCfg({ ...cfg, buses: [] })} className="text-xs font-semibold" style={{ color: t.primary }}>All</button>
+          <div className="flex flex-wrap items-center gap-3 mb-2">
+            <span className="text-xs uppercase tracking-wider" style={{ color: t.muted }}>Show</span>
+            <Segmented t={t} small value={cfg.filter} onChange={(v) => setCfg({ ...cfg, filter: v })}
+              options={[["all", "All", t.primary], ["Gainup", "Gainup", t.gainup], ["Technotek", "Technotek", t.techno]]} />
+            <span className="text-xs" style={{ color: t.muted }}>{cfg.buses.length} selected</span>
+            <button onClick={() => setCfg({ ...cfg, buses: [...new Set([...cfg.buses, ...chipBuses.map((b) => b.id)])] })} className="text-xs font-semibold" style={{ color: t.primary }}>Select all shown</button>
+            {cfg.buses.length > 0 && <button onClick={() => setCfg({ ...cfg, buses: [] })} className="text-xs" style={{ color: t.muted }}>Clear</button>}
           </div>
-          <div className="flex flex-wrap gap-1.5 overflow-auto" style={{ maxHeight: 96 }}>
-            {scopeBuses.map((b) => { const on = cfg.buses.length === 0 || cfg.buses.includes(b.id);
-              return <button key={b.id} onClick={() => toggleBus(b.id)} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium" style={{ background: on ? t.primarySoft : "transparent", border: "1px solid " + (on ? t.primary : t.border), color: on ? t.text : t.muted }}>
-                <span className="w-2 h-2 rounded-sm" style={{ background: b.unit === "Gainup" ? t.gainup : t.techno }} />{b.vehicle}</button>; })}
+          <div className="flex flex-wrap gap-1.5 overflow-auto" style={{ maxHeight: 132 }}>
+            {chipBuses.length === 0 ? <span className="text-xs" style={{ color: t.muted }}>No buses in the current data.</span>
+              : chipBuses.map((b) => { const on = cfg.buses.includes(b.id);
+                return <button key={b.id} onClick={() => toggleBus(b.id)} title={b.unit} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition" style={{ background: on ? t.primarySoft : "transparent", border: "1px solid " + (on ? t.primary : t.border), color: on ? t.text : t.muted }}>
+                  <span className="w-2 h-2 rounded-sm" style={{ background: b.unit === "Gainup" ? t.gainup : t.techno }} />{b.vehicle}</button>; })}
           </div>
         </div>
       )}
 
-      {cfg.group === "stop" ? (
-        <div className="text-sm py-10 text-center" style={{ color: t.muted }}>Stop-level grouping needs the geo-data / stop tracking feed (planned). See IT notes.</div>
+      {needPick ? (
+        <div className="text-sm py-10 text-center" style={{ color: t.muted }}>Pick one or more buses above to plot — you can mix Gainup and Technotek.</div>
       ) : !hasData ? (
         <div className="text-sm py-10 text-center" style={{ color: t.muted }}>No data for this selection.</div>
       ) : (
@@ -1052,12 +1207,12 @@ function ComparePanel({ t, label, buses, records, employees, attendance, setting
               <CartesianGrid strokeDasharray="3 3" stroke={t.grid} vertical={false} />
               <XAxis dataKey="date" tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={{ stroke: t.border }} interval="preserveStartEnd" />
               <YAxis tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
-              <Tooltip content={TT} />
+              <Tooltip content={TT} isAnimationActive={false} />
               {series.length <= 10 && <Legend wrapperStyle={{ fontSize: 11, color: t.muted }} />}
-              {series.map((s) => <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2} dot={{ r: 2 }} connectNulls />)}
+              {series.map((s) => <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={s.color} strokeWidth={2} dot={{ r: 2 }} connectNulls isAnimationActive={false} />)}
             </LineChart>
           </ResponsiveContainer>
-          <p className="text-xs mt-2" style={{ color: t.muted }}>Each line is one bus{cfg.group === "company" ? ", coloured by company" : ""}. Buses sharing a route but on different shifts appear as separate lines.</p>
+          <p className="text-xs mt-2" style={{ color: t.muted }}>{cfg.group === "company" ? "One line per company — every bus in Gainup / Technotek aggregated together." : "One line per selected bus. Use “By company” for a clean two-line comparison."}</p>
         </>
       )}
     </Card>
@@ -1083,14 +1238,16 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
   const wd = effWorkingDays(settings);
   const vmap = varMapOf(variables);
   const allDates = useMemo(() => unionDates(records, attendance), [records, attendance]);
-  const [cfg, setCfg] = useState({ axis: "bus", type: "bar", buses: [], from: "", to: "" });
+  // view: "whole" (Gainup vs Technotek aggregated) | "buses" (individually-picked buses, across companies).
+  // filter only narrows which chips are shown; the selection & plot span both companies.
+  const [cfg, setCfg] = useState({ axis: "bus", view: "whole", filter: "all", type: "bar", buses: [], from: "", to: "" });
   const TT = makeTooltip(t);
   const expr = formula.expr;
 
-  const availBuses = buses.filter((b) => unit === "all" || b.unit === unit);
-  const selBuses = cfg.buses.length ? availBuses.filter((b) => cfg.buses.includes(b.id)) : availBuses;
   const dates = allDates.filter((d) => (!cfg.from || d >= cfg.from) && (!cfg.to || d <= cfg.to));
-  const toggleBus = (id) => { const cur = cfg.buses.length ? [...cfg.buses] : availBuses.map((b) => b.id); const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]; setCfg({ ...cfg, buses: next }); };
+  const chipBuses = buses.filter((b) => cfg.filter === "all" || b.unit === cfg.filter);
+  const selBuses = buses.filter((b) => cfg.buses.includes(b.id)); // selection is global — mix Gainup + Technotek
+  const toggleBus = (id) => setCfg((c) => ({ ...c, buses: c.buses.includes(id) ? c.buses.filter((x) => x !== id) : [...c.buses, id] }));
 
   const timeData = dates.map((d) => {
     const row = { name: d.slice(5) };
@@ -1098,11 +1255,18 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
     const all = pairsForDate(buses, records, employees, attendance, d, "all"); row.Combined = all.length ? evalFormula(expr, scopeFromAgg(aggregate(all, wd)), vmap) : null;
     return row;
   });
-  const busData = selBuses.map((b) => {
+  // "By bus" data: either whole-company aggregates, or the individually-picked buses of one company
+  const latestDate = allDates[allDates.length - 1];
+  const wholeData = UNITS.map((u) => {
+    const ps = latestDate ? pairsForDate(buses, records, employees, attendance, latestDate, u) : [];
+    return { name: u, unit: u, capacity: ps.reduce((s, p) => s + (+p.bus.capacity || 0), 0), value: ps.length ? evalFormula(expr, scopeFromAgg(aggregate(ps, wd)), vmap) : null };
+  }).filter((x) => x.value != null);
+  const perBusData = selBuses.map((b) => {
     const d = busLatestDate(records, employees, attendance, b.id);
     const m = d ? metricsFor(resolveRec(records, employees, attendance, b.id, d), b, wd) : null;
     return { name: b.vehicle, unit: b.unit, capacity: b.capacity, value: m ? evalFormula(expr, m, vmap) : null };
   }).filter((x) => x.value != null);
+  const busData = cfg.view === "whole" ? wholeData : perBusData;
 
   const seriesKeys = cfg.axis === "time" ? (unit === "all" ? ["Gainup", "Technotek", "Combined"] : [unit]) : ["value"];
   const colorFor = (k) => (k === "Gainup" ? t.gainup : k === "Technotek" ? t.techno : t.primary);
@@ -1144,7 +1308,8 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
 
   let chart = null;
   const noData = (cfg.axis === "bus" ? busData.length === 0 : timeData.every((d) => d.Combined == null));
-  if (noData) chart = <div className="text-sm py-10 text-center" style={{ color: t.muted }}>No data to plot.</div>;
+  const needPick = cfg.axis === "bus" && cfg.view === "buses" && cfg.buses.length === 0;
+  if (noData) chart = <div className="text-sm py-10 text-center" style={{ color: t.muted }}>{needPick ? "Pick one or more buses above to plot — you can mix Gainup and Technotek." : "No data to plot."}</div>;
   else if (cfg.type === "line") chart = (
     <ResponsiveContainer width="100%" height={260}><AreaChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
       {Grads()}
@@ -1249,16 +1414,31 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
 
       {cfg.axis === "bus" && (
         <div className="mb-3 rounded-xl p-3" style={{ background: t.surface2, border: "1px solid " + t.border }}>
-          <div className="flex items-center gap-3 mb-2">
-            <span className="text-xs uppercase tracking-wider" style={{ color: t.muted }}>Buses</span>
-            <button onClick={() => setCfg({ ...cfg, buses: [] })} className="text-xs font-semibold" style={{ color: t.primary }}>Select all</button>
-            <span className="text-xs" style={{ color: t.muted }}>{selBuses.length} of {availBuses.length}</span>
+          <div className="flex flex-wrap items-center gap-3 mb-2">
+            <span className="text-xs uppercase tracking-wider" style={{ color: t.muted }}>View</span>
+            <Segmented t={t} small value={cfg.view} onChange={(v) => setCfg({ ...cfg, view: v })}
+              options={[["whole", "Companies", t.primary], ["buses", "Individual buses", t.primary]]} />
           </div>
-          <div className="flex flex-wrap gap-1.5 overflow-auto" style={{ maxHeight: 112 }}>
-            {availBuses.map((b) => { const on = cfg.buses.length === 0 || cfg.buses.includes(b.id);
-              return <button key={b.id} onClick={() => toggleBus(b.id)} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition" style={{ background: on ? t.primarySoft : "transparent", border: "1px solid " + (on ? t.primary : t.border), color: on ? t.text : t.muted }}>
-                <span className="w-2 h-2 rounded-sm" style={{ background: b.unit === "Gainup" ? t.gainup : t.techno }} />{b.vehicle}</button>; })}
-          </div>
+          {cfg.view === "whole" ? (
+            <div className="text-xs" style={{ color: t.muted }}>Comparing Gainup vs Technotek as whole companies, aggregated over the latest day. Switch to “Individual buses” to compare specific buses — you can mix both companies.</div>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-3 mb-2">
+                <span className="text-xs uppercase tracking-wider" style={{ color: t.muted }}>Show</span>
+                <Segmented t={t} small value={cfg.filter} onChange={(v) => setCfg({ ...cfg, filter: v })}
+                  options={[["all", "All", t.primary], ["Gainup", "Gainup", t.gainup], ["Technotek", "Technotek", t.techno]]} />
+                <span className="text-xs" style={{ color: t.muted }}>{selBuses.length} selected</span>
+                <button onClick={() => setCfg({ ...cfg, buses: [...new Set([...cfg.buses, ...chipBuses.map((b) => b.id)])] })} className="text-xs font-semibold" style={{ color: t.primary }}>Select all shown</button>
+                {cfg.buses.length > 0 && <button onClick={() => setCfg({ ...cfg, buses: [] })} className="text-xs" style={{ color: t.muted }}>Clear</button>}
+              </div>
+              <div className="flex flex-wrap gap-1.5 overflow-auto" style={{ maxHeight: 132 }}>
+                {chipBuses.length === 0 ? <span className="text-xs" style={{ color: t.muted }}>No buses in the current data.</span>
+                  : chipBuses.map((b) => { const on = cfg.buses.includes(b.id);
+                    return <button key={b.id} onClick={() => toggleBus(b.id)} title={b.unit} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition" style={{ background: on ? t.primarySoft : "transparent", border: "1px solid " + (on ? t.primary : t.border), color: on ? t.text : t.muted }}>
+                      <span className="w-2 h-2 rounded-sm" style={{ background: b.unit === "Gainup" ? t.gainup : t.techno }} />{b.vehicle}</button>; })}
+              </div>
+            </>
+          )}
         </div>
       )}
       {cfg.axis === "time" && (
@@ -1396,7 +1576,12 @@ function MetricsView({ t, formulas, variables, onAdd, onUpdate, onDel, onAddVar,
 }
 
 /* ============================ SETTINGS ============================ */
-function SettingsView({ t, settings, setSettings, onReset, onExport, toast, themeName, setThemeName }) {
+function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, erpStatus, toast, themeName, setThemeName }) {
+  const [syncing, setSyncing] = useState(false);
+  const doSync = async () => { setSyncing(true); try { await onSyncErp(); } finally { setSyncing(false); } };
+  const erpLabel = erpStatus.phase === "ok" ? `● Live — ${erpStatus.msg}, updated ${fmtClock(erpStatus.at)}`
+    : erpStatus.phase === "syncing" ? "● Syncing…"
+    : erpStatus.phase === "error" ? `● Offline — ${erpStatus.msg}` : "● Not connected yet";
   const setNum = (k) => (e) => setSettings({ ...settings, [k]: parseFloat(e.target.value) || settings[k] });
   const rowStyle = { borderBottom: "1px solid " + t.border };
   const bands = settings.bands || DEFAULT_BANDS;
@@ -1467,15 +1652,41 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, toast, them
         <BandsEditor t={t} bands={bands} setBands={(b) => setSettings({ ...settings, bands: b })} />
       </Card>
 
+      <Card t={t} title="ERP connection" hint="Live buses, employees and attendance from the ERP (VehicleEmpMapDetails). Auto-sync keeps the dashboard current; your per-bus cost cards, custom metrics and settings are always kept.">
+        <div className="flex items-center justify-between py-2 gap-4" style={rowStyle}>
+          <div><div className="font-semibold" style={{ color: t.text }}>Auto-sync (live updates)</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>When on, the dashboard connects to the ERP on load and refreshes every {Math.round(ERP_POLL_MS / 1000)}s. Turn off to freeze on the last pull.</div></div>
+          <div className="shrink-0"><Switch t={t} checked={settings.erpAuto !== false} onChange={(v) => setSettings({ ...settings, erpAuto: v })} /></div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 mt-3">
+          <Btn t={t} onClick={doSync} disabled={syncing}><Server size={15} /> {syncing ? "Syncing…" : "Sync now"}</Btn>
+          <span className="text-xs" style={{ color: erpStatus.phase === "error" ? t.poor : erpStatus.phase === "ok" ? t.good : t.muted }}>{erpLabel}</span>
+        </div>
+        <div className="text-xs mt-3" style={{ color: t.muted }}>Route / driver / phone aren't in this feed → shown as "{NEEDS_ERP}". Per-bus km, ride times &amp; stops come from the Optimiser → "{RUN_OPTIMISER}". In production this call is routed through the backend passthrough; in dev it uses the Vite proxy.</div>
+      </Card>
+
       <Card t={t} title="Data">
         <div className="flex flex-wrap gap-3"><Btn t={t} variant="ghost" onClick={onExport}><Download size={15} /> Export all data (JSON)</Btn><Btn t={t} variant="danger" onClick={onReset}><Trash2 size={15} /> Reset to sample data</Btn></div>
-        <div className="text-xs mt-3" style={{ color: t.muted }}>Live data is connected by the IT team. This local copy is saved on this device between sessions.</div>
+        <div className="text-xs mt-3" style={{ color: t.muted }}>This local copy is saved on this device between sessions. Use “Sync from ERP” above to load live data.</div>
       </Card>
     </div>
   );
 }
 
+/* ============================ PREVIOUSLY USED ROUTE ============================ */
+/* The live-ERP "current routes" view (map + routes table + edit/export), embedded from the
+   self-contained public/routes_map.html so it shares one implementation with the standalone page. */
+function PrevRouteTab({ t }) {
+  return (
+    <div data-fx="card" className="rounded-2xl overflow-hidden border" style={{ borderColor: t.border, background: t.surface }}>
+      <iframe src="/routes_map.html?embed=1" title="Previously used route"
+        style={{ width: "100%", height: "calc(100vh - 150px)", minHeight: 640, border: 0, display: "block", background: t.surface }} />
+    </div>
+  );
+}
+
 /* ============================ APP ============================ */
+const ERP_POLL_MS = 60_000; // auto-refresh the ERP feed every 60s for live updates
+const fmtClock = (ts) => { try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
 function Toast({ t, msg }) {
   const ref = useRef(null);
   useGSAP(() => {
@@ -1496,9 +1707,11 @@ export default function App() {
   const [employees, setEmployees] = useState([]);
   const [attendance, setAttendance] = useState({});
   const [records, setRecords] = useState([]);
+  const [busCosts, setBusCosts] = useState({}); // busId -> { budget, lines[] } recurring cost profile
   const [formulas, setFormulas] = useState([]);
   const [variables, setVariables] = useState([]);
-  const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })) });
+  const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true });
+  const [erpStatus, setErpStatus] = useState({ phase: "idle", at: null, msg: "" }); // idle|syncing|ok|error — live ERP connection
   const [loaded, setLoaded] = useState(false);
   const [toastMsg, setToastMsg] = useState("");
   const toastTimer = useRef();
@@ -1546,12 +1759,13 @@ export default function App() {
       const att = (await Store.get("attendance")) || {};
       const hasData = b && b.length && (recs.length || Object.keys(att).length);
       if (schema === SCHEMA && hasData) {
-        setBuses(b); setRecords(recs); setAttendance(att); setEmployees((await Store.get("employees")) || []); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
+        setBuses(b); setRecords(recs); setAttendance(att); setEmployees((await Store.get("employees")) || []); setBusCosts((await Store.get("busCosts")) || {}); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
         const st = (await Store.get("settings")) || {};
         if (!st.bands || !st.bands.length) st.bands = DEFAULT_BANDS.map((x) => ({ ...x }));
         if (st.workingDays == null) st.workingDays = 312;
         if (st.showNetValue == null) st.showNetValue = true;
         if (!st.holidays) st.holidays = [];
+        if (st.erpAuto == null) st.erpAuto = true;
         setSettings(st);
       } else {
         const s = sampleData(); setBuses(s.buses); setEmployees(s.employees); setAttendance(s.attendance); setRecords(s.records); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings);
@@ -1566,16 +1780,44 @@ export default function App() {
   useEffect(() => { if (loaded) Store.set("employees", employees); }, [employees, loaded]);
   useEffect(() => { if (loaded) Store.set("attendance", attendance); }, [attendance, loaded]);
   useEffect(() => { if (loaded) Store.set("records", records); }, [records, loaded]);
+  useEffect(() => { if (loaded) Store.set("busCosts", busCosts); }, [busCosts, loaded]);
   useEffect(() => { if (loaded) Store.set("formulas", formulas); }, [formulas, loaded]);
   useEffect(() => { if (loaded) Store.set("variables", variables); }, [variables, loaded]);
   useEffect(() => { if (loaded) Store.set("settings", settings); }, [settings, loaded]);
   useEffect(() => { if (loaded) Store.set("theme", themeName); }, [themeName, loaded]);
 
-  const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
-  const resetAll = () => { const s = sampleData(); setBuses(s.buses); setEmployees(s.employees); setAttendance(s.attendance); setRecords(s.records); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Reset to sample data"); };
+  // records the tabs actually read: base records with each bus's cost profile overlaid as daily spend/budget
+  const wd = effWorkingDays(settings);
+  const effRecords = useMemo(() => mergeCostsIntoRecords(records, buses, attendance, busCosts, wd), [records, buses, attendance, busCosts, wd]);
+  const setBusCost = (busId, prof) => setBusCosts((c) => ({ ...c, [busId]: prof }));
 
-  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", MapPin], ["bus", "Bus-wise", Bus], ["compare", "Compare", GitCompare], ["equations", "Equations", BarChart3], ["metrics", "Metrics", Sigma], ["settings", "Settings", SettingsIcon]];
-  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", equations: "Equations", metrics: "Custom metrics", optimiser: "", settings: "Settings" };
+  const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
+  const resetAll = () => { const s = sampleData(); setBuses(s.buses); setEmployees(s.employees); setAttendance(s.attendance); setRecords(s.records); setBusCosts({}); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Reset to sample data"); };
+  // silent = auto/background refresh (no toast, no tab jump); loud = manual button press
+  const syncErp = useCallback(async ({ silent = false } = {}) => {
+    setErpStatus((s) => ({ ...s, phase: "syncing" }));
+    if (!silent) toast("Syncing from ERP…");
+    try {
+      const data = mapErpToDashboard(await fetchErpRaw());
+      setBuses(data.buses); setEmployees(data.employees); setAttendance(data.attendance); setRecords(data.records);
+      setErpStatus({ phase: "ok", at: Date.now(), msg: `${data.buses.length} buses · ${data.employees.length} employees` });
+      if (!silent) { setTab("live"); toast(`ERP synced · ${data.buses.length} buses · ${data.employees.length} employees`); }
+    } catch (e) {
+      setErpStatus((s) => ({ ...s, phase: "error", msg: e.message || String(e) }));
+      if (!silent) toast("ERP sync failed: " + (e.message || e));
+    }
+  }, []);
+
+  // live connection: sync once on load and then poll while auto-sync is on
+  useEffect(() => {
+    if (!loaded || !settings.erpAuto) return;
+    syncErp({ silent: true });
+    const id = setInterval(() => syncErp({ silent: true }), ERP_POLL_MS);
+    return () => clearInterval(id);
+  }, [loaded, settings.erpAuto, syncErp]);
+
+  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", MapPin], ["prevroute", "Prev. route", History], ["bus", "Bus-wise", Bus], ["compare", "Compare", GitCompare], ["equations", "Equations", BarChart3], ["metrics", "Metrics", Sigma], ["settings", "Settings", SettingsIcon]];
+  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", equations: "Equations", metrics: "Custom metrics", optimiser: "", prevroute: "Previously used route", settings: "Settings" };
 
   return (
     <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif" }}>
@@ -1588,7 +1830,19 @@ export default function App() {
           <div className="flex gap-1 overflow-x-auto shrink-0">
             {TABS.map(([k, l, Icon]) => { const on = tab === k; return <button key={k} data-fx="tab" onClick={() => setTab(k)} className="flex items-center gap-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition" style={{ color: on ? t.primary : t.muted, borderBottom: "2px solid " + (on ? t.primary : "transparent") }}><Icon size={16} /> {l}</button>; })}
           </div>
-          <div className="flex-1" />
+          <div className="flex-1 flex justify-end min-w-0">
+            {(() => {
+              const p = erpStatus.phase;
+              const dot = p === "ok" ? t.good : p === "syncing" ? t.watch : p === "error" ? t.poor : t.faint;
+              const label = p === "syncing" ? "Syncing…" : p === "error" ? "ERP offline" : p === "ok" ? `Live · ${fmtClock(erpStatus.at)}` : "Connecting…";
+              return (
+                <button onClick={() => syncErp()} title={erpStatus.msg ? `${erpStatus.msg}${erpStatus.at ? " · updated " + fmtClock(erpStatus.at) : ""}` : "Sync from ERP now"}
+                  className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold whitespace-nowrap" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}>
+                  <span className="w-2 h-2 rounded-full" style={{ background: dot }} />{label}
+                </button>
+              );
+            })()}
+          </div>
         </div>
       </div>
 
@@ -1599,10 +1853,10 @@ export default function App() {
         </div>}
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (
           <>
-            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={records} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} />}
-            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={records} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} toast={toast} />}
-            {tab === "compare" && <CompareView t={t} unit={unit} buses={buses} records={records} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
-            {tab === "equations" && <EquationsView t={t} unit={unit} buses={buses} records={records} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} />}
+            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onAddCosts={() => setTab("bus")} />}
+            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} onBusCost={setBusCost} toast={toast} />}
+            {tab === "compare" && <CompareView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
+            {tab === "equations" && <EquationsView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} />}
             {tab === "metrics" && <MetricsView t={t} formulas={formulas} variables={variables} toast={toast}
               onAdd={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}
               onUpdate={(f) => { setFormulas(formulas.map((x) => (x.id === f.id ? f : x))); toast("Metric updated"); }}
@@ -1611,7 +1865,8 @@ export default function App() {
               onUpdateVar={(v) => setVariables(variables.map((x) => (x.id === v.id ? v : x)))}
               onDelVar={(id) => setVariables(variables.filter((v) => v.id !== id))} />}
             {tab === "optimiser" && <OptimiserTab t={t} toast={toast} />}
-            {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} toast={toast} themeName={themeName} setThemeName={setThemeName} />}
+            {tab === "prevroute" && <PrevRouteTab t={t} />}
+            {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} toast={toast} themeName={themeName} setThemeName={setThemeName} />}
           </>
         )}
       </div>
