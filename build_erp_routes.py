@@ -151,7 +151,13 @@ def main():
         "depot": {"name": "FACTORY", "lat": DEPOT[0], "lng": DEPOT[1]},
         "buses": buses,
     }
-    json.dump(out, open("public/current_routes.json", "w"))
+    # Full data (employee names + villages) — LOCAL ONLY, gitignored, powers name lookup/export offline.
+    json.dump(out, open("public/current_routes.full.json", "w"))
+    # Anonymized copy for the PUBLIC deploy: drop per-employee members, keep headcounts.
+    pub = {"meta": {**out["meta"], "anonymized": True}, "depot": out["depot"],
+           "buses": [{**b, "stops": [{k: v for k, v in s.items() if k != "members"} for s in b["stops"]]}
+                     for b in out["buses"]]}
+    json.dump(pub, open("public/current_routes.json", "w"))
     m = out["meta"]
     print(f"{m['vehicles']} vehicles · {m['riders']} riders ({m['riders_placed']} placed) · {m['stops']} stops · "
           f"{m['road_paths']}/{m['vehicles']} road paths")

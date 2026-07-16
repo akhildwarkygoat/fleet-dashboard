@@ -25,5 +25,6 @@ data/stops_live.json
 data/stops_merged.json
 data/merge_audit.json
 data/bus_stops.csv
-public/current_routes.json
+public/current_routes.full.json
 public/merge_audit.json
+# public/current_routes.json is the ANONYMIZED build (no names) — committed so the deploy has data

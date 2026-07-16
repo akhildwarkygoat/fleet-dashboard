@@ -114,7 +114,11 @@
     const hav = (a, b) => { const R = 6371, r = x => x * Math.PI / 180, d1 = r(b[0]-a[0]), d2 = r(b[1]-a[1]);
       const h = Math.sin(d1/2)**2 + Math.cos(r(a[0]))*Math.cos(r(b[0]))*Math.sin(d2/2)**2; return 2*R*Math.asin(Math.sqrt(h)); };
 
-    fetch('/current_routes.json').then(r => r.json()).then(d => {
+    (async () => {
+      // full data (with employee names) is local-only + gitignored; the deploy has the anonymized copy
+      let d;
+      try { const r = await fetch('/current_routes.full.json'); if (r.ok) d = await r.json(); } catch (e) {}
+      if (!d) d = await (await fetch('/current_routes.json')).json();
       buses = d.buses;
       buses.forEach(b => b.stops.forEach(s => { const e = edits[editId(b.name, s)]; if (e) { if (e.name != null) s.name = e.name; if (e.hc != null) s.hc = e.hc; } }));
       const owned = buses.filter(b => b.type !== 'rental').length;
@@ -138,7 +142,7 @@
         g.addTo(map); layers.push(g);
       });
       renderRows();
-    });
+    })();
 
     /* ---------- routes table ---------- */
     function filteredList() {
@@ -216,16 +220,17 @@
         <label>Stop name</label><input id="ed-name" value="${esc(s.name)}" />
         <label>Headcount</label><input id="ed-hc" type="number" min="0" value="${s.hc}" />
         <button class="save" onclick="saveStop(${bi},${si})">Save</button>
-        <button class="see" id="see-btn" onclick="toggleEmps(${bi},${si})">▸ See employees (${s.members.length})</button>
+        <button class="see" id="see-btn" onclick="toggleEmps(${bi},${si})">▸ See employees (${s.hc})</button>
         <div class="emps" id="emp-list"></div></div>`;
     }
     function toggleEmps(bi, si) {
       const s = buses[bi].stops[si], el = document.getElementById('emp-list'), btn = document.getElementById('see-btn');
-      if (el.innerHTML) { el.innerHTML = ''; btn.textContent = `▸ See employees (${s.members.length})`; }
-      else {
-        el.innerHTML = s.members.map(m => `<div><b>${esc(m.name || '—')}</b>${m.village ? ' · <span style="color:#64748b">' + esc(m.village) + '</span>' : ''}</div>`).join('') || '<div style="color:#94a3b8">none</div>';
-        btn.textContent = `▾ Hide employees (${s.members.length})`;
-      }
+      if (el.innerHTML) { el.innerHTML = ''; btn.textContent = `▸ See employees (${s.hc})`; return; }
+      if (s.members && s.members.length)  // full (local) data has names
+        el.innerHTML = s.members.map(m => `<div><b>${esc(m.name || '—')}</b>${m.village ? ' · <span style="color:#64748b">' + esc(m.village) + '</span>' : ''}</div>`).join('');
+      else  // anonymized (public) data — names withheld
+        el.innerHTML = `<div style="color:#64748b">${s.hc} employee(s) mapped here · names hidden on the public link</div>`;
+      btn.textContent = `▾ Hide employees (${s.hc})`;
     }
     function saveStop(bi, si) {
       const b = buses[bi], s = b.stops[si];
@@ -242,10 +247,19 @@
     function exportXlsx() {
       const rows = [];
       const use = sel.length ? sel.map(i => buses[i]) : buses; // export selected routes only when any are ticked
-      use.forEach(b => b.stops.forEach(s => s.members.forEach(m => rows.push({
-        Stop: s.name, Latitude: s.lat, Longitude: s.lng, Bus: b.name, Headcount: s.hc, Village: m.village || '', Employee: m.name || '' }))));
-      const ws = XLSX.utils.json_to_sheet(rows, { header: ['Stop', 'Latitude', 'Longitude', 'Bus', 'Headcount', 'Village', 'Employee'] });
-      ws['!cols'] = [{ wch: 22 }, { wch: 11 }, { wch: 11 }, { wch: 13 }, { wch: 10 }, { wch: 20 }, { wch: 24 }];
+      const hasNames = buses.some(b => b.stops.some(s => s.members && s.members.length)); // full local data?
+      let header;
+      if (hasNames) {  // one row per employee (with names + village)
+        use.forEach(b => b.stops.forEach(s => (s.members || []).forEach(m => rows.push({
+          Stop: s.name, Latitude: s.lat, Longitude: s.lng, Bus: b.name, Headcount: s.hc, Village: m.village || '', Employee: m.name || '' }))));
+        header = ['Stop', 'Latitude', 'Longitude', 'Bus', 'Headcount', 'Village', 'Employee'];
+      } else {         // anonymized public data — one row per stop, headcounts only
+        use.forEach(b => b.stops.forEach(s => rows.push({
+          Stop: s.name, Latitude: s.lat, Longitude: s.lng, Bus: b.name, Headcount: s.hc })));
+        header = ['Stop', 'Latitude', 'Longitude', 'Bus', 'Headcount'];
+      }
+      const ws = XLSX.utils.json_to_sheet(rows, { header });
+      ws['!cols'] = header.map(h => ({ wch: h === 'Employee' ? 24 : h === 'Stop' || h === 'Village' ? 20 : 12 }));
       const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Stops');
       XLSX.writeFile(wb, 'previously_used_routes.xlsx');
     }
