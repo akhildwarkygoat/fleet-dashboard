@@ -1678,7 +1678,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
 function PrevRouteTab({ t }) {
   // no white card wrapper — the embedded page sits on the dashboard's own background (like the Optimiser tab)
   return (
-    <iframe src="/routes_map.html?embed=1" title="Previously used route"
+    <iframe src="/routes_map.html?embed=1" title="Previously used route" allow="fullscreen"
       style={{ width: "100%", height: "calc(100vh - 108px)", minHeight: 640, border: 0, display: "block", background: t.bg }} />
   );
 }
