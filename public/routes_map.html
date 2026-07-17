@@ -177,7 +177,8 @@
       document.getElementById('export').innerHTML = svg('download') + (sel.length ? ` Export (${sel.length})` : ' Export');
     }
     function toggleBus(i) {
-      const k = sel.indexOf(i); if (k >= 0) sel.splice(k, 1); else sel.push(i);
+      // single-select like the Planner: clicking a bus shows ONLY that route; click it again to clear
+      sel = (sel.length === 1 && sel[0] === i) ? [] : [i];
       applyMap(); renderBuses();
     }
     function applyMap() {
