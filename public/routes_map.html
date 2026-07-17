@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Previously used route — live ERP</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <style>
     :root { --bg:#eef2f7; --surface:#fff; --surface2:#f8fafc; --border:#e2e8f0; --text:#0f172a; --muted:#64748b;
       --faint:#94a3b8; --primary:#6366f1; --primarySoft:#eef2ff; --good:#10b981; --watch:#f59e0b; --poor:#f43f5e;
@@ -88,6 +89,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <script>
     if (new URLSearchParams(location.search).has('embed')) document.body.classList.add('embed');
@@ -98,12 +100,31 @@
     const edits = JSON.parse(localStorage.getItem(EKEY) || '{}');
     const map = L.map('map').setView(DEPOT, 10);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
-    L.marker(DEPOT).addTo(map).bindPopup('<b>FACTORY</b> (depot)');
-    let buses = [], layers = [], sel = [], filter = 'all', q = '';
+
+    // Planner-style icons: coloured headcount dots, indigo cluster bubbles (sum of riders), factory depot pin
+    function stopDot(color, hc, on) {
+      const size = on ? 30 : 22, ring = on ? `box-shadow:0 0 0 3px #fff,0 0 0 5px ${color};` : 'box-shadow:0 1px 3px rgba(0,0,0,.35);';
+      return L.divIcon({ className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+        html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:2px solid #fff;${ring}display:flex;align-items:center;justify-content:center;color:#fff;font:700 ${on ? 12 : 10}px/1 Inter,system-ui">${hc}</div>` });
+    }
+    function factoryPin() {
+      return L.divIcon({ className: '', iconSize: [40, 50], iconAnchor: [20, 50],
+        html: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="50" viewBox="0 0 46 58"><path d="M23 57 C12 41 2.5 33.5 2.5 21 A20.5 20.5 0 1 1 43.5 21 C43.5 33.5 34 41 23 57 Z" fill="#0f172a" stroke="#fff" stroke-width="2.5"/><g transform="translate(11 9)" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M17 18h1"/><path d="M12 18h1"/><path d="M7 18h1"/></g></svg>' });
+    }
+    function makeCluster(cluster) {
+      const total = cluster.getAllChildMarkers().reduce((s, m) => s + (m.options.headcount || 0), 0);
+      const size = total < 25 ? 36 : total < 100 ? 44 : total < 300 ? 52 : 62, fs = total >= 1000 ? 11 : total >= 100 ? 12.5 : 13.5;
+      return L.divIcon({ className: '', iconSize: [size, size],
+        html: `<div style="width:${size}px;height:${size}px;position:relative"><div style="position:absolute;inset:0;border-radius:50%;background:#6366f1;opacity:.2"></div><div style="position:absolute;inset:7px;border-radius:50%;background:#6366f1;border:2.5px solid #fff;display:flex;align-items:center;justify-content:center;color:#fff;font:700 ${fs}px/1 Inter,system-ui">${total}</div></div>` });
+    }
+    const cluster = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 60, iconCreateFunction: makeCluster }).addTo(map);
+    const polyLayer = L.layerGroup().addTo(map);
+    L.marker(DEPOT, { icon: factoryPin(), zIndexOffset: 1000 }).bindTooltip('FACTORY (depot)', { direction: 'top', offset: [0, -44] }).addTo(map);
+
+    let buses = [], sel = [], filter = 'all', q = '';
 
     const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
     const editId = (bn, s) => `${bn}|${s.lat},${s.lng}`;
-    const radiusFor = hc => Math.max(3, Math.min(3 + hc / 2.5, 13));
     const utilOf = b => b.seat ? (b.riders / b.seat) * 100 : 0;
     const pct = n => Math.round(n) + '%';
     const hav = (a, b) => { const R = 6371, r = x => x * Math.PI / 180, d1 = r(b[0]-a[0]), d2 = r(b[1]-a[1]);
@@ -125,17 +146,19 @@
         ['Stops', d.meta.stops.toLocaleString(), `${(d.meta.stops / d.meta.vehicles).toFixed(0)} avg/bus`, 'var(--gainup)'],
       ].map(([l, v, s, c]) => `<div class="tile"><span class="bar" style="background:${c}"></span><div class="lab">${l}</div><div class="val">${v}</div><div class="sub">${s}</div></div>`).join('');
 
+      const batch = [];
       buses.forEach((b, bi) => {
         const col = PAL[bi % PAL.length]; b._col = col;
-        const g = L.layerGroup();
-        const line = (b.path && b.path.length > 1) ? b.path : [DEPOT, ...b.stops.map(s => [s.lat, s.lng])];
-        L.polyline(line, { color: col, weight: 2, opacity: .5 }).addTo(g);
+        b._poly = (b.path && b.path.length > 1) ? b.path : [DEPOT, ...b.stops.map(s => [s.lat, s.lng])];
         b.stops.forEach((s, si) => {
-          const mk = L.circleMarker([s.lat, s.lng], { radius: radiusFor(s.hc), color: col, weight: 1.5, fillColor: col, fillOpacity: .6 }).bindPopup(() => popupHtml(bi, si));
-          s._marker = mk; mk.addTo(g);
+          const mk = L.marker([s.lat, s.lng], { icon: stopDot(col, s.hc, false), headcount: s.hc });
+          mk.bindTooltip(`<div style="font:600 12px/1.35 Inter,system-ui"><b>${esc(s.name)}</b><br><span style="color:${col};font-weight:700">&#128652; ${esc(b.name)}</span> · ${s.hc} rider(s)</div>`, { direction: 'top', offset: [0, -12] });
+          mk.bindPopup(() => popupHtml(bi, si));
+          s._marker = mk; s._col = col;
+          batch.push(mk);
         });
-        g.addTo(map); layers.push(g);
       });
+      cluster.addLayers(batch);
       renderRows();
     })();
 
@@ -195,16 +218,9 @@
       if (sel.length) document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
     function applyMap() {
-      layers.forEach((g, k) => {
-        const shown = sel.length === 0 || sel.includes(k);
-        g.eachLayer(l => {
-          if (!l.setStyle) return;
-          const isLine = l instanceof L.Polyline && !(l instanceof L.CircleMarker);
-          l.setStyle(isLine ? { opacity: shown ? (sel.includes(k) ? 1 : .5) : .05, weight: sel.includes(k) ? 4 : 2 }
-            : { opacity: shown ? .7 : .08, fillOpacity: shown ? .6 : .04 });
-          if (sel.includes(k) && l.bringToFront) l.bringToFront();
-        });
-      });
+      // clean default = just clusters; selecting routes overlays their road paths (like the Planner)
+      polyLayer.clearLayers();
+      sel.forEach(i => { const b = buses[i]; if (b._poly && b._poly.length > 1) L.polyline(b._poly, { color: b._col, weight: 4, opacity: .9 }).addTo(polyLayer); });
       if (sel.length) { const pts = sel.flatMap(i => [DEPOT, ...buses[i].stops.map(s => [s.lat, s.lng])]); if (pts.length > 1) map.fitBounds(pts, { padding: [40, 40] }); }
     }
 
@@ -234,7 +250,7 @@
       s.name = nm || s.name; s.hc = hc;
       edits[editId(b.name, s)] = { name: s.name, hc: s.hc };
       localStorage.setItem(EKEY, JSON.stringify(edits));
-      if (s._marker) { s._marker.setRadius(radiusFor(hc)); s._marker.setPopupContent(popupHtml(bi, si)); }
+      if (s._marker) { s._marker.setIcon(stopDot(s._col, hc, false)); s._marker.options.headcount = hc; s._marker.setPopupContent(popupHtml(bi, si)); if (cluster.refreshClusters) cluster.refreshClusters(s._marker); }
       renderRows();
     }
 
