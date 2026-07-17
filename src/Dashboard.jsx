@@ -1676,11 +1676,10 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
 /* The live-ERP "current routes" view (map + routes table + edit/export), embedded from the
    self-contained public/routes_map.html so it shares one implementation with the standalone page. */
 function PrevRouteTab({ t }) {
+  // no white card wrapper — the embedded page sits on the dashboard's own background (like the Optimiser tab)
   return (
-    <div data-fx="card" className="rounded-2xl overflow-hidden border" style={{ borderColor: t.border, background: t.surface }}>
-      <iframe src="/routes_map.html?embed=1" title="Previously used route"
-        style={{ width: "100%", height: "calc(100vh - 150px)", minHeight: 640, border: 0, display: "block", background: t.surface }} />
-    </div>
+    <iframe src="/routes_map.html?embed=1" title="Previously used route"
+      style={{ width: "100%", height: "calc(100vh - 108px)", minHeight: 640, border: 0, display: "block", background: t.bg }} />
   );
 }
 
@@ -1817,7 +1816,7 @@ export default function App() {
   }, [loaded, settings.erpAuto, syncErp]);
 
   const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", MapPin], ["prevroute", "Prev. route", History], ["bus", "Bus-wise", Bus], ["compare", "Compare", GitCompare], ["equations", "Equations", BarChart3], ["metrics", "Metrics", Sigma], ["settings", "Settings", SettingsIcon]];
-  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", equations: "Equations", metrics: "Custom metrics", optimiser: "", prevroute: "Previously used route", settings: "Settings" };
+  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", equations: "Equations", metrics: "Custom metrics", optimiser: "", prevroute: "", settings: "Settings" };
 
   return (
     <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif" }}>

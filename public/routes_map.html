@@ -13,7 +13,7 @@
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, system-ui, sans-serif; }
     .page { max-width: 1240px; margin: 0 auto; padding: 22px 24px 60px; }
-    body.embed { background: transparent; }
+    body.embed { background: var(--bg); }  /* match the dashboard's grey bg (like the Optimiser tab) */
     body.embed .page { max-width: none; padding: 4px 2px 28px; }
     body.embed > .page > .head > h1 { display: none; }
     .head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 18px; }
