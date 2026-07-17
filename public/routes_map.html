@@ -62,11 +62,6 @@
   <div class="page">
     <div class="head">
       <h1>Previously used route</h1>
-      <div class="seg" id="filter">
-        <button data-f="all" class="on">Combined</button>
-        <button data-f="owned">Owned</button>
-        <button data-f="rental">Rental</button>
-      </div>
       <button class="btn" id="export">⬇ Export to Excel</button>
     </div>
 
@@ -264,8 +259,6 @@
       XLSX.writeFile(wb, 'previously_used_routes.xlsx');
     }
 
-    document.getElementById('filter').onclick = e => { if (!e.target.dataset.f) return; filter = e.target.dataset.f;
-      [...e.currentTarget.children].forEach(c => c.classList.toggle('on', c.dataset.f === filter)); renderRows(); };
     document.getElementById('search').oninput = e => { q = e.target.value.trim().toLowerCase(); renderRows(); };
     document.getElementById('export').onclick = exportXlsx;
   </script>
