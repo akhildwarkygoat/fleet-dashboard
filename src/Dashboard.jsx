@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   LayoutDashboard, GitCompare, Database, Sigma, Settings as SettingsIcon,
   Sun, Moon, Bus, Plus, Trash2, Download, Server, Activity, BarChart3, Pencil, X, ChevronRight, ChevronDown, Search, Calendar, Clock, MapPin,
-  Upload, FileText, History
+  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
@@ -23,6 +23,12 @@ gsap.registerPlugin(useGSAP);
 gsap.config({ nullTargetWarn: false }); // page timeline selectors may legitimately match nothing on some tabs
 const prefersReduced = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+/* Entrance ("from") animations set an invisible start-state and rely on GSAP's rAF ticker to
+   tween back to visible. While a browser tab is backgrounded rAF is paused, so a from-tween would
+   hide content and never reveal it. Only run entrances when the tab is actually visible; otherwise
+   render content in its natural (visible) state. */
+const canEntrance = () =>
+  !prefersReduced() && (typeof document === "undefined" || document.visibilityState === "visible");
 
 /* micro-interactions (transform-only → compositor-friendly) */
 const fxLift = (e) => { if (prefersReduced()) return; gsap.to(e.currentTarget, { y: -3, scale: 1.02, duration: 0.22, ease: "power2.out", overwrite: "auto" }); };
@@ -57,7 +63,7 @@ function CountUp({ value }) {
 function Reveal({ children, y = 10, ...rest }) {
   const ref = useRef(null);
   useGSAP(() => {
-    if (prefersReduced()) return;
+    if (!canEntrance()) return;
     gsap.from(ref.current, { autoAlpha: 0, y, duration: 0.35, ease: "power2.out", clearProps: "transform,opacity,visibility" });
   }, { scope: ref });
   return <div ref={ref} {...rest}>{children}</div>;
@@ -394,9 +400,10 @@ function Btn({ t, children, onClick, variant = "primary", className = "", disabl
   return <button title={title} disabled={disabled} onClick={onClick} onMouseDown={fxPress} className={base + " " + className} style={style}>{children}</button>;
 }
 function Pill({ t, kind }) {
-  const map = { good: [t.good, t.goodSoft, "Good"], watch: [t.watch, t.watchSoft, "Watch"], poor: [t.poor, t.poorSoft, "Poor"] };
-  const [c, bg, label] = map[kind];
-  return <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wider" style={{ color: c, background: bg }}><span className="w-1.5 h-1.5 rounded-full" style={{ background: c }} />{label}</span>;
+  // shape + label reinforce colour so status is legible with colour-vision deficiency
+  const map = { good: [t.good, t.goodSoft, "Good", CheckCircle2], watch: [t.watch, t.watchSoft, "Watch", AlertTriangle], poor: [t.poor, t.poorSoft, "Poor", XCircle] };
+  const [c, bg, label, Icon] = map[kind];
+  return <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wider" style={{ color: c, background: bg }}><Icon size={12} strokeWidth={2.5} />{label}</span>;
 }
 function Tile({ t, label, value, sub, accent, deltaColor }) {
   return (
@@ -408,8 +415,9 @@ function Tile({ t, label, value, sub, accent, deltaColor }) {
     </div>
   );
 }
-function Field({ t, label, children }) {
-  return <label className="block"><span className="block text-xs mb-1.5" style={{ color: t.muted }}>{label}</span>{children}</label>;
+function Field({ t, label, children, strong }) {
+  // `strong` = higher-stakes inputs (money, formula) get a more legible label
+  return <label className="block"><span className="block mb-1.5" style={{ color: strong ? t.text : t.muted, fontSize: strong ? 13 : 12, fontWeight: strong ? 600 : 400 }}>{label}</span>{children}</label>;
 }
 function inputStyle(t) { return { background: t.inputBg, border: "1px solid " + t.border, color: t.text }; }
 const TextInput = React.forwardRef(function TextInput({ t, ...p }, ref) {
@@ -419,8 +427,8 @@ const TextInput = React.forwardRef(function TextInput({ t, ...p }, ref) {
 function SelectInput({ t, children, ...p }) {
   return <select {...p} className="w-full rounded-xl px-3 py-2.5 text-sm outline-none" style={inputStyle(t)}>{children}</select>;
 }
-function Switch({ t, checked, onChange }) {
-  return <button onClick={() => onChange(!checked)} className="relative w-12 h-7 rounded-full transition" style={{ background: checked ? t.good : t.border }}>
+function Switch({ t, checked, onChange, label }) {
+  return <button role="switch" aria-checked={checked} aria-label={label} onClick={() => onChange(!checked)} className="relative w-12 h-7 rounded-full transition" style={{ background: checked ? t.good : t.border }}>
     <span className="absolute top-1 w-5 h-5 rounded-full bg-white transition-all" style={{ left: checked ? 26 : 4 }} /></button>;
 }
 function Segmented({ t, value, onChange, options, small }) {
@@ -441,7 +449,7 @@ function Empty({ t, title, sub }) {
 function Modal({ t, title, onClose, children }) {
   const overlayRef = useRef(null);
   useGSAP(() => {
-    if (prefersReduced()) return;
+    if (!canEntrance()) return;
     gsap.from(overlayRef.current, { autoAlpha: 0, duration: 0.25, ease: "power1.out" });
     gsap.from(".fx-modal-card", { autoAlpha: 0, y: 24, scale: 0.96, duration: 0.35, ease: "back.out(1.6)", clearProps: "transform" });
   }, { scope: overlayRef });
@@ -450,7 +458,7 @@ function Modal({ t, title, onClose, children }) {
       <div className="fx-modal-card w-full max-w-md rounded-2xl border" style={{ background: t.surface, borderColor: t.border }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid " + t.border }}>
           <div className="font-semibold" style={{ color: t.text }}>{title}</div>
-          <button onClick={onClose} className="rounded-lg p-1.5" style={{ border: "1px solid " + t.border, color: t.muted }}><X size={15} /></button>
+          <button onClick={onClose} title="Close" aria-label="Close" className="rounded-lg p-1.5" style={{ border: "1px solid " + t.border, color: t.muted }}><X size={15} /></button>
         </div>
         <div className="p-5">{children}</div>
       </div>
@@ -525,7 +533,7 @@ function HolidayCalendar({ t, holidays, setHolidays }) {
         <button onClick={next} className="rounded-lg p-1.5" style={{ border: "1px solid " + t.border, color: t.muted }}><ChevronRight size={15} /></button>
       </div>
       <div className="grid grid-cols-7 gap-1 text-center">
-        {WEEKDAYS.map((w) => <div key={w} className="text-xs py-1" style={{ color: t.faint }}>{w}</div>)}
+        {WEEKDAYS.map((w) => <div key={w} className="text-xs py-1 font-medium" style={{ color: t.muted }}>{w}</div>)}
         {Array.from({ length: firstDow }).map((_, i) => <div key={"b" + i} />)}
         {Array.from({ length: days }).map((_, i) => {
           const d = i + 1, k = ymd(vy, vm, d), on = sel.has(k), today = k === todayK;
@@ -597,7 +605,7 @@ function TokenFormulaEditor({ t, tokens, setTokens, variables }) {
         className="min-h-[48px] rounded-xl px-2.5 py-2 flex flex-wrap items-center gap-1.5 outline-none cursor-text"
         style={{ background: t.inputBg, border: "1px solid " + t.border }}
         onClick={() => boxRef.current && boxRef.current.focus()}>
-        {tokens.length === 0 && <span className="text-sm px-1" style={{ color: t.faint }}>Click variables, operators or digits below to build the formula…</span>}
+        {tokens.length === 0 && <span className="text-sm px-1" style={{ color: t.muted }}>Click variables, operators or digits below to build the formula…</span>}
         {tokens.map((tk, i) => (
           <span key={i} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm font-mono font-semibold" style={chipStyle(tk)}>
             {tk.v}
@@ -640,7 +648,7 @@ function BandsEditor({ t, bands, setBands }) {
             <div className="col-span-2"><input type="color" value={b.color} onChange={(e) => update(b.id, { color: e.target.value })} className="w-full h-10 rounded-lg cursor-pointer" style={{ background: t.inputBg, border: "1px solid " + t.border }} /></div>
             <div className="col-span-6"><TextInput t={t} value={b.label} onChange={(e) => update(b.id, { label: e.target.value })} /></div>
             <div className="col-span-3"><TextInput t={t} type="number" value={b.min} onChange={(e) => update(b.id, { min: parseFloat(e.target.value) || 0 })} /></div>
-            <div className="col-span-1 flex justify-end"><button onClick={() => del(b.id)} disabled={bands.length <= 1} className="rounded-lg p-2 disabled:opacity-40" style={{ border: "1px solid " + t.border, color: t.muted }}><Trash2 size={14} /></button></div>
+            <div className="col-span-1 flex justify-end"><button onClick={() => del(b.id)} disabled={bands.length <= 1} title="Remove band" aria-label="Remove band" className="rounded-lg p-2 disabled:opacity-40" style={{ border: "1px solid " + t.border, color: t.muted }}><Trash2 size={14} /></button></div>
           </div>
         ))}
       </div>
@@ -741,7 +749,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
       <div className="flex flex-wrap gap-2 mb-4 items-center">
         <div className="relative flex-1" style={{ minWidth: 200 }}>
           <Search size={15} style={{ position: "absolute", left: 12, top: 11, color: t.muted }} />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search vehicle, route or driver..." className="w-full rounded-xl pl-9 pr-3 py-2.5 text-sm outline-none" style={inputBase} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search vehicle, route or driver" placeholder="Search vehicle, route or driver..." className="w-full rounded-xl pl-9 pr-3 py-2.5 text-sm outline-none" style={inputBase} />
         </div>
         <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="rounded-xl px-3 py-2.5 text-sm outline-none" style={inputBase}>
           <option value="route">Sort: Route A–Z</option>
@@ -749,8 +757,8 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
           <option value="util">Sort: Utilisation high to low</option>
           <option value="health">Sort: Health worst first</option>
         </select>
-        <button onClick={() => setHfilter(hfilter === "over" ? "all" : "over")} className="rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: hfilter === "over" ? "#f59e0b22" : "transparent", border: "1px solid " + (hfilter === "over" ? "#f59e0b" : t.border), color: hfilter === "over" ? t.text : t.muted }}>Over 150%{overCount ? ` (${overCount})` : ""}</button>
-        <button onClick={() => setHfilter(hfilter === "attention" ? "all" : "attention")} className="rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: hfilter === "attention" ? t.primarySoft : "transparent", border: "1px solid " + (hfilter === "attention" ? t.primary : t.border), color: hfilter === "attention" ? t.text : t.muted }}>Only Watch / Poor</button>
+        <button onClick={() => setHfilter(hfilter === "over" ? "all" : "over")} aria-pressed={hfilter === "over"} className="rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: hfilter === "over" ? t.watchSoft : "transparent", border: "1px solid " + (hfilter === "over" ? t.watch : t.border), color: hfilter === "over" ? t.text : t.muted }}>Over 150%{overCount ? ` (${overCount})` : ""}</button>
+        <button onClick={() => setHfilter(hfilter === "attention" ? "all" : "attention")} aria-pressed={hfilter === "attention"} className="rounded-xl px-3 py-2.5 text-sm font-medium" style={{ background: hfilter === "attention" ? t.primarySoft : "transparent", border: "1px solid " + (hfilter === "attention" ? t.primary : t.border), color: hfilter === "attention" ? t.text : t.muted }}>Only Watch / Poor</button>
         {!["all", "attention", "over"].includes(hfilter) && <button onClick={() => setHfilter("all")} className="rounded-xl px-3 py-2.5 text-sm" style={{ border: "1px solid " + t.border, color: t.muted }}>Clear: {hfilter}</button>}
       </div>
 
@@ -906,7 +914,7 @@ function CostCard({ t, bus, profile, wd, onChange }) {
     <Card t={t} title="Cost breakdown" hint={`Recurring costs for ${bus.vehicle}. Each line is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Saved per bus.`}>
       {/* Budget */}
       <div className="flex flex-wrap items-end gap-3 mb-4">
-        <Field t={t} label="Budget (₹)"><input type="number" min="0" value={budget.amount} onChange={(e) => setBudget({ amount: e.target.value })} placeholder="0" className={"w-40 " + cell} style={inputBase} /></Field>
+        <Field t={t} strong label="Budget (₹)"><input type="number" min="0" value={budget.amount} onChange={(e) => setBudget({ amount: e.target.value })} placeholder="0" className={"w-40 " + cell} style={inputBase} /></Field>
         <Field t={t} label="Per"><select value={budget.period} onChange={(e) => setBudget({ period: e.target.value })} className={cell} style={inputBase}>{COST_PERIODS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
         <div className="text-xs pb-2" style={{ color: t.muted }}>= <b style={{ color: t.text }}>{inr(dailyBudget)}</b>/day</div>
       </div>
@@ -917,11 +925,11 @@ function CostCard({ t, bus, profile, wd, onChange }) {
           {lines.map((l) => { const spec = COST_TYPE_MAP[l.type] || {}; return (
             <div key={l.id} className="flex flex-wrap items-end gap-2 rounded-xl p-2" style={{ background: t.surface2, border: "1px solid " + t.border }}>
               <Field t={t} label="Type"><select value={l.type} onChange={(e) => onType(l.id, e.target.value)} className={cell} style={inputBase}>{COST_TYPES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}</select></Field>
-              <Field t={t} label={"Amount (₹" + (spec.qty ? " each" : "") + ")"}><input type="number" min="0" value={l.amount} onChange={(e) => updLine(l.id, { amount: e.target.value })} placeholder="0" className={"w-32 " + cell} style={inputBase} /></Field>
+              <Field t={t} strong label={"Amount (₹" + (spec.qty ? " each" : "") + ")"}><input type="number" min="0" value={l.amount} onChange={(e) => updLine(l.id, { amount: e.target.value })} placeholder="0" className={"w-32 " + cell} style={inputBase} /></Field>
               {spec.qty && <Field t={t} label={spec.qtyLabel || "Qty"}><input type="number" min="0" value={l.quantity ?? ""} onChange={(e) => updLine(l.id, { quantity: e.target.value })} placeholder="0" className={"w-28 " + cell} style={inputBase} /></Field>}
               <Field t={t} label="Per"><select value={l.period} onChange={(e) => updLine(l.id, { period: e.target.value })} className={cell} style={inputBase}>{COST_PERIODS.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}</select></Field>
               <div className="text-xs pb-2 ml-auto whitespace-nowrap" style={{ color: t.muted }}>= <b style={{ color: t.text }}>{inr(lineDaily(l, wd))}</b>/day</div>
-              <button onClick={() => delLine(l.id)} className="rounded-lg p-2 mb-0.5" style={{ border: "1px solid " + t.border, color: t.poor }}><Trash2 size={14} /></button>
+              <button onClick={() => delLine(l.id)} title="Remove cost line" aria-label="Remove cost line" className="rounded-lg p-2 mb-0.5" style={{ border: "1px solid " + t.border, color: t.poor }}><Trash2 size={14} /></button>
             </div>
           ); })}
         </div>
@@ -987,7 +995,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
   const infoItem = (label, value) => {
     const ph = value === RUN_OPTIMISER || value === NEEDS_ERP;
     return (<div><div className="text-xs" style={{ color: t.muted }}>{label}</div>
-      {ph ? <div title={value} className="text-sm italic mt-0.5" style={{ color: t.faint }}>{value === NEEDS_ERP ? "Not in ERP" : "After optimiser"}</div>
+      {ph ? <div title={value} className="text-sm italic mt-0.5" style={{ color: t.muted }}>{value === NEEDS_ERP ? "Not in ERP" : "After optimiser"}</div>
           : <div className="font-semibold mt-0.5" style={{ color: t.text }}>{value}</div>}</div>);
   };
   const optVal = <span title={RUN_OPTIMISER} className="text-sm font-semibold italic leading-tight" style={{ color: t.primary }}>Run optimiser →</span>;
@@ -1626,7 +1634,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
       <Card t={t}>
         <div className="flex items-center justify-between py-4 gap-4" style={rowStyle}>
           <div><div className="font-semibold" style={{ color: t.text }}>Net Value (profit)</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>Net Value = (Budget − Spend) × working days, annualised. When on, it shows on each Live tile, in the Bus-wise detail, and as a KPI. Off hides it everywhere.</div></div>
-          <div className="shrink-0"><Switch t={t} checked={settings.showNetValue} onChange={(v) => setSettings({ ...settings, showNetValue: v })} /></div>
+          <div className="shrink-0"><Switch t={t} label="Show Net Value" checked={settings.showNetValue} onChange={(v) => setSettings({ ...settings, showNetValue: v })} /></div>
         </div>
         <div className="flex items-center justify-between py-4 gap-4" style={rowStyle}>
           <div><div className="font-semibold" style={{ color: t.text }}>Working days / year</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>Used to annualise the Net Value. Effective working days = this minus the holidays you declare below (currently <b style={{ color: t.text }}>{effWorkingDays(settings)}</b>).</div></div>
@@ -1655,7 +1663,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
       <Card t={t} title="ERP connection" hint="Live buses, employees and attendance from the ERP (VehicleEmpMapDetails). Auto-sync keeps the dashboard current; your per-bus cost cards, custom metrics and settings are always kept.">
         <div className="flex items-center justify-between py-2 gap-4" style={rowStyle}>
           <div><div className="font-semibold" style={{ color: t.text }}>Auto-sync (live updates)</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>When on, the dashboard connects to the ERP on load and refreshes every {Math.round(ERP_POLL_MS / 1000)}s. Turn off to freeze on the last pull.</div></div>
-          <div className="shrink-0"><Switch t={t} checked={settings.erpAuto !== false} onChange={(v) => setSettings({ ...settings, erpAuto: v })} /></div>
+          <div className="shrink-0"><Switch t={t} label="Auto-sync from ERP" checked={settings.erpAuto !== false} onChange={(v) => setSettings({ ...settings, erpAuto: v })} /></div>
         </div>
         <div className="flex flex-wrap items-center gap-3 mt-3">
           <Btn t={t} onClick={doSync} disabled={syncing}><Server size={15} /> {syncing ? "Syncing…" : "Sync now"}</Btn>
@@ -1719,16 +1727,30 @@ export default function App() {
   /* ---- GSAP entrances (clearProps limited to animated props so theme inline styles survive) ---- */
   const headerRef = useRef(null);
   const mainRef = useRef(null);
+  const visitedTabs = useRef(new Set()); // full entrance runs once per tab; revisits get a quick fade
+  const erpDotRef = useRef(null);
   const FX_CLEAR = "transform,opacity,visibility";
   useGSAP(() => { // one-time header entrance
-    if (prefersReduced()) return;
+    if (!canEntrance()) return;
     gsap.timeline({ defaults: { ease: "power2.out" } })
       .from('[data-fx="logo"]', { scale: 0.5, rotation: -12, autoAlpha: 0, duration: 0.45, ease: "back.out(1.7)", clearProps: FX_CLEAR })
       .from('[data-fx="brand"]', { x: -10, autoAlpha: 0, duration: 0.35, clearProps: FX_CLEAR }, "-=0.25")
       .from('[data-fx="tab"]', { y: -8, autoAlpha: 0, duration: 0.3, stagger: 0.05, clearProps: FX_CLEAR }, "-=0.2");
   }, { scope: headerRef });
   useGSAP(() => { // per-tab content entrance: title → KPI tiles → cards → bus grid
-    if (!loaded || prefersReduced()) return;
+    if (!loaded) return;
+    const stale = mainRef.current?.querySelectorAll('[data-fx]');
+    // tab hidden (rAF paused) or reduced-motion → don't animate; wipe any stale hidden state and show
+    if (!canEntrance()) { if (stale && stale.length) gsap.set(stale, { clearProps: "opacity,visibility,transform" }); return; }
+    const firstVisit = !visitedTabs.current.has(tab);
+    visitedTabs.current.add(tab);
+    if (!firstVisit) {
+      // returning to an already-seen tab: keep flipping snappy — quick fade of headers/tiles only,
+      // and never re-stagger the (potentially dozens of) bus tiles.
+      gsap.from('[data-fx="page-title"], [data-fx="tile"], [data-fx="card"]',
+        { autoAlpha: 0, y: 6, duration: 0.22, ease: "power2.out", stagger: 0.02, clearProps: FX_CLEAR });
+      return;
+    }
     gsap.timeline({ defaults: { ease: "power2.out" } })
       .from('[data-fx="page-title"]', { y: 10, autoAlpha: 0, duration: 0.35, clearProps: FX_CLEAR })
       .from('[data-fx="tile"]', { y: 18, autoAlpha: 0, duration: 0.45, stagger: { amount: 0.25 }, clearProps: FX_CLEAR }, "-=0.2")
@@ -1736,6 +1758,19 @@ export default function App() {
       .from('[data-fx="swatch"]', { y: 14, scale: 0.9, autoAlpha: 0, duration: 0.4, ease: "back.out(1.6)", stagger: 0.06, clearProps: FX_CLEAR }, "-=0.35")
       .from('[data-fx="bus"]', { scale: 0.92, autoAlpha: 0, duration: 0.35, stagger: { amount: 0.4, grid: "auto", from: "start" }, clearProps: FX_CLEAR }, "-=0.35");
   }, { dependencies: [tab, loaded], scope: mainRef });
+
+  // ERP status dot: gentle pulse while syncing, a brief confirmation pop when a sync lands.
+  useEffect(() => {
+    const el = erpDotRef.current;
+    if (!el || prefersReduced()) return;
+    gsap.killTweensOf(el);
+    if (erpStatus.phase === "syncing") {
+      const tw = gsap.to(el, { scale: 1.4, opacity: 0.5, duration: 0.65, repeat: -1, yoyo: true, ease: "sine.inOut" });
+      return () => { tw.kill(); gsap.set(el, { scale: 1, opacity: 1 }); };
+    }
+    gsap.set(el, { scale: 1, opacity: 1 });
+    if (erpStatus.phase === "ok") gsap.fromTo(el, { scale: 1 }, { scale: 1.9, duration: 0.28, yoyo: true, repeat: 1, ease: "power2.out", onComplete: () => gsap.set(el, { scale: 1 }) });
+  }, [erpStatus.phase]);
 
   // Smooth whole-app colour crossfade on theme change: briefly enable CSS colour transitions
   // (only during the switch, so they never interfere with GSAP transforms or hover feel).
@@ -1819,7 +1854,7 @@ export default function App() {
   const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", equations: "Equations", metrics: "Custom metrics", optimiser: "", prevroute: "", settings: "Settings" };
 
   return (
-    <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif" }}>
+    <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)" }}>
       <div ref={headerRef} className="sticky top-0 z-20" style={{ background: t.surface, borderBottom: "1px solid " + t.border }}>
         <div className="w-full px-6 flex items-center gap-4">
           <div className="flex-1 flex items-center gap-3 py-2 min-w-0 overflow-hidden">
@@ -1827,7 +1862,7 @@ export default function App() {
             <div data-fx="brand" className="font-bold text-lg leading-tight tracking-tight truncate">Transport dashboard</div>
           </div>
           <div className="flex gap-1 overflow-x-auto shrink-0">
-            {TABS.map(([k, l, Icon]) => { const on = tab === k; return <button key={k} data-fx="tab" onClick={() => setTab(k)} className="flex items-center gap-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition" style={{ color: on ? t.primary : t.muted, borderBottom: "2px solid " + (on ? t.primary : "transparent") }}><Icon size={16} /> {l}</button>; })}
+            {TABS.map(([k, l, Icon]) => { const on = tab === k; return <button key={k} data-fx="tab" onClick={() => setTab(k)} aria-current={on ? "page" : undefined} className="flex items-center gap-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition-colors" style={{ color: on ? t.primary : t.muted, borderBottom: "2px solid " + (on ? t.primary : "transparent") }} onMouseEnter={(e) => { if (!on) e.currentTarget.style.color = t.text; }} onMouseLeave={(e) => { if (!on) e.currentTarget.style.color = t.muted; }}><Icon size={16} /> {l}</button>; })}
           </div>
           <div className="flex-1 flex justify-end min-w-0">
             {(() => {
@@ -1835,9 +1870,9 @@ export default function App() {
               const dot = p === "ok" ? t.good : p === "syncing" ? t.watch : p === "error" ? t.poor : t.faint;
               const label = p === "syncing" ? "Syncing…" : p === "error" ? "ERP offline" : p === "ok" ? `Live · ${fmtClock(erpStatus.at)}` : "Connecting…";
               return (
-                <button onClick={() => syncErp()} title={erpStatus.msg ? `${erpStatus.msg}${erpStatus.at ? " · updated " + fmtClock(erpStatus.at) : ""}` : "Sync from ERP now"}
+                <button onClick={() => syncErp()} aria-live="polite" title={erpStatus.msg ? `${erpStatus.msg}${erpStatus.at ? " · updated " + fmtClock(erpStatus.at) : ""}` : "Sync from ERP now"}
                   className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold whitespace-nowrap" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}>
-                  <span className="w-2 h-2 rounded-full" style={{ background: dot }} />{label}
+                  <span ref={erpDotRef} className="w-2 h-2 rounded-full" style={{ background: dot }} />{label}
                 </button>
               );
             })()}

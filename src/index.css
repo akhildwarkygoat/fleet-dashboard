@@ -7,6 +7,50 @@ html, body, #root {
 }
 body {
   margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ============================ FOCUS-VISIBLE (a11y, all tabs) ============================
+   Keyboard focus was invisible app-wide (every interactive element used outline-none).
+   One theme-driven ring restores it for buttons, inputs, tabs, calendar cells, etc.
+   Only shows for keyboard/programmatic focus (:focus-visible), never on mouse click. */
+*:focus-visible {
+  outline: 2px solid var(--focus-ring, #4f46e5);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+/* inputs already recolour their border on focus — keep the ring tight to the field */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline-offset: 0;
+}
+
+/* Row-hover affordance for dense data tables/lists (opt-in via class) */
+.fx-row-hover {
+  transition: background-color 0.12s ease;
+}
+
+/* Theme-aware scrollbars — quieter than the OS default on data-dense panels */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb, rgba(100, 116, 139, 0.35)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb, rgba(100, 116, 139, 0.35));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-thumb-hover, rgba(100, 116, 139, 0.6));
+  background-clip: content-box;
 }
 
 /* Smooth colour crossfade while switching themes. The class is added only for ~0.5s during a
