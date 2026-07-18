@@ -1,8 +1,51 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { spawn } from "node:child_process";
+
+/* ── Dev-only endpoint that rebuilds the Prev-route data from the LIVE ERP ──────────
+ * The "Prev. route" map (routes_map.html) POSTs /__rebuild_routes on load; this runs
+ * refresh_routes.sh (fetch ERP → build_erp_routes.py, ~5 min) and streams progress via
+ * /__rebuild_status, which the map's loading overlay polls. Only exists in `vite dev`,
+ * so on Vercel the POST 404s and the map falls back to the committed snapshot. */
+function routesRebuildPlugin() {
+  let job = null; // { status:'running'|'done'|'error', message, pct, startedAt, finishedAt }
+  const json = (res, obj) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(obj)); };
+  return {
+    name: "routes-rebuild",
+    configureServer(server) {
+      server.middlewares.use("/__rebuild_routes", (req, res, next) => {
+        if (req.method !== "POST") return next();
+        if (job && job.status === "running") return json(res, { status: "running", message: job.message, pct: job.pct });
+        job = { status: "running", message: "Contacting ERP…", pct: 0, startedAt: Date.now() };
+        const child = spawn("bash", ["refresh_routes.sh"], { cwd: process.cwd(), env: process.env });
+        const onData = (buf) => {
+          const s = buf.toString();
+          const busMatches = s.match(/routing bus (\d+)\/(\d+)/g);
+          if (busMatches) {
+            const last = busMatches[busMatches.length - 1].match(/(\d+)\/(\d+)/);
+            job.pct = Math.round((+last[1] / +last[2]) * 100);
+            job.message = `Routing bus ${last[1]} / ${last[2]}…`;
+          } else if (/Fetching live ERP/.test(s)) { job.message = "Fetching live ERP feed…"; job.pct = 0; }
+          else if (/rows, latest/.test(s)) { job.message = "ERP received · clustering stops…"; job.pct = 2; }
+          else if (/Rebuilding routes/.test(s)) { job.message = "Building road paths…"; job.pct = 4; }
+        };
+        child.stdout.on("data", onData);
+        child.stderr.on("data", onData);
+        child.on("close", (code) => {
+          job = code === 0
+            ? { status: "done", message: "Routes updated", pct: 100, startedAt: job.startedAt, finishedAt: Date.now() }
+            : { status: "error", message: "Rebuild failed — showing last saved routes", pct: 100, startedAt: job.startedAt, finishedAt: Date.now() };
+        });
+        child.on("error", () => { job = { status: "error", message: "Could not start rebuild", pct: 100 }; });
+        json(res, { status: "running", message: job.message, pct: job.pct });
+      });
+      server.middlewares.use("/__rebuild_status", (req, res) => json(res, job || { status: "idle" }));
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), routesRebuildPlugin()],
   server: {
     host: true,
     // honour the port the launcher assigns (autoPort) via the PORT env var; fall back to 5173
