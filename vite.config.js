@@ -17,6 +17,7 @@ function routesRebuildPlugin() {
         if (req.method !== "POST") return next();
         if (job && job.status === "running") return json(res, { status: "running", message: job.message, pct: job.pct });
         job = { status: "running", message: "Contacting ERP…", pct: 0, startedAt: Date.now() };
+        let errTail = ""; // keep the last stderr so a failure reports WHY, not just "failed"
         const child = spawn("bash", ["refresh_routes.sh"], { cwd: process.cwd(), env: process.env });
         const onData = (buf) => {
           const s = buf.toString();
@@ -30,13 +31,14 @@ function routesRebuildPlugin() {
           else if (/Rebuilding routes/.test(s)) { job.message = "Building road paths…"; job.pct = 4; }
         };
         child.stdout.on("data", onData);
-        child.stderr.on("data", onData);
+        child.stderr.on("data", (buf) => { onData(buf); errTail = (errTail + buf.toString()).slice(-400); });
         child.on("close", (code) => {
+          const reason = errTail.split("\n").map((l) => l.trim()).filter(Boolean).pop();
           job = code === 0
             ? { status: "done", message: "Routes updated", pct: 100, startedAt: job.startedAt, finishedAt: Date.now() }
-            : { status: "error", message: "Rebuild failed — showing last saved routes", pct: 100, startedAt: job.startedAt, finishedAt: Date.now() };
+            : { status: "error", code, message: "Rebuild failed" + (reason ? ` — ${reason}` : ""), detail: errTail, pct: 100, startedAt: job.startedAt, finishedAt: Date.now() };
         });
-        child.on("error", () => { job = { status: "error", message: "Could not start rebuild", pct: 100 }; });
+        child.on("error", (e) => { job = { status: "error", message: "Could not start rebuild — " + (e.code === "ENOENT" ? "'bash' not found (on Windows, run via Git Bash/WSL)" : e.message), pct: 100 }; });
         json(res, { status: "running", message: job.message, pct: job.pct });
       });
       server.middlewares.use("/__rebuild_status", (req, res) => json(res, job || { status: "idle" }));

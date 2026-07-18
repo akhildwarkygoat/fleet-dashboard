@@ -164,6 +164,7 @@
     }
     const cluster = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 60, iconCreateFunction: makeCluster }).addTo(map);
     const polyLayer = L.layerGroup().addTo(map);
+    const stopLayer = L.layerGroup().addTo(map); // selected route: every stop shown individually (no clustering)
     L.marker(DEPOT, { icon: factoryPin(), zIndexOffset: 1000 }).bindTooltip('FACTORY (depot)', { direction: 'top', offset: [0, -44] }).addTo(map);
 
     let buses = [], sel = [], q = '';
@@ -273,14 +274,19 @@
       applyMap(); renderBuses();
     }
     function applyMap() {
-      // show only the selected routes' stops (all stops when nothing is selected), like the Planner
-      cluster.clearLayers(); polyLayer.clearLayers();
-      const idxs = sel.length ? sel : buses.map((_, i) => i);
-      const batch = [];
-      idxs.forEach(i => buses[i].stops.forEach(s => { if (s._marker) batch.push(s._marker); }));
-      cluster.addLayers(batch);
-      sel.forEach(i => { const b = buses[i]; if (b._poly && b._poly.length > 1) L.polyline(b._poly, { color: b._col, weight: 4, opacity: .95 }).addTo(polyLayer); });
-      if (sel.length) { const pts = sel.flatMap(i => [DEPOT, ...buses[i].stops.map(s => [s.lat, s.lng])]); if (pts.length > 1) map.fitBounds(pts, { padding: [60, 60] }); }
+      cluster.clearLayers(); polyLayer.clearLayers(); stopLayer.clearLayers();
+      if (sel.length) {
+        // selected route(s): draw every ERP stop individually — no merging, exactly as it exists
+        sel.forEach(i => buses[i].stops.forEach(s => { if (s._marker) s._marker.addTo(stopLayer); }));
+        sel.forEach(i => { const b = buses[i]; if (b._poly && b._poly.length > 1) L.polyline(b._poly, { color: b._col, weight: 4, opacity: .95 }).addTo(polyLayer); });
+        const pts = sel.flatMap(i => [DEPOT, ...buses[i].stops.map(s => [s.lat, s.lng])]);
+        if (pts.length > 1) map.fitBounds(pts, { padding: [60, 60] });
+      } else {
+        // overview (no bus selected): cluster all stops just so the region isn't a wall of pins
+        const batch = [];
+        buses.forEach(b => b.stops.forEach(s => { if (s._marker) batch.push(s._marker); }));
+        cluster.addLayers(batch);
+      }
     }
 
     /* stop popup: edit + collapsible employees */
