@@ -32,4 +32,8 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rebuilding routes (OSRM road paths, ~5 min)
 # as it exists in the ERP (needed to compare the real current routes stop-for-stop).
 "$PY" build_erp_routes.py --merge-m 0
 
+# keep the "Merge review" tab's data in sync with the same ERP (fast, JSON only)
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Refreshing merge-review suggestions…"
+"$PY" merge_suggestions.py --json-only || echo "  (merge suggestions skipped — non-fatal)"
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Done. public/current_routes.json refreshed."
