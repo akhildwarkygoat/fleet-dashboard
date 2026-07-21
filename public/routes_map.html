@@ -71,10 +71,20 @@
     .pop .see { background: #f1f5f9; color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; gap: 6px; }
     .pop .emps { max-height: 150px; overflow-y: auto; font-size: 12px; }
     .pop .emps div { padding: 3px 0; border-top: 1px solid var(--border); }
-    /* ── Rebuild loading overlay (Prev-route refreshes from live ERP on load) ── */
+    /* ── Rebuild loading overlay (Prev-route refreshes from live ERP once a day) ── */
     #loader { position: absolute; inset: 0; z-index: 1200; display: none; align-items: center; justify-content: center;
       background: rgba(238,242,247,0.55); backdrop-filter: blur(7px) saturate(120%); -webkit-backdrop-filter: blur(7px) saturate(120%); }
     #loader.on { display: flex; animation: loaderIn .3s ease both; }
+    /* compact mode: saved data is already on screen — refresh runs in a corner pill,
+       nothing is blocked, sub-tabs stay fully usable */
+    #loader.compact { inset: auto 16px 64px auto; background: none; backdrop-filter: none; -webkit-backdrop-filter: none;
+      pointer-events: none; z-index: 640; }
+    #loader.compact .card { width: 270px; padding: 12px 14px 12px; text-align: left; pointer-events: auto; }
+    #loader.compact .route { display: none; }
+    #loader.compact .ttl { font-size: 12px; }
+    #loader.compact .msg { font-size: 11px; margin-top: 2px; }
+    #loader.compact .bar { margin-top: 8px; height: 5px; }
+    #loader.compact .hint2 { display: none; }
     @keyframes loaderIn { from { opacity: 0 } to { opacity: 1 } }
     #loader .card { width: min(400px, 86%); border-radius: 20px; padding: 28px 26px 22px; text-align: center; }
     #loader .route { width: 116px; height: 116px; display: block; margin: 0 auto 8px; }
@@ -140,6 +150,26 @@
     .mstop .rd { color: var(--muted); font-variant-numeric: tabular-nums; }
     .mstop .db { font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 5px; font-variant-numeric: tabular-nums; }
     .mempty { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 8px; }
+    /* ── Merged stops (680 global real stops) view ── */
+    #mergedSummary { position: absolute; z-index: 600; top: 16px; left: 60px; border-radius: 16px; padding: 10px 12px; display: none; }
+    #mergedSummary.on { display: block; }
+    #mergedTiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    #mergedPanel { position: absolute; z-index: 600; top: 16px; right: 16px; bottom: 16px; width: 300px; border-radius: 16px; display: none; flex-direction: column; overflow: hidden; }
+    #mergedPanel.on { display: flex; }
+    #mergedPanel .mhead { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 8px; }
+    #mergedPanel .mhead .ttl { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+    #mergedPanel .mhead .sub { font-size: 11px; color: var(--muted); }
+    #mergedPanel .search { margin: 0 12px 8px; padding: 8px 10px; border-radius: 10px; font-size: 13px; outline: none; border: 1px solid var(--border); background: rgba(255,255,255,0.6); }
+    #mergedList { overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 6px; }
+    .scard { position: relative; text-align: left; border-radius: 10px; padding: 8px 10px; cursor: pointer; flex: 0 0 auto;
+      background: rgba(255,255,255,0.55); border: 1.5px solid rgba(255,255,255,0.6); transition: border-color .12s; display: flex; align-items: center; gap: 8px; }
+    .scard:hover { border-color: rgba(99,102,241,.5); }
+    .scard.on { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primarySoft); background: var(--primarySoft); }
+    .scard:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+    .scard .sdot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+    .scard .snm { flex: 1; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .scard .shc { font-size: 11px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+    .scard .sbadge { font-size: 9px; font-weight: 800; padding: 1px 5px; border-radius: 5px; background: var(--watchSoft, rgba(245,158,11,.16)); color: var(--watch); }
   </style>
 </head>
 <body>
@@ -188,10 +218,23 @@
       <div id="buslist"></div>
     </div>
 
-    <!-- Sub-tab toggle: Route map vs Merge review -->
+    <!-- Sub-tab toggle: Route map / Merge review / Merged stops -->
     <div id="subtab" class="glass">
       <button id="tabMap" class="on" aria-pressed="true">Route map</button>
       <button id="tabMerge" aria-pressed="false">Merge review</button>
+      <button id="tabMerged" aria-pressed="false">Merged stops</button>
+    </div>
+
+    <!-- Merged stops: summary strip -->
+    <div id="mergedSummary" class="glass">
+      <div id="mergedTiles"></div>
+    </div>
+
+    <!-- Merged stops: searchable list -->
+    <div id="mergedPanel" class="glass">
+      <div class="mhead"><span class="ttl">Merged stops</span><span class="sub" id="mergedCount"></span></div>
+      <input class="search" id="mergedSearch" placeholder="Find a stop…" />
+      <div id="mergedList"></div>
     </div>
 
     <!-- Merge review: summary strip -->
@@ -288,31 +331,33 @@
     }
 
     /* Ask the dev server to rebuild from the live ERP, showing progress. Silently no-ops
-       (falls back to the saved snapshot) when the endpoint is absent — e.g. on Vercel. */
-    async function rebuildFromLiveERP() {
-      showLoader(); setLoader('Contacting ERP…', 0);
+       (falls back to the saved snapshot) when the endpoint is absent — e.g. on Vercel.
+       compact=true keeps the map fully usable (corner pill instead of full overlay).
+       Returns true only when a rebuild actually completed. */
+    async function rebuildFromLiveERP(compact) {
+      loaderEl.classList.toggle('compact', !!compact);
+      showLoader(); setLoader(compact ? 'Refreshing from ERP…' : 'Contacting ERP…', 0);
       let running = false;
       try {
         const res = await fetch('/__rebuild_routes', { method: 'POST' });
         running = res.ok && (res.headers.get('content-type') || '').includes('json');
         if (running) { const j = await res.json(); setLoader(j.message, j.pct); running = j.status === 'running'; }
       } catch (e) { running = false; }
-      if (!running) { hideLoader(); return; } // no live rebuild here → use the committed snapshot
+      if (!running) { hideLoader(); return false; } // no live rebuild here → use the committed snapshot
       while (true) {
         await sleep(1500);
         let st;
-        try { st = await (await fetch('/__rebuild_status')).json(); } catch (e) { break; }
+        try { st = await (await fetch('/__rebuild_status')).json(); } catch (e) { return false; }
         setLoader(st.message, st.pct);
-        if (st.status === 'done') { setLoader('Routes updated', 100); await sleep(450); break; }
-        if (st.status === 'error') { await sleep(900); break; }
-        if (st.status === 'idle') break;
+        if (st.status === 'done') { setLoader('Routes updated', 100); await sleep(450); return true; }
+        if (st.status === 'error') { await sleep(900); return false; }
+        if (st.status === 'idle') return false;
       }
     }
 
-    (async () => {
-      await rebuildFromLiveERP();
-      const d = await loadRoutesFile();
-      hideLoader();
+    /* (re)render everything from a routes payload — used on first paint AND after a refresh */
+    function applyData(d) {
+      sel = []; cluster.clearLayers(); polyLayer.clearLayers(); stopLayer.clearLayers();
       buses = d.buses;
       buses.forEach(b => b.stops.forEach(s => { const e = edits[editId(b.name, s)]; if (e) { if (e.name != null) s.name = e.name; if (e.hc != null) s.hc = e.hc; } }));
       const owned = buses.filter(b => b.type !== 'rental').length, seats = buses.reduce((s, b) => s + (b.seat || 0), 0);
@@ -334,6 +379,28 @@
         });
       });
       renderBuses(); applyMap();
+    }
+
+    /* ── init: show saved data instantly; refresh from ERP at most ONCE A DAY.
+       While refreshing, only a corner pill shows — the map and sub-tabs stay usable. ── */
+    const REBUILD_KEY = 'prevRouteLastRebuild';
+    (async () => {
+      let d = null;
+      try { d = await loadRoutesFile(); } catch (e) {}
+      if (d) { hideLoader(); applyData(d); }
+      const today = new Date().toISOString().slice(0, 10);
+      const already = localStorage.getItem(REBUILD_KEY) === today;
+      if (!already) {
+        const ok = await rebuildFromLiveERP(!!d);   // full overlay only when there's nothing to show yet
+        hideLoader();
+        if (ok) {
+          localStorage.setItem(REBUILD_KEY, today);
+          try { applyData(await loadRoutesFile()); } catch (e) {}
+          loadMerge(); loadMerged();                 // refresh the other sub-tabs' data (they re-render themselves)
+        } else if (!d) {
+          try { applyData(await loadRoutesFile()); } catch (e) {}
+        }
+      }
     })();
 
     function renderBuses() {
@@ -446,8 +513,17 @@
     const bandHex = b => b === 'good' ? '#10b981' : b === 'watch' ? '#f59e0b' : '#f43f5e';
     const gidOf = it => it.bus + '|' + it.group;
 
-    let MERGE = null, thr = '200', selMerge = null, mgView = false;
+    let MERGE = null, MERGED = null, thr = '200', selMerge = null, view = 'map';
     const mergeTargets = L.layerGroup(), mergeMembers = L.layerGroup(), mergeLines = L.layerGroup();
+    // green cluster (these are KEPT stops; removed originals are headcount:0 so counts stay accurate)
+    const makeGreenCluster = (cluster) => {
+      const total = cluster.getAllChildMarkers().reduce((s, m) => s + (m.options.headcount || 0), 0);
+      const size = total < 25 ? 36 : total < 100 ? 44 : total < 300 ? 52 : 62, fs = total >= 1000 ? 11 : total >= 100 ? 12.5 : 13.5;
+      return L.divIcon({ className: '', iconSize: [size, size],
+        html: `<div style="width:${size}px;height:${size}px;position:relative"><div style="position:absolute;inset:0;border-radius:50%;background:#10b981;opacity:.2"></div><div style="position:absolute;inset:7px;border-radius:50%;background:#10b981;border:2.5px solid #fff;display:flex;align-items:center;justify-content:center;color:#fff;font:700 ${fs}px/1 Inter,system-ui">${total}</div></div>` });
+    };
+    const mergedCluster = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 55, iconCreateFunction: makeGreenCluster });
+    const mergedLines = L.layerGroup();
     const targetMarkers = {};
 
     const only300Set = () => {
@@ -562,7 +638,7 @@
         const r = await fetch('/merge_suggestions.json?t=' + Date.now());
         if (!r.ok) throw 0;
         MERGE = await r.json();
-        if (mgView) { renderMergeSummary(); renderMergeList(); }
+        if (view === 'merge') { renderMergeSummary(); renderMergeList(); }
       } catch (e) {
         document.getElementById('mergeList').innerHTML = '<div class="mempty">Merge suggestions not available yet.<br>They refresh when the route rebuild runs.</div>';
       }
@@ -574,31 +650,132 @@
       renderMergeSummary(); renderMergeList();
     }
 
-    function setMergeView(on) {
-      mgView = on;
-      ['tabMap', 'tabMerge'].forEach(id => { const b = document.getElementById(id); const sel = (id === 'tabMerge') === on; b.classList.toggle('on', sel); b.setAttribute('aria-pressed', String(sel)); });
-      document.getElementById('mergeSummary').classList.toggle('on', on);
-      document.getElementById('mergePanel').classList.toggle('on', on);
-      ['kpi', 'buses'].forEach(id => document.getElementById(id).style.display = on ? 'none' : (id === 'buses' ? 'flex' : 'block'));
+    /* ---- Merged stops (680 global "real" stops) ---- */
+    let mergedSel = null;
+    const mergedMarkers = {};
+    // editable stop names — overrides persist in localStorage, keyed by GPS so they survive rebuilds
+    const MNAME_KEY = 'mergedStopNames';
+    let mergedNameEdits = {}; try { mergedNameEdits = JSON.parse(localStorage.getItem(MNAME_KEY) || '{}'); } catch (e) {}
+    const skey = s => `${s.lat},${s.lng}`;
+    const nameOf = s => mergedNameEdits[skey(s)] || s.name;
+    const isGarbled = s => /\?\?/.test(s.name) && !mergedNameEdits[skey(s)];
+    let editKey = null;
+    window.saveMergedName = function () {
+      const inp = document.getElementById('mmname-input'); if (!inp) return;
+      const v = inp.value.trim();
+      if (v) mergedNameEdits[editKey] = v; else delete mergedNameEdits[editKey];
+      localStorage.setItem(MNAME_KEY, JSON.stringify(mergedNameEdits));
+      map.closePopup();
+      renderMergedList(document.getElementById('mergedSearch').value); renderMergedMap();
+    };
+    function renderMergedSummary() {
+      const m = MERGED.meta, tile = (l, v, s, c) => `<div class="tile"><span class="bar" style="background:${c}"></span><div class="lab">${l}</div><div class="val">${v}</div><div class="sub">${s}</div></div>`;
+      document.getElementById('mergedTiles').innerHTML = [
+        tile('Kept stops', m.stops.toLocaleString(), 'after 200 m merge', 'var(--good)'),
+        tile('Removed', (m.removed != null ? m.removed : m.clean_absorbed).toLocaleString(), 'folded into a kept stop', 'var(--poor)'),
+        tile('Riders', m.riders.toLocaleString(), 'covered', 'var(--primary)'),
+        tile('Barrier-split', m.suspects_kept_separate, 'kept separate', 'var(--watch)'),
+      ].join('');
+    }
+    function renderMergedList(q) {
+      q = (q || '').trim().toLowerCase();
+      const stops = MERGED.stops.filter(s => !q || nameOf(s).toLowerCase().includes(q));
+      document.getElementById('mergedCount').textContent = `${MERGED.stops.length} stops · click to rename`;
+      const list = document.getElementById('mergedList');
+      list.innerHTML = stops.slice(0, 400).map(s => {
+        const idx = MERGED.stops.indexOf(s), col = s.barrier_split ? 'var(--watch)' : 'var(--good)';
+        const tag = isGarbled(s) ? '<span class="sbadge" style="background:rgba(244,63,94,.14);color:var(--poor)">name?</span>'
+          : s.barrier_split ? '<span class="sbadge">barrier</span>'
+          : (s.merged_in ? `<span class="sbadge" style="background:var(--primarySoft);color:var(--primary)">+${s.merged_in}</span>` : '');
+        return `<button class="scard${idx === mergedSel ? ' on' : ''}" data-i="${idx}" aria-label="${esc(nameOf(s))}, ${s.headcount} riders${s.barrier_split ? ', barrier-split' : s.merged_in ? ', absorbed ' + s.merged_in + ' stops' : ''}. Click to rename.">
+          <span class="sdot" style="background:${col}"></span><span class="snm">${esc(nameOf(s))}</span>${tag}<span class="shc">${s.headcount}</span>
+        </button>`;
+      }).join('') || '<div class="mempty">No stops match.</div>';
+      if (stops.length > 400) list.insertAdjacentHTML('beforeend', `<div class="mempty">+${stops.length - 400} more — type to filter</div>`);
+      list.querySelectorAll('.scard').forEach(el => el.addEventListener('click', () => selectMerged(+el.getAttribute('data-i'))));
+    }
+    function renderMergedMap() {
+      mergedCluster.clearLayers();
+      for (const k in mergedMarkers) delete mergedMarkers[k];
+      // RED = removed originals (folded into a kept stop). headcount:0 so they don't inflate cluster sums.
+      (MERGED.removed || []).forEach(s => {
+        const rr = Math.max(8, Math.min(16, 7 + Math.sqrt(s.headcount) * 1.6));
+        const mk = L.marker([s.lat, s.lng], { headcount: 0, icon: L.divIcon({ className: '', iconSize: [rr, rr], iconAnchor: [rr / 2, rr / 2],
+          html: `<div style="width:${rr}px;height:${rr}px;border-radius:50%;background:#f43f5e;border:2px solid #fff;box-shadow:0 1px 2px rgba(0,0,0,.3);opacity:.92"></div>` }) })
+          .bindTooltip(`<b>${esc(s.name)}</b> · ${s.headcount} riders · removed → merged into ${esc(s.into)} (${Math.round(s.straight_m || 0)} m)`, { direction: 'top', offset: [0, -6] });
+        mergedCluster.addLayer(mk);
+      });
+      // GREEN = kept stops after the merge (barrier-split ones amber to flag them). Click to rename.
+      MERGED.stops.forEach((s, i) => {
+        const on = i === mergedSel, col = s.barrier_split ? '#f59e0b' : (on ? '#059669' : '#10b981');
+        const r = Math.max(11, Math.min(28, 9 + Math.sqrt(s.headcount) * 2.2));
+        const mk = L.marker([s.lat, s.lng], { headcount: s.headcount, icon: L.divIcon({ className: '', iconSize: [r, r], iconAnchor: [r / 2, r / 2],
+          html: `<div style="width:${r}px;height:${r}px;border-radius:50%;background:${col};border:2.5px solid #fff;box-shadow:0 0 0 ${on ? 3 : 0}px ${col}55,0 1px 3px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#fff;font:700 ${r > 18 ? 10 : 0}px/1 Inter,system-ui">${r > 18 ? s.headcount : ''}</div>` }) })
+          .bindTooltip(`<b>${esc(nameOf(s))}</b> · ${s.headcount} riders${s.barrier_split ? ' · barrier-split (kept separate)' : s.merged_in ? ' · absorbed ' + s.merged_in + ' stops' : ''}`, { direction: 'top', offset: [0, -6] })
+          .bindPopup(() => {
+            editKey = skey(s);
+            return `<div class="pop"><div style="font-size:11px;color:#64748b">Merged stop · ${s.headcount} riders${isGarbled(s) ? ' · <b style="color:#f43f5e">name needs fixing</b>' : ''}</div>
+              <label>Stop name</label><input id="mmname-input" value="${esc(nameOf(s))}" />
+              <button class="save" onclick="saveMergedName()">Save name</button></div>`;
+          });
+        mk.on('click', () => selectMerged(i));
+        mergedCluster.addLayer(mk); mergedMarkers[i] = mk;
+      });
+    }
+    function selectMerged(i) {
+      mergedSel = i;
+      document.querySelectorAll('.scard').forEach(el => el.classList.toggle('on', +el.getAttribute('data-i') === i));
+      renderMergedMap();
+      const s = MERGED.stops[i], mk = mergedMarkers[i];
+      if (mk && mergedCluster.zoomToShowLayer) mergedCluster.zoomToShowLayer(mk, () => mk.openPopup());
+      else { map.flyTo([s.lat, s.lng], Math.max(map.getZoom(), 14), { duration: reduceMo ? 0 : .6 }); if (mk) mk.openPopup(); }
+    }
+    async function loadMerged() {
+      try {
+        const r = await fetch('/merged_stops.json?t=' + Date.now());
+        if (!r.ok) throw 0;
+        MERGED = await r.json();
+        if (view === 'merged') { renderMergedSummary(); renderMergedList(); renderMergedMap(); }
+      } catch (e) {
+        document.getElementById('mergedList').innerHTML = '<div class="mempty">Merged stops not built yet.<br>Run the stop-merge pipeline to generate them.</div>';
+      }
+    }
+
+    /* ---- 3-way view switch: Route map / Merge review / Merged stops ---- */
+    function setView(v) {
+      view = v; selMerge = null; mergedSel = null;
+      const tabs = { map: 'tabMap', merge: 'tabMerge', merged: 'tabMerged' };
+      Object.entries(tabs).forEach(([k, id]) => { const b = document.getElementById(id), on = k === v; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+      document.getElementById('kpi').style.display = v === 'map' ? 'block' : 'none';
+      document.getElementById('buses').style.display = v === 'map' ? 'flex' : 'none';
+      document.getElementById('mergeSummary').classList.toggle('on', v === 'merge');
+      document.getElementById('mergePanel').classList.toggle('on', v === 'merge');
+      document.getElementById('mergedSummary').classList.toggle('on', v === 'merged');
+      document.getElementById('mergedPanel').classList.toggle('on', v === 'merged');
       ['showKpi', 'showBuses'].forEach(id => document.getElementById(id).style.display = 'none');
-      if (on) {
-        cluster.remove(); polyLayer.remove(); stopLayer.remove();
+      cluster.remove(); polyLayer.remove(); stopLayer.remove();
+      mergeTargets.remove(); mergeMembers.remove(); mergeLines.remove(); mergedCluster.remove();
+      if (v === 'map') { cluster.addTo(map); polyLayer.addTo(map); stopLayer.addTo(map); }
+      else if (v === 'merge') {
         mergeTargets.addTo(map); mergeMembers.addTo(map); mergeLines.addTo(map);
         if (MERGE) { renderMergeSummary(); renderMergeList(); } else { document.getElementById('mergeList').innerHTML = '<div class="mempty">Loading…</div>'; loadMerge(); }
         if (!reduceMo && window.gsap) gsap.from('#mergePanel .mcard', { autoAlpha: 0, y: 10, duration: .35, stagger: .03, ease: 'power2.out' });
-      } else {
-        mergeTargets.remove(); mergeMembers.remove(); mergeLines.remove();
-        cluster.addTo(map); polyLayer.addTo(map); stopLayer.addTo(map);
+      } else if (v === 'merged') {
+        mergedCluster.addTo(map);
+        if (MERGED) { renderMergedSummary(); renderMergedList(); renderMergedMap(); } else { document.getElementById('mergedList').innerHTML = '<div class="mempty">Loading…</div>'; loadMerged(); }
+        if (!reduceMo && window.gsap) gsap.from('#mergedPanel .scard', { autoAlpha: 0, y: 8, duration: .3, stagger: .015, ease: 'power2.out' });
       }
       setTimeout(() => map.invalidateSize(), 60);
     }
 
-    document.getElementById('tabMap').onclick = () => setMergeView(false);
-    document.getElementById('tabMerge').onclick = () => setMergeView(true);
+    document.getElementById('tabMap').onclick = () => setView('map');
+    document.getElementById('tabMerge').onclick = () => setView('merge');
+    document.getElementById('tabMerged').onclick = () => setView('merged');
     document.getElementById('thr200').onclick = () => setThr('200');
     document.getElementById('thr300').onclick = () => setThr('300');
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && selMerge) selectMerge(null); });
-    loadMerge(); // preload so the first switch is instant
+    document.getElementById('mergedSearch').addEventListener('input', e => renderMergedList(e.target.value));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (selMerge) selectMerge(null); } });
+    loadMerge(); loadMerged();   // preload both so the first switch is instant
   </script>
 </body>
 </html>

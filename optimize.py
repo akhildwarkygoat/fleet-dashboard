@@ -50,6 +50,10 @@ OWN_DIESEL_KM = 18.0                            # ₹/km (flat, user-provided)
 DIESEL_PER_LITRE = 100.0                        # display only (Equations editor); 100 ÷ 5.56 ≈ 18/km
 MILEAGE_KMPL     = round(DIESEL_PER_LITRE / OWN_DIESEL_KM, 2)
 RENT_EPS_KM = 2                        # tiny compactness cost so rentals don't wander
+OWN_FAR_PEN = 6                        # owned buses pay this x (stop's km-from-depot) as a surcharge,
+                                       # so they favour CLOSE stops and the flat-tariff rentals absorb
+                                       # the FAR / isolated stops (distance-based, so owned can still
+                                       # pack more NEAR stops without a ride-time conflict)
 TECH_BASELINE_YEAR   = 54_425_641      # Technotek actual annual spend (FY24-25 separate tabs)
 GAINUP_BASELINE_YEAR = 0               # Gainup not provided yet — user will upload it later
 
@@ -79,6 +83,47 @@ RENTAL = [("TN02AB5688",15),("TN030857",15),("TN05V6697",15),("TN20AJ3944",15),
           ("TN57L8446",15),("TN57P6909",15),("TN58S5303",15),("TN59AB3444",15),
           ("TN59AH9703",15),("TN63E9861",15),("TN69M1957",15),("TN74AW0645",15),
           ("TN58BC3494",9),("TN32X3929",15),("TN63U4754",15),("TN74AY1634",15)]
+
+# Override the hardcoded fleet with the CURRENT live ERP fleet (latest day): each
+# vehicle's seats = its modal Seat, owned/rental from the Type field. Falls back to
+# the lists above if the ERP dump is missing/unreadable.
+def _fleet_from_erp(path="data/erp_live.json"):
+    import json as _json
+    from collections import Counter as _C, defaultdict as _dd
+    rows = _json.load(open(path))
+    def _n(s): return (s or "").strip()
+    latest = sorted({_n(r.get("date")) for r in rows if _n(r.get("date"))})[-1]
+    veh = _dd(lambda: {"seat": _C(), "type": _C()})
+    for r in rows:
+        if _n(r.get("date")) != latest:
+            continue
+        v = _n(r.get("VehName") or r.get("Veh_Mas"))
+        if not v:
+            continue
+        info = veh[v]   # register the vehicle even if seat/type are blank (else it's dropped)
+        s = _n(r.get("Seat") or r.get("Seat_New"))
+        if s and s != "0":
+            info["seat"][s] += 1
+        if r.get("Type"):
+            info["type"]["rent" if "rent" in r["Type"].lower() else "own"] += 1
+    owned, rental = [], []
+    for v, info in veh.items():
+        # ERP sometimes has a blank Seat (e.g. TN57BJ3434/TN57BK3434) -> default to a
+        # standard 55-seat bus so the vehicle is still dispatched (no bus dropped).
+        cap = int(info["seat"].most_common(1)[0][0]) if info["seat"] else 55
+        is_own = (info["type"].most_common(1)[0][0] == "own") if info["type"] else True
+        (owned if is_own else rental).append((v, cap))
+    owned.sort(key=lambda x: -x[1]); rental.sort(key=lambda x: -x[1])
+    return owned, rental
+
+try:
+    _o, _r = _fleet_from_erp()
+    if _o and _r:
+        OWNED, RENTAL = _o, _r
+        print(f"Fleet from live ERP: {len(OWNED)} owned + {len(RENTAL)} rental = "
+              f"{sum(c for _, c in OWNED) + sum(c for _, c in RENTAL)} seats")
+except Exception as _e:
+    print(f"(ERP fleet unavailable, using hardcoded fleet: {_e})")
 
 # ------------------------------------------------------------------- geometry
 def hav(a, b):
@@ -201,6 +246,12 @@ def main():
                     help="judge routes by the park-at-last-stop day model (2x legs, free return)")
     ap.add_argument("--ride-penalty", type=int, default=25,
                     help="Rs per passenger-minute beyond the ride target (steers cost-vs-time)")
+    ap.add_argument("--allow-idle", dest="all_buses", action="store_false", default=True,
+                    help="let the solver leave buses idle if cheaper (default: dispatch EVERY bus, no idle fleet)")
+    ap.add_argument("--short-ride", type=int, default=30,
+                    help="ride min at/below which standing is fine (150%% cap)")
+    ap.add_argument("--long-ride", type=int, default=90,
+                    help="ride min at/above which no standing (100%% seats); cap tapers between short/long")
     args = ap.parse_args()
 
     stops = load_stops(args.stops)
@@ -213,20 +264,13 @@ def main():
     # demand per stop: use REAL per-stop headcount+absentee when the CSV carries
     # them (Headcount column, any stop > 0); else legacy evenly-spread --riders
     if any(s["headcount"] > 0 for s in stops):
-        # REG_TO_ACTIVE calibrates ROSTER counts to riders who actually board,
-        # pinned to the JUNE ATTENDANCE total (2,360 allotted riders) so fleet
-        # utilisation matches reality (~99% of the 2,151 seats) instead of
-        # overfilling every bus into its +5 leniency. Runtime-computed, so it
-        # self-adjusts when the reviewed headcounts replace the trial randoms.
-        # round() not ceil(): over 822 small stops ceil inflates demand ~+10%.
-        JUNE_ALLOTTED = 2360
-        REG_TO_ACTIVE = min(1.0, JUNE_ALLOTTED / max(1, sum(s["headcount"] for s in stops)))
-        demand = [0] + [max(1, round(s["headcount"] * REG_TO_ACTIVE * (1 - s["absentee"] + BUFFER)))
-                        for s in stops]
+        # Match the live ERP roster exactly: one seat of demand per registered rider
+        # at each stop (no June-attendance pin, no absentee discount — plan for the
+        # full assigned roster so nobody is left behind; over-loading is handled by
+        # the ride-banded capacity below, per the real short-ride/long-ride rule).
+        demand = [0] + [max(1, s["headcount"]) for s in stops]
         dem_per = round(sum(demand) / n_stops, 2)   # avg/stop (info only, for the result JSON)
-        print(f"  Using per-stop headcounts from CSV "
-              f"(registered {sum(s['headcount'] for s in stops)}, active x{REG_TO_ACTIVE}, "
-              f"effective demand {sum(demand)})")
+        print(f"  Demand = full ERP roster: {sum(demand)} riders across {n_stops} stops")
     else:
         head = args.riders / n_stops
         dem_per = max(1, math.ceil(head * (1 - ABSENTEE + BUFFER)))
@@ -240,7 +284,14 @@ def main():
     fleet = ([{"name": nm, "cap": cap, "own": True}  for nm, cap in OWNED] +
              [{"name": nm, "cap": cap, "own": False} for nm, cap in RENTAL])
     V = len(fleet)
-    caps = [f["cap"] + CAP_LENIENCY for f in fleet]
+    # Ride-banded capacity (real-world rule): standing is fine on SHORT rides, so a bus may
+    # carry up to ~150% of seats; but on LONG rides standing is hard, so keep ~100%. A route's
+    # length is only known after solving, so we start everyone at the 150% "standing" cap here,
+    # then (below) re-cap the long routes to seats-only and re-solve.
+    STAND_MULT = 1.5
+    seats_only = [f["cap"] for f in fleet]
+    stand_caps = [max(1, round(f["cap"] * STAND_MULT)) for f in fleet]
+    caps = stand_caps[:]
 
     # ------------------------------------------------------------- model builder
     # Built twice (two-phase): the GOAL objective (60-min ride soft bounds + all
@@ -256,15 +307,18 @@ def main():
         # its last stop, so the return-to-depot arc is FREE, and every other leg is
         # driven TWICE a day (morning pickup + evening drop). Aligns the solver's
         # objective with the park-at-last-stop accounting (fixes cycle-vs-chain gap).
-        def make_cost(per_km):
+        def make_cost(per_km, far_pen=0):
             def cb(i, j):
                 a, b = mgr.IndexToNode(i), mgr.IndexToNode(j)
                 if args.chain and b == 0:
                     return 0                       # park at the last stop: no return leg
                 mult = 2.0 if args.chain else 1.0  # chain legs are driven twice per day
-                return int(round(km[a][b] * per_km * mult))
+                c = km[a][b] * per_km * mult
+                if far_pen and b != 0:
+                    c += km[0][b] * far_pen        # owned: surcharge to reach a far-from-depot stop
+                return int(round(c))
             return routing.RegisterTransitCallback(cb)
-        own_cost, rent_cb = make_cost(OWN_DIESEL_KM), make_cost(RENT_EPS_KM)
+        own_cost, rent_cb = make_cost(OWN_DIESEL_KM, OWN_FAR_PEN), make_cost(RENT_EPS_KM)
         for v, f in enumerate(fleet):
             routing.SetArcCostEvaluatorOfVehicle(own_cost if f["own"] else rent_cb, v)
             # goal model: no activation penalty -> idle buses get pulled in freely
@@ -344,6 +398,50 @@ def main():
         print(f"  phase B failed (status={STATUS.get(routing.status(), routing.status())}) "
               f"-> keeping phase A plan")
         mgr, routing, sol = mgrA, rA, solA
+
+    # ---- ride-banded capacity (your rule): taper cap 150% (short ride) -> 100% (long ride) ----
+    # Route length is only known now, so re-cap per route and re-solve. Seat-everyone wins:
+    # if the tighter caps can't carry all riders, we KEEP the 150% plan.
+    def _routes_of(_mgr, _r, _s):
+        out = []
+        for v in range(V):
+            seq, idx = [], _r.Start(v)
+            while not _r.IsEnd(idx):
+                nd = _mgr.IndexToNode(idx)
+                if nd != 0: seq.append(nd)
+                idx = _s.Value(_r.NextVar(idx))
+            out.append(seq)
+        return out
+    SHORT_R, LONG_R = args.short_ride, max(args.short_ride + 1, args.long_ride)
+    def _cap_mult(ride):
+        if ride <= SHORT_R: return STAND_MULT
+        if ride >= LONG_R:  return 1.0
+        return STAND_MULT - (STAND_MULT - 1.0) * (ride - SHORT_R) / (LONG_R - SHORT_R)
+    try:
+        tdim0 = routing.GetDimensionOrDie("Time")
+        rtime = [sol.Value(tdim0.CumulVar(routing.End(v))) for v in range(V)]
+        banded = [max(seats_only[v], round(seats_only[v] * _cap_mult(rtime[v]))) for v in range(V)]
+        if banded != caps:
+            base_routes = _routes_of(mgr, routing, sol)
+            saved = (mgr, routing, sol)
+            caps = banded
+            mgrC, rC = build_model(goal=True)
+            pC = search_params(max(30, args.seconds // 2))
+            rC.CloseModelWithParameters(pC)
+            initC = rC.ReadAssignmentFromRoutes(base_routes, True)
+            solC = (rC.SolveFromAssignmentWithParameters(initC, pC) if initC
+                    else rC.SolveWithParameters(pC))
+            if solC:
+                mgr, routing, sol = mgrC, rC, solC
+                held = sum(1 for v in range(V) if rtime[v] >= LONG_R)
+                print(f"  ride-banded re-cap applied (short {SHORT_R}->long {LONG_R} min): "
+                      f"{held} long routes held toward seats-only")
+            else:
+                mgr, routing, sol = saved
+                caps = stand_caps
+                print("  ride-banded re-cap couldn't seat everyone -> kept the 150% plan (seat-everyone)")
+    except Exception as _e:
+        print(f"  ride-banded re-cap skipped: {_e}")
 
     # ---------------------------------------------------------------------------
     # OPERATING DAY MODEL (per user, 2026-07-08):

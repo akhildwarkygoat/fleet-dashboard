@@ -305,6 +305,34 @@ const seedDepot_retiredDummy = () => ({ name: "FACTORY", lat: 10.207550, lng: 77
 /* ----------------------------------------------------------------- stops API */
 export function getStops() { return backend.read(K_STOPS, null) || (() => { const s = seedStops(); backend.write(K_STOPS, s); return s; })(); }
 function writeStops(list) { backend.write(K_STOPS, list); }
+
+/** Sync the stop network from the live-ERP merged stops (public/merged_stops.json).
+ *  Replaces the seeded/stale network with the ERP-derived one while KEEPING the id
+ *  (and user-set route/village/absentee/company) of any stop that matches by
+ *  coordinate — so Planner drafts and edits survive a refresh. */
+export function syncStopsFromErp(erpStops) {
+  const existing = getStops();
+  const byKey = new Map(existing.filter((s) => s.lat != null && s.lng != null).map((s) => [coordKey(s.lat, s.lng), s]));
+  let matched = 0;
+  const next = (erpStops || []).filter((e) => isFinite(+e.lat) && isFinite(+e.lng)).map((e) => {
+    const old = byKey.get(coordKey(e.lat, e.lng));
+    if (old) matched++;
+    return {
+      id: old ? old.id : uid(),
+      route: old ? old.route : "ERP",
+      name: (e.name || "").trim() || (old && old.name) || "Stop",
+      lat: +e.lat, lng: +e.lng,
+      village: old ? old.village : "",
+      headcount: e.headcount != null ? +e.headcount : (old ? old.headcount : 0),
+      absentee: old && old.absentee != null ? old.absentee : 0.12,
+      company: old ? old.company : "Gainup",
+      source: "erp",
+    };
+  });
+  if (!next.length) return { synced: false };
+  writeStops(next);
+  return { synced: true, stops: next.length, matched, added: next.length - matched };
+}
 export function getStopsWithStatus() { return getStops().map((s) => ({ ...s, status: statusOf(s) })); }
 export function getRoutes() { const seen = []; for (const s of getStops()) if (!seen.includes(s.route)) seen.push(s.route); return seen; }
 export function addMany(route, parsed) {
