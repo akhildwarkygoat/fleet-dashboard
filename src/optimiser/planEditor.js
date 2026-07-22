@@ -231,27 +231,49 @@ export function fleetFromSolver(solver, storeFleet) {
   });
 }
 
-/** Turn a solver_result.json into an editable seed Map<busId, stopId[]> by matching the
- *  plan's seq stops back to store stops (coords, then name) and bus names to fleet ids. */
+/** Turn a solver_result.json into an editable seed by matching the plan's seq stops back to
+ *  store stops (4-dp coords, then name, then nearest-within-150 m to absorb ERP coord drift).
+ *  Plan stops with no free store match are carried over as synthetic stops so the import never
+ *  silently drops a route's riders, and each stop's plan-time rider count (seq[].hc) is returned
+ *  so the editor can present the plan exactly as solved — not re-derived from today's demand.
+ *  @returns {{ seed: Map<string,string[]>, extras: object[], demand: Map<string,number> }} */
 export function seedFromSolver(solver, fleet, stops) {
-  const byCoord = new Map(), byName = new Map();
+  const byCoord = new Map(), byName = new Map(), located = [];
   for (const s of stops) {
-    if (s.lat != null && s.lng != null) byCoord.set((+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4), s.id);
+    if (s.lat != null && s.lng != null) { byCoord.set((+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4), s.id); located.push(s); }
     if (s.name) byName.set(s.name.toLowerCase().trim(), s.id);
   }
+  const nearestId = (p) => { // closest store stop within ~150 m
+    let best = null, bestKm = 0.15;
+    for (const s of located) { const km = haversineKm(p, s); if (km < bestKm) { bestKm = km; best = s.id; } }
+    return best;
+  };
   const byBusName = new Map(fleet.map((b) => [b.name, b.id]));
-  const seed = new Map();
+  const seed = new Map(), extras = [], demand = new Map(), used = new Set();
   for (const r of (solver.routes || [])) {
     const busId = byBusName.get(r.name);
     if (!busId) continue;
     const ids = [];
     for (const s of (r.seq || [])) {
-      const id = (s.lat != null && byCoord.get((+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4))) || byName.get((s.name || "").toLowerCase().trim());
-      if (id && !ids.includes(id)) ids.push(id);
+      const pt = s.lat != null ? { lat: +s.lat, lng: +s.lng } : null;
+      let id = (pt && byCoord.get(pt.lat.toFixed(4) + "," + pt.lng.toFixed(4)))
+        || byName.get((s.name || "").toLowerCase().trim())
+        || (pt && nearestId(pt))
+        || null;
+      if (!id || used.has(id)) {
+        // no (free) store stop for this plan stop — carry the plan's own stop so the
+        // import stays faithful to the file instead of silently dropping riders
+        if (!pt) continue;
+        id = "plan:" + pt.lat.toFixed(5) + "," + pt.lng.toFixed(5) + ":" + extras.length;
+        extras.push({ id, name: s.name || "Plan stop", lat: pt.lat, lng: pt.lng, headcount: +s.hc || 0, absentee: 0 });
+      }
+      used.add(id);
+      if (s.hc != null) demand.set(id, Math.max(0, Math.round(+s.hc || 0)));
+      ids.push(id);
     }
     seed.set(busId, ids);
   }
-  return seed;
+  return { seed, extras, demand };
 }
 
 /* ---- helpers ---- */

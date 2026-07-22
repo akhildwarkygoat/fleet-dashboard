@@ -17,7 +17,7 @@ import { solveRemote, pingSolver } from "./solverClient.js";
 import { parsePhotos } from "./exif.js";
 import GMap from "./GMap.jsx";
 import NewPlanView from "./NewPlanView.jsx";
-import SuggestionsView from "./SuggestionsView.jsx";
+import { getPlanOptions, getActivePlanId, setActivePlan, activePlanUrl } from "./planOptions.js";
 import EnlargeableMap from "./EnlargeableMap.jsx";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -181,7 +181,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
 
   // Which vehicle serves each stop, from the solver plan. Match by stop name, else by coords.
   useEffect(() => {
-    fetch("/solver_result.json?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null)).then((d) => {
+    fetch(activePlanUrl() + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null)).then((d) => {
       if (!d || !d.routes) return;
       if (d.params && d.params.demand != null) setPlanDemand(d.params.demand);
       const m = {};
@@ -1057,7 +1057,7 @@ function FleetPlanView({ t }) {
   const [err, setErr] = useState(false);
   const load = () => {
     setErr(false); setData(null);
-    fetch("/solver_result.json?ts=" + Date.now())
+    fetch(activePlanUrl() + "?ts=" + Date.now())
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
         if (d && d.routes) for (const r of d.routes) r.seq = attachEffDemand(r.seq, r.riders);
@@ -1491,7 +1491,7 @@ function AssignmentView({ t }) {
   const [busCo, setBusCo] = useState(loadBusCo);
   const [names] = useState(loadRouteNames);
   const [open, setOpen] = useState(() => new Set());
-  const load = () => { setErr(false); setData(null); fetch("/solver_result.json?ts=" + Date.now()).then((r) => (r.ok ? r.json() : Promise.reject())).then(setData).catch(() => setErr(true)); };
+  const load = () => { setErr(false); setData(null); fetch(activePlanUrl() + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : Promise.reject())).then(setData).catch(() => setErr(true)); };
   useEffect(load, []);
   const assign = (bus, co) => setBusCo((prev) => { const n = { ...prev, [bus]: co }; saveBusCo(n); return n; });
   const toggle = (k) => setOpen((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
@@ -1554,7 +1554,7 @@ function SimulatorView({ t }) {
   const [p, setP] = useState(null);
   const [factors, setFactors] = useState([]);
   const [baseCo, setBaseCo] = useState("Technotek"); // which company's actual is the baseline
-  const load = () => { setErr(false); setData(null); fetch("/solver_result.json?ts=" + Date.now()).then((r) => (r.ok ? r.json() : Promise.reject())).then(setData).catch(() => setErr(true)); };
+  const load = () => { setErr(false); setData(null); fetch(activePlanUrl() + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : Promise.reject())).then(setData).catch(() => setErr(true)); };
   useEffect(load, []);
   useEffect(() => {
     if (data && !p) {
@@ -1698,15 +1698,46 @@ export default function OptimiserTab({ t, toast }) {
   const fleet = useMemo(() => store.getFleet(), [version]);
   const depot = useMemo(() => store.getDepot(), [version]);
   const routes = useMemo(() => store.getRoutes(), [version]);
+  // saved plan variants ("result options") — picker follows public/plan_options.json
+  const [planOpts, setPlanOpts] = useState(null);
+  const [planId, setPlanId] = useState(getActivePlanId());
+  useEffect(() => { getPlanOptions().then((opts) => {
+    if (!opts) return;
+    setPlanOpts(opts);
+    const cur = opts.find((o) => o.id === getActivePlanId());
+    // re-write the id→file mapping even when the saved id is still valid, so a
+    // stale localStorage entry can never point at an outdated plan file
+    if (cur) { setActivePlan(cur); setPlanId(cur.id); }
+    else { setActivePlan(opts[0]); setPlanId(opts[0].id); }
+  }); }, []);
+  const pickPlan = (o) => { setActivePlan(o); setPlanId(o.id); };
   return (
     <div>
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Segmented t={t} value={sub} onChange={setSub} options={[["stops", "Stops"], ["plan", "Fleet plan"], ["new", "Planner"], ["suggest", "Suggestions"]]} />
+        <Segmented t={t} value={sub} onChange={setSub} options={[["stops", "Stops"], ["plan", "Fleet plan"], ["new", "Planner"]]} />
+        {(sub === "plan" || sub === "new") && planOpts && planOpts.length > 1 && (
+          <div className="inline-flex items-center gap-1 rounded-xl p-1" style={{ background: t.surface2, border: "1px solid " + t.border }}>
+            <span className="text-[10px] font-bold uppercase tracking-wider px-2" style={{ color: t.faint }}>Plan</span>
+            {planOpts.map((o) => {
+              const on = o.id === planId;
+              return (
+                <button key={o.id} onClick={() => pickPlan(o)} title={o.desc || ""}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold transition text-left"
+                  style={{ background: on ? t.raised : "transparent", color: on ? t.text : t.muted,
+                           boxShadow: on ? `inset 0 -2px 0 ${t.primary}` : "none", cursor: "pointer" }}>
+                  <div>{o.label}</div>
+                  {o.metrics && <div className="text-[10px] font-medium tabular-nums" style={{ color: on ? t.muted : t.faint }}>
+                    ₹{o.metrics.cost_head} · {o.metrics.avg}m avg · {o.metrics.buses} buses
+                  </div>}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
-      {sub === "stops" && <StopsView t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} />}
-      {sub === "plan" && <FleetPlanView t={t} />}
-      {sub === "new" && <NewPlanView t={t} toast={toast} />}
-      {sub === "suggest" && <SuggestionsView t={t} />}
+      {sub === "stops" && <StopsView key={planId || "d"} t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} />}
+      {sub === "plan" && <FleetPlanView key={planId || "d"} t={t} />}
+      {sub === "new" && <NewPlanView key={planId || "d"} t={t} toast={toast} />}
     </div>
   );
 }

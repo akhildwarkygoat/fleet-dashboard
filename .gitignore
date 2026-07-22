@@ -28,3 +28,6 @@ data/bus_stops.csv
 public/current_routes.full.json
 public/merge_audit.json
 # public/current_routes.json is the ANONYMIZED build (no names) — committed so the deploy has data
+
+# local scratch (contains API key — never commit)
+GMPAS

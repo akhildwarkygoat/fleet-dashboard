@@ -1,0 +1,41 @@
+{
+ "generated": "2026-07-22",
+ "options": [
+  {
+   "id": "balanced",
+   "label": "Balanced",
+   "file": "/solver_result.json",
+   "desc": "All 71 buses used (no idle fleet), owned-near/rental-far split. The default operating plan.",
+   "metrics": {
+    "cost_head": 61.0,
+    "avg": 63,
+    "buses": 71
+   },
+   "full": {
+    "cost_head": 61.0,
+    "avg": 63,
+    "max": 139,
+    "buses": 71,
+    "util": 119
+   }
+  },
+  {
+   "id": "cost-lean",
+   "label": "Cost-lean",
+   "file": "/plan_cost_lean.json",
+   "desc": "~Rs1/head cheaper and shorter max ride, but leaves 1 bus idle. Trial variant (240s solve, softer far-penalty).",
+   "metrics": {
+    "cost_head": 60.0,
+    "avg": 63,
+    "buses": 70
+   },
+   "full": {
+    "cost_head": 60.0,
+    "avg": 63,
+    "max": 135,
+    "buses": 70,
+    "util": 120
+   }
+  }
+ ]
+}

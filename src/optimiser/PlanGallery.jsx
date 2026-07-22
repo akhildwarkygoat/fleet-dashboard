@@ -53,7 +53,7 @@ function PlanThumb({ t, assignments, stopsById, depot, busColor }) {
   );
 }
 
-export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport }) {
+export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel }) {
   return (
     <div className="space-y-5">
       <div>
@@ -73,7 +73,7 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
           className="flex items-center gap-3 rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5"
           style={{ border: "1.5px solid " + t.border, background: t.surface, cursor: canImport ? "pointer" : "not-allowed", opacity: canImport ? 1 : 0.5 }}>
           <span className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: t.techno + "22", color: t.techno }}><Sparkles size={20} /></span>
-          <span><span className="block font-semibold" style={{ color: t.text }}>From optimised plan</span><span className="block text-xs" style={{ color: t.muted }}>Import the optimiser's plan and tweak it</span></span>
+          <span><span className="block font-semibold" style={{ color: t.text }}>From optimised plan{planLabel ? ` — ${planLabel}` : ""}</span><span className="block text-xs" style={{ color: t.muted }}>Import the optimiser's {planLabel ? `${planLabel} ` : ""}plan and tweak it</span></span>
         </button>
       </div>
 

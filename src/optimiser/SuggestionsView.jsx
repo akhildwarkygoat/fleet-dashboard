@@ -17,6 +17,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { Card, Btn, Empty } from "./ui.jsx";
+import { activePlanUrl } from "./planOptions.js";
 import {
   RotateCcw, TrendingUp, TrendingDown, Minus, ChevronDown, Lightbulb,
   Bus, Users, Clock, IndianRupee, Scale, AlertTriangle, CheckCircle2, Plus, Shuffle, Split,
@@ -367,7 +368,7 @@ export default function SuggestionsView({ t }) {
   const rootRef = useRef(null);
   const load = () => {
     setErr(false); setData(null);
-    fetch("/solver_result.json?ts=" + Date.now()).then((r) => (r.ok ? r.json() : Promise.reject())).then(setData).catch(() => setErr(true));
+    fetch(activePlanUrl() + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : Promise.reject())).then(setData).catch(() => setErr(true));
     fetch("/current_routes.json?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null)).then(setCur).catch(() => {});
   };
   useEffect(load, []);

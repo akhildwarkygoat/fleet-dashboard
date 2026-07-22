@@ -50,7 +50,7 @@ OWN_DIESEL_KM = 18.0                            # ₹/km (flat, user-provided)
 DIESEL_PER_LITRE = 100.0                        # display only (Equations editor); 100 ÷ 5.56 ≈ 18/km
 MILEAGE_KMPL     = round(DIESEL_PER_LITRE / OWN_DIESEL_KM, 2)
 RENT_EPS_KM = 2                        # tiny compactness cost so rentals don't wander
-OWN_FAR_PEN = 6                        # owned buses pay this x (stop's km-from-depot) as a surcharge,
+OWN_FAR_PEN = float(os.environ.get("OWN_FAR_PEN", 6))  # owned buses pay this x (stop's km-from-depot) as a surcharge,
                                        # so they favour CLOSE stops and the flat-tariff rentals absorb
                                        # the FAR / isolated stops (distance-based, so owned can still
                                        # pack more NEAR stops without a ride-time conflict)
