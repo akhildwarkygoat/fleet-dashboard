@@ -230,7 +230,10 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
             const on = activeBus === r.bus.id;
             const fillCol = r.overCap ? t.poor : r.overSeats ? t.watch : r.stopIds.length ? t.good : t.border;
             return (
-              <button key={r.bus.id} type="button" onClick={() => setActiveBus(on ? null : r.bus.id)}
+              // div-with-role, not <button>: the card holds the wand/trash <button>s and
+              // nested buttons are invalid DOM (React validateDOMNesting warning)
+              <div key={r.bus.id} role="button" tabIndex={0} onClick={() => setActiveBus(on ? null : r.bus.id)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveBus(on ? null : r.bus.id); } }}
                 className="text-left rounded-xl p-2.5 transition-all" style={{
                   border: "1.5px solid " + (on ? t.primary : r.overCap ? t.poor : glassInnerBorder),
                   background: on ? t.primarySoft : glassInner,
@@ -255,7 +258,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                     <button type="button" title="Clear bus" onClick={(e) => { e.stopPropagation(); editor.clearBus(r.bus.id); }} style={{ color: t.muted, cursor: "pointer" }}><Trash2 size={12} /></button>
                   </div>
                 )}
-              </button>
+              </div>
             );
           })}
         </div>

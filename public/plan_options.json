@@ -1,29 +1,29 @@
 {
- "generated": "2026-07-22",
+ "generated": "2026-07-23",
  "options": [
   {
    "id": "balanced",
    "label": "Balanced",
    "file": "/solver_result.json",
-   "desc": "All 71 buses used (no idle fleet), owned-near/rental-far split. The default operating plan.",
+   "desc": "Full 760-stop network (all 2,950 ERP riders, incl. 80 recovered stops). All 71 buses used, owned-near/rental-far split. The default operating plan.",
    "metrics": {
-    "cost_head": 61.0,
-    "avg": 63,
+    "cost_head": 56.4,
+    "avg": 66,
     "buses": 71
    },
    "full": {
-    "cost_head": 61.0,
-    "avg": 63,
-    "max": 139,
+    "cost_head": 56.4,
+    "avg": 66,
+    "max": 176,
     "buses": 71,
-    "util": 119
+    "util": 129
    }
   },
   {
    "id": "cost-lean",
-   "label": "Cost-lean",
+   "label": "Cost-lean (old network)",
    "file": "/plan_cost_lean.json",
-   "desc": "~Rs1/head cheaper and shorter max ride, but leaves 1 bus idle. Trial variant (240s solve, softer far-penalty).",
+   "desc": "OLD 680-stop / 2,727-rider network — predates the 80 recovered stops. Kept for reference until the cost-lean variant is re-solved on the full network.",
    "metrics": {
     "cost_head": 60.0,
     "avg": 63,
