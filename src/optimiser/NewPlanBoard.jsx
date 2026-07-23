@@ -15,7 +15,12 @@ import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarC
 const UNADDED = "#f87171"; // light red — stop not yet on any bus
 const ADDED = "#4ade80";   // light green — stop assigned to a bus
 
-export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, totalRiders, demandOf, toast }) {
+export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, totalRiders, demandOf, toast, period = "evening" }) {
+  // Assignments are stored in EVENING traversal order (factory → s1 → … → sn). Morning is the
+  // same chain ridden backwards (sn → … → s1 → factory), so morning clicks PREPEND: the first
+  // stop you click is where the bus starts, and each next click adds the stop after it on the
+  // way to the factory. Costs/KPIs are direction-free (chain km already counts both runs).
+  const morning = period === "morning";
   const [activeBus, setActiveBus] = useState(null);
   const [busQuery, setBusQuery] = useState("");
   const busColor = useMemo(() => { const m = {}; fleet.forEach((b, i) => (m[b.id] = PALETTE[i % PALETTE.length])); return m; }, [fleet]);
@@ -71,14 +76,20 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
       const list = editor.assign.get(activeBus) || [];
       const i = list.indexOf(stopId);
       if (i >= 0) {
+        // truncateFrom drops the segment disconnected from the factory — correct in BOTH
+        // directions (evening: this stop + everything after; morning: this stop + everything
+        // that rides through it before reaching the factory).
         const tail = list.length - i;
         editor.truncateFrom(activeBus, stopId);
-        if (tail > 1 && toast) toast(`Removed this stop and ${tail - 1} after it`);
+        if (tail > 1 && toast) toast(morning ? `Removed this stop and the ${tail - 1} before it` : `Removed this stop and ${tail - 1} after it`);
         return;
       }
       // clicked a stop that belongs to a DIFFERENT bus → jump focus to its bus instead of adding
       if (owner && owner !== activeBus) { setActiveBus(owner); return; }
-      editor.assignStop(stopId, activeBus, { sequence: false });
+      // evening builds outward from the factory (append); morning builds toward it (prepend, so
+      // the first click is the route start and each next click sits closer to the factory)
+      if (morning) editor.insertStopAt(stopId, activeBus, 0);
+      else editor.assignStop(stopId, activeBus, { sequence: false });
       return;
     }
     // no bus active: clicking an already-assigned stop selects (highlights + tops) its bus, so you
@@ -100,7 +111,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
     { label: `Riders · ${busName}`, value: `${row.heads} / ${row.cap}`, sub: row.overCap ? "over capacity" : row.overSeats ? "over seats" : "seats filled", accent: row.overCap ? t.poor : row.overSeats ? t.watch : t.techno, dc: row.overCap ? t.poor : row.overSeats ? t.watch : t.muted },
     { label: "Utilisation", value: `${Math.round(row.fill * 100)}%`, sub: `${row.stops.length} stops`, accent: row.fill >= 0.85 ? t.good : t.watch },
     { label: "Cost / head / day", value: row.heads ? `₹${(row.cost / row.heads).toFixed(1)}` : "—", sub: `₹${Math.round(row.cost)} / day`, accent: t.primary },
-    { label: "Ride (to last stop)", value: `${Math.round(row.ride)} min`, sub: row.km ? `${row.km.toFixed(1)} km/day` : "", accent: row.ride < 100 ? t.good : t.poor },
+    { label: morning ? "Ride (first stop → factory)" : "Ride (to last stop)", value: `${Math.round(row.ride)} min`, sub: row.km ? `${row.km.toFixed(1)} km/day` : "", accent: row.ride < 100 ? t.good : t.poor },
   ] : [
     { label: "People", value: `${assignedHeads} / ${totalRiders}`, sub: `${progress.toFixed(0)}% assigned`, accent: t.techno, dc: progress >= 99.5 ? t.good : t.muted },
     { label: "Avg util", value: k ? `${k.utilisation.toFixed(0)}%` : "—", sub: `${busesUsed} bus${busesUsed === 1 ? "" : "es"} used`, accent: k && k.utilisation >= 85 ? t.good : t.watch },
@@ -180,8 +191,10 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
         <div className="flex items-center gap-1.5 text-[11px] font-medium mb-2" style={{ color: activeBus ? t.primary : t.muted }}>
           <MousePointerClick size={13} />
           {activeBus
-            ? <><b>Assigning to {busName}</b> — click stops on the map to add/remove (click several for multiple).</>
-            : <>Pick a bus on the right, then click stops on the map to assign them.</>}
+            ? (morning
+              ? <><b>Morning · {busName}</b> — first click = where the bus starts; each next stop is picked up on the way to the factory.</>
+              : <><b>Assigning to {busName}</b> — click stops on the map to add/remove (click several for multiple).</>)
+            : <>Pick a bus on the right, then click stops on the map to assign them.{morning ? " Morning plan: routes run stops → factory." : ""}</>}
           {activeBus && <button type="button" onClick={() => setActiveBus(null)} className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-semibold" style={{ border: "1px solid " + t.border, background: glassBtn, color: t.text, cursor: "pointer" }}><X size={11} /> Done</button>}
           <button type="button" onClick={() => setShowKpis(false)} title="Hide stats" className={activeBus ? "" : "ml-auto"} style={{ color: t.muted, cursor: "pointer" }}><EyeOff size={13} /></button>
         </div>

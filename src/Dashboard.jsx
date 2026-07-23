@@ -716,8 +716,12 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         <span style={{ color: t.muted }}>Cost/km <b style={{ color: t.text }}>{inr1(x.m.cpk)}</b></span>
         {showNV && <span style={{ color: t.muted }}>Net value <b style={{ color: x.m.netAnnual >= 0 ? t.good : t.poor }}>{inr(x.m.netAnnual)}/yr</b></span>}
       </div>
-      {(() => { const emps = busEmps(employees, x.bus.id), day = attendance[x.date] || {}; return emps.length ? (
-        <div className="flex flex-wrap gap-1.5">{emps.map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
+      {(() => { const emps = busEmps(employees, x.bus.id), day = attendance[x.date] || {};
+        // absentees first, then no-punch, present last — the misses are what you scan for
+        const stRank = (st) => (st === "A" ? 0 : st === "P" ? 2 : 1);
+        const ordered = emps.slice().sort((a, b) => stRank(day[a.id]) - stRank(day[b.id]));
+        return ordered.length ? (
+        <div className="flex flex-wrap gap-1.5">{ordered.map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
           return <span key={e.id} title={`${e.code} · ${st === "P" ? "Present" : st === "A" ? "Absent" : "No punch"}`} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs" style={{ background: t.surface, border: "1px solid " + t.border, color: t.text }}><span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold" style={{ background: c + "22", color: c }}>{lab}</span>{e.name}</span>; })}</div>
       ) : <div className="text-xs" style={{ color: t.muted }}>No employees mapped.</div>; })()}
       {formulas.length > 0 && <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs" style={{ color: t.muted }}>{formulas.map((f) => <span key={f.id}>{f.name}: <b style={{ color: t.text }}>{fmtFormula(evalFormula(f.expr, x.m, vmap), f)}</b></span>)}</div>}
@@ -1082,7 +1086,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
         <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} onChange={(p) => onBusCost(bus.id, p)} />
 
         <Card t={t} title={`Employees (${emps.length})`} hint="Latest punch status · click an employee for full details">
-          {emps.length ? <div className="flex flex-wrap gap-1.5">{emps.map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
+          {emps.length ? <div className="flex flex-wrap gap-1.5">{emps.slice().sort((a, b) => { const r = (st) => (st === "A" ? 0 : st === "P" ? 2 : 1); return r(day[a.id]) - r(day[b.id]); }).map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
             return <button key={e.id} onClick={() => setOpenEmp(e)} title={st === "P" ? "Present" : st === "A" ? "Absent" : "No punch"} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}><span className="w-4 h-4 rounded flex items-center justify-center text-[9px] font-bold" style={{ background: c + "22", color: c }}>{lab}</span>{e.name}</button>; })}</div>
             : <div className="text-sm" style={{ color: t.muted }}>No employees mapped to this bus.</div>}
         </Card>

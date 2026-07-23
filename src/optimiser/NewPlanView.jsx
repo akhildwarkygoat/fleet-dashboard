@@ -7,12 +7,12 @@
  * ==========================================================================*/
 import React, { useEffect, useMemo, useState } from "react";
 import * as store from "./store.js";
-import { usePlanMetric, usePlanEditor, seedFromSolver, makeDemandFn, fleetFromSolver } from "./planEditor.js";
+import { usePlanMetric, usePlanEditor, seedFromSolver, fleetFromSolver } from "./planEditor.js";
 import { Btn, Empty, PALETTE } from "./ui.jsx";
 import NewPlanBoard from "./NewPlanBoard.jsx";
 import PlanGallery from "./PlanGallery.jsx";
 import { activePlanUrl, getActivePlanLabel } from "./planOptions.js";
-import { Save, Sparkles, RotateCcw, Download, Undo2, Redo2, Wand2, ArrowLeft } from "lucide-react";
+import { Save, Sparkles, RotateCcw, Download, Undo2, Redo2, Wand2, ArrowLeft, Sunset, Sunrise } from "lucide-react";
 import { downloadPlanJson } from "./planExport.js";
 
 const EMPTY = new Map();
@@ -38,7 +38,9 @@ export default function NewPlanView({ t, toast }) {
     [storeStops, importedPlan]
   );
   const stopsById = useMemo(() => new Map(allStops.map((s) => [s.id, s])), [allStops]);
-  const baseDemand = useMemo(() => makeDemandFn(allStops), [allStops]);
+  // The Planner counts REGISTERED riders per stop (matches the Stops tab's 2,727 and the solver
+  // plans' demand) — not the attendance-calibrated figure, so a fully-assigned plan reads 100%.
+  const baseDemand = useMemo(() => { const fn = (s) => Math.max(0, Math.round(+s.headcount || 0)); fn.regToActive = 1; return fn; }, []);
   const demandOf = useMemo(() => {
     if (!importedPlan || !importedPlan.demand.size) return baseDemand;
     const fn = (stop) => (importedPlan.demand.has(stop.id) ? importedPlan.demand.get(stop.id) : baseDemand(stop));
@@ -51,6 +53,10 @@ export default function NewPlanView({ t, toast }) {
 
   // hub state: which view, the open draft, the editable name, and the editor seed
   const [view, setView] = useState("gallery");           // "gallery" | "editor"
+  // Evening = factory → stops (drop-off, how plans are stored). Morning = the same chain
+  // ridden in reverse: last stop → … → first stop → factory (pickup). Display/editing only —
+  // the cost model already counts both directions (chain km = 2 × one-way).
+  const [period, setPeriod] = useState("evening");       // "evening" | "morning"
   const [drafts, setDrafts] = useState(() => store.listPlanDrafts());
   const [current, setCurrent] = useState(null);           // { id, name } of the open saved draft, or null (unsaved)
   const [draftName, setDraftName] = useState("Untitled plan");
@@ -108,6 +114,17 @@ export default function NewPlanView({ t, toast }) {
         <input value={draftName} onChange={(e) => setDraftName(e.target.value)} placeholder="Plan name…"
           className="rounded-lg px-3 py-1.5 text-sm font-semibold outline-none" style={{ border: "1px solid " + t.border, background: t.surface, color: t.text, minWidth: 200 }} />
         {current && <span className="text-[11px]" style={{ color: t.muted }}>saved</span>}
+        <div className="inline-flex items-center rounded-xl p-1" style={{ background: t.surface2, border: "1px solid " + t.border }}>
+          {[["evening", "Evening", Sunset], ["morning", "Morning", Sunrise]].map(([id, label, Icon]) => (
+            <button key={id} type="button" onClick={() => setPeriod(id)}
+              title={id === "evening" ? "Drop-off: factory → stops (last stop is the end of the line)" : "Pickup: last stop → … → factory (the same chain, ridden in reverse)"}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition"
+              style={{ background: period === id ? t.raised : "transparent", color: period === id ? t.text : t.muted,
+                       boxShadow: period === id ? `inset 0 -2px 0 ${t.primary}` : "none", cursor: "pointer" }}>
+              <Icon size={13} /> {label}
+            </button>
+          ))}
+        </div>
         <div className="flex-1" />
         <Btn t={t} variant="ghost" onClick={editor.undo} disabled={!editor.canUndo} title="Undo"><Undo2 size={15} /></Btn>
         <Btn t={t} variant="ghost" onClick={editor.redo} disabled={!editor.canRedo} title="Redo"><Redo2 size={15} /></Btn>
@@ -118,7 +135,7 @@ export default function NewPlanView({ t, toast }) {
         <Btn t={t} onClick={save}><Save size={15} /> Save</Btn>
       </div>
       {estimated && <div className="text-xs rounded-xl px-3 py-2" style={{ background: t.watch + "22", color: t.watch }}>Using straight-line distance estimates — the road matrix cache didn't cover every stop.</div>}
-      <NewPlanBoard t={t} editor={editor} fleet={fleet} depot={depot} stopsById={stopsById} totalRiders={totalRiders} demandOf={demandOf} toast={toast} />
+      <NewPlanBoard t={t} editor={editor} fleet={fleet} depot={depot} stopsById={stopsById} totalRiders={totalRiders} demandOf={demandOf} toast={toast} period={period} />
     </div>
   );
 }
