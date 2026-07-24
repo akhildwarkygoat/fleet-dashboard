@@ -60,6 +60,13 @@ async function withRetry(fn, tries = 3, delayMs = 700) {
 }
 
 const sig = (points) => points.map((p) => p.lat.toFixed(5) + "," + p.lng.toFixed(5)).join("|");
+/* straight-line km between two {lat,lng} — the ruler fallback for legs with no cached road value */
+const _R = 6371.0088, _rad = (x) => (x * Math.PI) / 180;
+const havKm = (a, b) => {
+  const h = Math.sin(_rad(b.lat - a.lat) / 2) ** 2 +
+    Math.cos(_rad(a.lat)) * Math.cos(_rad(b.lat)) * Math.sin(_rad(b.lng - a.lng) / 2) ** 2;
+  return 2 * _R * Math.asin(Math.sqrt(h));
+};
 const _matrixCache = new Map();
 const _routeCache = new Map();
 
@@ -97,12 +104,22 @@ async function cachedMatrix(points) {
   const n = points.length;
   const km = Array.from({ length: n }, () => Array(n).fill(0));
   const min = Array.from({ length: n }, () => Array(n).fill(0));
+  let filled = 0;
   for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+    if (a === b) continue;
     const kv = c.km[idx[a]][idx[b]], mv = c.min[idx[a]][idx[b]];
-    km[a][b] = kv >= 0 ? kv : Infinity;   // -1 in the cache = unreachable
-    min[a][b] = mv >= 0 ? mv : Infinity;
+    // null (a stop recovered after the matrix was built) or -1 (unreachable) means no
+    // cached road value for this leg. NOTE: `null >= 0` is true in JS, so these must be
+    // tested explicitly or nulls leak through as distances and poison every KPI.
+    if (kv == null || kv < 0 || mv == null || mv < 0) {
+      const d = havKm(points[a], points[b]) * 1.30;
+      km[a][b] = d; min[a][b] = (d / 26) * 60; filled++;
+      continue;
+    }
+    km[a][b] = kv; min[a][b] = mv;
   }
-  return { km, min };
+  // partial = served from the cache, but some legs fell back to the ruler estimate
+  return { km, min, partial: filled > 0, filled };
 }
 
 /** Public: km/min sub-matrix for arbitrary points from the OFFLINE cache (zero
@@ -111,12 +128,7 @@ async function cachedMatrix(points) {
 export async function matrixFor(points) {
   const fromCache = await cachedMatrix(points);
   if (fromCache) return fromCache;
-  const R = 6371.0088, rad = (x) => (x * Math.PI) / 180;
-  const hav = (a, b) => {
-    const h = Math.sin(rad(b.lat - a.lat) / 2) ** 2 +
-      Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lng - a.lng) / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(h));
-  };
+  const hav = havKm;
   const n = points.length;
   const km = Array.from({ length: n }, () => Array(n).fill(0));
   const min = Array.from({ length: n }, () => Array(n).fill(0));

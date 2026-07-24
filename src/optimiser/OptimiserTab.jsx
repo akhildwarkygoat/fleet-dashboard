@@ -141,9 +141,10 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
   const PER = 20;
   const dep = store.getDepot();
 
-  // stop-level metrics. "People" = EFFECTIVE daily riders (registered roster scaled to the
-  // active rate + absentee/buffer), NOT the raw registered headcount — matches the fleet plan's
-  // 2,141 riders. Uses the same calibration as optimize.py; prefers the plan's demand when loaded.
+  // stop-level metrics. "People" = the ALLOCATED roster — every ERP rider on the 71 buses
+  // who has a GPS location (3,021 today). The network's per-stop headcounts are derived
+  // straight from the ERP feed, so this is the one baseline the Planner, Previous-routes
+  // and the optimiser all share. (avgDist still weights by effective daily riders.)
   const JUNE_ALLOTTED = 2360, BUFFER = 0.03;
   const metrics = useMemo(() => {
     let raw = 0, dSum = 0, aSum = 0, hSum = 0;
@@ -156,7 +157,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
       effective += eff; hSum += eff; aSum += (s.absentee || 0) * eff;
       if (s.lat != null && s.lng != null) dSum += havKm(dep.lat, dep.lng, s.lat, s.lng) * eff;
     }
-    const people = planDemand ?? effective;
+    const people = raw;   // the allocated roster, not a plan snapshot or an attendance estimate
     return {
       totalStops: stops.length, totalPeople: people, rawPeople: raw,
       avgPerStop: stops.length ? people / stops.length : 0,
@@ -213,7 +214,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Tile t={t} label="Total stops" value={metrics.totalStops} accent={t.primary} />
-        <Tile t={t} label="Total people" value={metrics.totalPeople} sub={`${metrics.rawPeople.toLocaleString("en-IN")} registered`} accent={t.techno} />
+        <Tile t={t} label="Total people" value={metrics.totalPeople} sub="allocated · from ERP" accent={t.techno} />
         <Tile t={t} label="Avg people / stop" value={metrics.avgPerStop.toFixed(1)} accent={t.primary} />
         <Tile t={t} label="Avg distance / person" value={metrics.avgDist.toFixed(1) + " km"} accent={t.good} />
       </div>

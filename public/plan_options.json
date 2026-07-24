@@ -1,29 +1,29 @@
 {
- "generated": "2026-07-23",
+ "generated": "2026-07-24",
  "options": [
   {
    "id": "balanced",
    "label": "Balanced",
    "file": "/solver_result.json",
-   "desc": "Full 760-stop network (all 2,950 ERP riders, incl. 80 recovered stops). All 71 buses used, owned-near/rental-far split. The default operating plan.",
+   "desc": "Full 77-bus ERP fleet on the 766-stop network. All 3,021 GPS-located riders seated, every bus dispatched (no idle fleet).",
    "metrics": {
-    "cost_head": 56.4,
-    "avg": 66,
-    "buses": 71
+    "cost_head": 61.1,
+    "avg": 61,
+    "buses": 77
    },
    "full": {
-    "cost_head": 56.4,
-    "avg": 66,
-    "max": 176,
-    "buses": 71,
-    "util": 129
+    "cost_head": 61.1,
+    "avg": 61,
+    "max": 156,
+    "buses": 77,
+    "util": 117
    }
   },
   {
    "id": "cost-lean",
-   "label": "Cost-lean (old network)",
+   "label": "Cost-lean (stale)",
    "file": "/plan_cost_lean.json",
-   "desc": "OLD 680-stop / 2,727-rider network — predates the 80 recovered stops. Kept for reference until the cost-lean variant is re-solved on the full network.",
+   "desc": "OLD 680-stop / 2,727-rider network on a 71-bus fleet \u2014 predates the ERP re-attribution and the 6 recovered buses. Kept for reference until re-solved.",
    "metrics": {
     "cost_head": 60.0,
     "avg": 63,

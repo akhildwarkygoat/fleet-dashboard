@@ -243,8 +243,11 @@ export function seedFromSolver(solver, fleet, stops) {
     if (s.lat != null && s.lng != null) { byCoord.set((+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4), s.id); located.push(s); }
     if (s.name) byName.set(s.name.toLowerCase().trim(), s.id);
   }
-  const nearestId = (p) => { // closest store stop within ~150 m
-    let best = null, bestKm = 0.15;
+  // Closest network stop within 2 km — the SAME rule the network's headcounts are
+  // attributed by, so an import reproduces the ERP's per-stop rider counts exactly.
+  // (Optimised plans hit the exact-coord lookup first, so this radius never applies there.)
+  const nearestId = (p) => {
+    let best = null, bestKm = 2;
     for (const s of located) { const km = haversineKm(p, s); if (km < bestKm) { bestKm = km; best = s.id; } }
     return best;
   };
@@ -256,19 +259,27 @@ export function seedFromSolver(solver, fleet, stops) {
     const ids = [];
     for (const s of (r.seq || [])) {
       const pt = s.lat != null ? { lat: +s.lat, lng: +s.lng } : null;
+      // Order matters: exact coords, then NEAREST, then name. Nearest must beat name —
+      // village names repeat across the district, and the network's headcounts are
+      // attributed by nearest stop, so name-first would credit riders to a same-named
+      // stop kilometres away and double-count them against the real one.
       let id = (pt && byCoord.get(pt.lat.toFixed(4) + "," + pt.lng.toFixed(4)))
-        || byName.get((s.name || "").toLowerCase().trim())
         || (pt && nearestId(pt))
+        || byName.get((s.name || "").toLowerCase().trim())
         || null;
-      if (!id || used.has(id)) {
-        // no (free) store stop for this plan stop — carry the plan's own stop so the
-        // import stays faithful to the file instead of silently dropping riders
+      if (!id) {
+        // genuinely no network stop within 2 km — carry the plan's own stop so the
+        // import stays faithful instead of silently dropping riders
         if (!pt) continue;
         id = "plan:" + pt.lat.toFixed(5) + "," + pt.lng.toFixed(5) + ":" + extras.length;
         extras.push({ id, name: s.name || "Plan stop", lat: pt.lat, lng: pt.lng, headcount: +s.hc || 0, absentee: 0 });
       }
+      // ACCUMULATE the rider counts: several raw ERP pickup points routinely collapse
+      // onto one consolidated stop, and that stop serves all of them. Overwriting here
+      // would leave a 10-rider village showing whichever single point claimed it.
+      if (s.hc != null) demand.set(id, (demand.get(id) || 0) + Math.max(0, Math.round(+s.hc || 0)));
+      if (used.has(id)) continue; // already on a route — count its riders, don't stop twice
       used.add(id);
-      if (s.hc != null) demand.set(id, Math.max(0, Math.round(+s.hc || 0)));
       ids.push(id);
     }
     seed.set(busId, ids);

@@ -1702,14 +1702,6 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
 /* ============================ PREVIOUSLY USED ROUTE ============================ */
 /* The live-ERP "current routes" view (map + routes table + edit/export), embedded from the
    self-contained public/routes_map.html so it shares one implementation with the standalone page. */
-function PrevRouteTab({ t }) {
-  // no white card wrapper — the embedded page sits on the dashboard's own background (like the Optimiser tab)
-  return (
-    <iframe src="/routes_map.html?embed=1" title="Previously used route" allow="fullscreen"
-      style={{ width: "100%", height: "calc(100vh - 108px)", minHeight: 640, border: 0, display: "block", background: t.bg }} />
-  );
-}
-
 /* ============================ APP ============================ */
 const ERP_POLL_MS = 60_000; // auto-refresh the ERP feed every 60s for live updates
 const fmtClock = (ts) => { try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
@@ -1872,8 +1864,8 @@ export default function App() {
 
   // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
   // Equations is retired; Metrics lives inside Settings now.
-  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", MapPin], ["prevroute", "Prev. route", History], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
-  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", optimiser: "", prevroute: "", settings: "Settings" };
+  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", MapPin], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
+  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", optimiser: "", settings: "Settings" };
 
   return (
     <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)" }}>
@@ -1913,7 +1905,6 @@ export default function App() {
             {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} onBusCost={setBusCost} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
             {tab === "optimiser" && <OptimiserTab t={t} toast={toast} />}
-            {tab === "prevroute" && <PrevRouteTab t={t} />}
             {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} toast={toast} themeName={themeName} setThemeName={setThemeName}
               formulas={formulas} variables={variables}
               onAddMetric={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}
