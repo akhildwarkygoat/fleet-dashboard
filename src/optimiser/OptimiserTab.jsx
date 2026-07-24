@@ -1042,7 +1042,6 @@ function attachEffDemand(seq, target) {
 function FleetPlanView({ t }) {
   const [data, setData] = useState(null);
   const view = "overall"; // Combined data only (owned/rental split shown within the KPIs)
-  const [open, setOpen] = useState(() => new Set()); // expanded route rows (show stop order + Maps link)
   const [names, setNames] = useState(() => { try { return JSON.parse(localStorage.getItem("opt-route-names") || "{}"); } catch { return {}; } }); // custom route names, keyed by bus
   const [busCo] = useState(loadBusCo); // bus -> company (read-only here; edited in the Companies tab)
   const [explain, setExplain] = useState(null); // which KPI tile's calculation is open (cost|buses|util|ride|null)
@@ -1095,7 +1094,6 @@ function FleetPlanView({ t }) {
   const curRoutePage = Math.min(routePage, routePageCount - 1);
   const pagedRows = tableRows.slice(curRoutePage * ROUTES_PER_PAGE, curRoutePage * ROUTES_PER_PAGE + ROUTES_PER_PAGE);
   const depot = data.params.depot;
-  const toggle = (name) => setOpen((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; });
   // --- master map: plot any set of routes together, each in its own colour ---
   const toggleSel = (name) => setSelRoutes((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; });
   const allSelected = tableRows.length > 0 && tableRows.every((r) => selRoutes.has(r.name));
@@ -1377,7 +1375,7 @@ function FleetPlanView({ t }) {
               <th className="py-2.5 px-2 text-left" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, borderTopLeftRadius: 10, borderBottomLeftRadius: 0 }}>
                 <input type="checkbox" title={allSelected ? "Clear map selection" : "Plot all routes"} checked={allSelected} onChange={toggleAll} style={{ accentColor: t.primary, width: 15, height: 15 }} />
               </th>
-              {["Bus", "Type", "Company", "Stops", "Riders", "Seats", "Km/day", "Trip", "₹/head", "Route", ""].map((h, i, arr) => <th key={i} className="py-2.5 px-2 text-left text-xs font-semibold uppercase tracking-wider" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, color: (i === 9) ? t.techno : t.text, borderTopRightRadius: i === arr.length - 1 ? 10 : 0 }}>
+              {["Bus", "Type", "Company", "Stops", "Riders", "Seats", "Km/day", "Trip", "₹/head", "Route"].map((h, i, arr) =><th key={i} className="py-2.5 px-2 text-left text-xs font-semibold uppercase tracking-wider" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, color: (i === 9) ? t.techno : t.text, borderTopRightRadius: i === arr.length - 1 ? 10 : 0 }}>
                 {h === "Company" ? (
                   <div className="relative inline-flex items-center gap-1.5">
                     <span>Company</span>
@@ -1410,10 +1408,9 @@ function FleetPlanView({ t }) {
             </tr></thead>
             <tbody>
               {pagedRows.map((r) => {
-                const isOpen = open.has(r.name); // keyed by bus name — stable across filter/pagination
                 return (
                 <React.Fragment key={r.name}>
-                <tr style={{ borderBottom: isOpen ? "none" : "1px solid " + t.border, background: isOpen ? t.surface2 : selRoutes.has(r.name) ? t.primarySoft : "transparent" }}>
+                <tr style={{ borderBottom: "1px solid " + t.border, background: selRoutes.has(r.name) ? t.primarySoft : "transparent" }}>
                   <td className="py-2 px-2">
                     <span className="inline-flex items-center gap-1.5">
                       <input type="checkbox" title="Plot on master map" checked={selRoutes.has(r.name)} onChange={() => toggleSel(r.name)} style={{ accentColor: t.primary, width: 15, height: 15 }} />
@@ -1437,25 +1434,7 @@ function FleetPlanView({ t }) {
                     <div>{r.seq[0] ? r.seq[0].name : "—"} <span style={{ color: t.muted, fontWeight: 400 }}>({r.km_to_last ?? "—"} km)</span></div>
                     <div><span style={{ color: t.muted, fontWeight: 400 }}>→ </span>{r.seq.length ? r.seq[r.seq.length - 1].name : "—"} <span style={{ color: t.muted, fontWeight: 400 }}>({r.km_to_farthest ?? "—"} km)</span></div>
                   </td>
-                  <td className="py-2 px-2"><button onClick={() => toggle(r.name)} className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold" style={{ border: "1px solid " + t.border, color: t.primary }}><ChevronRight size={13} style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }} />{isOpen ? "Close" : "Open"}</button></td>
                 </tr>
-                {isOpen && (
-                  <tr style={{ background: t.surface2, borderBottom: "1px solid " + t.border }}>
-                    <td colSpan={12} className="px-3 pb-4 pt-3">
-                      <div className="text-xs mb-1.5" style={{ color: t.muted }}>Evening drop — factory → stop 1 (nearest) → … → stop {r.seq.length} (parks overnight). Morning pickup = the same route reversed:</div>
-                      <div className="flex flex-wrap items-center gap-1.5 text-xs mb-3">
-                        <span className="rounded-lg px-2 py-1 font-semibold" style={{ background: t.primarySoft, color: t.primary }}>Factory</span>
-                        {r.seq.map((s, k) => (
-                          <span key={k} className="inline-flex items-center gap-1.5">
-                            <ChevronRight size={12} style={{ color: t.muted }} />
-                            <span className="rounded-lg px-2 py-1" style={{ background: t.surface, border: "1px solid " + t.border, color: t.text }}>{k + 1}. {s.name}{k === r.seq.length - 1 ? " 🌙" : ""}</span>
-                          </span>
-                        ))}
-                      </div>
-                      <RouteMap t={t} depot={depot} route={r} />
-                    </td>
-                  </tr>
-                )}
                 </React.Fragment>
                 );
               })}

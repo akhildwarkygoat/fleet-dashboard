@@ -30,6 +30,12 @@ export default function NewPlanView({ t, toast }) {
       .then((d) => setSolver(d)).catch(() => {}).finally(() => setSolverLoaded(true));
   }, []);
   const fleet = useMemo(() => (solver ? fleetFromSolver(solver, store.getFleet()) : store.getFleet()), [solver]);
+  // ERP's previously-ran allocation — always available in the gallery as a starting seed
+  const [prevRoutes, setPrevRoutes] = useState(null);
+  useEffect(() => {
+    fetch("/current_routes.json?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null))
+      .then((d) => setPrevRoutes(d && Array.isArray(d.buses) ? d : null)).catch(() => {});
+  }, []);
   // set on import: stops carried over from the plan file that aren't in the store, plus the
   // plan's own per-stop rider counts — so the editor presents the plan exactly as solved
   const [importedPlan, setImportedPlan] = useState(null);   // { extras: stop[], demand: Map } | null
@@ -81,6 +87,40 @@ export default function NewPlanView({ t, toast }) {
     toast && toast(`Imported the ${label} optimised plan` + (extras.length ? ` (${extras.length} stops carried from the plan file)` : ""));
   };
   const deleteDraft = (d) => { store.deletePlanDraft(d.id); setDrafts(store.listPlanDrafts()); toast && toast("Plan deleted"); };
+  // Prev-route seed: current_routes.json stores buses[].stops[] (ERP's actual allocation).
+  // Reshape to the solver_result form so the same faithful-import path handles it.
+  const importPrevRoutes = () => {
+    if (!prevRoutes) { toast && toast("Previous routes aren't loaded yet"); return; }
+    const shaped = { routes: prevRoutes.buses.map((b) => ({
+      name: b.name, type: b.type === "owned" ? "own" : b.type, cap: b.seat,
+      seq: (b.stops || []).map((s) => ({ name: s.name, lat: s.lat, lng: s.lng, hc: s.hc })),
+    })) };
+    const { seed, extras, demand } = seedFromSolver(shaped, fleet, storeStops);
+    let placed = 0; for (const ids of seed.values()) placed += ids.length;
+    if (!placed) { toast && toast("Previous routes didn't match this fleet"); return; }
+    setImportedPlan({ extras, demand });
+    setSeed(seed); setCurrent(null); setDraftName("Previous routes (ERP)"); setView("editor");
+    toast && toast(`Loaded the previously-ran routes${extras.length ? ` · ${extras.length} stops carried from the ERP feed` : ""}`);
+  };
+
+  // Collaboration: open a plan JSON a teammate exported (same solver_result shape as Export
+  // writes), through the same faithful-import path as "From optimised plan".
+  const importFromFile = (json, fname) => {
+    if (!json || !Array.isArray(json.routes) || !json.routes.some((r) => Array.isArray(r.seq) && r.seq.length)) {
+      toast && toast("That file isn't a plan export — expected the JSON the Planner's Export button writes"); return;
+    }
+    const { seed, extras, demand } = seedFromSolver(json, fleet, storeStops);
+    let placed = 0; for (const ids of seed.values()) placed += ids.length;
+    if (!placed) { toast && toast("No routes in that file matched this fleet — is it from the same dashboard?"); return; }
+    const skipped = json.routes.filter((r) => (r.seq || []).length && !seed.has(r.name)).length;
+    setImportedPlan({ extras, demand });
+    setSeed(seed); setCurrent(null);
+    setDraftName((fname || "Imported plan").replace(/\.solver_result\.json$|\.json$/i, ""));
+    setView("editor");
+    toast && toast(`Imported ${fname || "plan file"}`
+      + (extras.length ? ` · ${extras.length} stops carried from the file` : "")
+      + (skipped ? ` · ${skipped} routes skipped (unknown bus)` : ""));
+  };
 
   // ---- editor actions ----
   const save = () => {
@@ -104,7 +144,8 @@ export default function NewPlanView({ t, toast }) {
   if (view === "gallery") {
     return <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={getActivePlanLabel()}
       stopsById={stopsById} depot={depot} busColor={busColor}
-      onNewBlank={newBlank} onImport={importPlan} onOpen={openDraft} onDelete={deleteDraft} />;
+      onNewBlank={newBlank} onImport={importPlan} onOpen={openDraft} onDelete={deleteDraft} onImportFile={importFromFile}
+      onImportPrev={importPrevRoutes} prevPlan={prevRoutes} />;
   }
 
   return (

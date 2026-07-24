@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   LayoutDashboard, GitCompare, Database, Sigma, Settings as SettingsIcon,
   Sun, Moon, Bus, Plus, Trash2, Download, Server, Activity, BarChart3, Pencil, X, ChevronRight, ChevronDown, Search, Calendar, Clock, MapPin,
-  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle
+  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
@@ -661,7 +661,7 @@ function BandsEditor({ t, bands, setBands }) {
 }
 
 /* ============================ LIVE (grid + collapsible units) ============================ */
-function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onAddCosts }) {
+function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onAddCosts, onOpenBusView }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const [q, setQ] = useState("");
@@ -794,7 +794,9 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
                     {list.map((x) => { const over = x.m.util > 150; const col = over ? OVER_BAND.color : hc(x.h); const on = openBus === x.bus.id;
                       const tag = over ? `OVER +${Math.round(x.m.util - 100)}%` : x.h.toUpperCase();
                       return (
-                        <button key={x.bus.id} data-fx="bus" onClick={() => setOpenBus(on ? null : x.bus.id)} onMouseEnter={fxLift} onMouseLeave={fxDrop} className="relative text-left rounded-xl p-2.5" style={{ background: t.surface2, border: "1.5px solid " + col, boxShadow: on ? `0 0 0 2px ${t.primary}` : "none" }}>
+                        <button key={x.bus.id} data-fx="bus" title={`Open ${x.bus.vehicle} in Bus-wise detail`}
+                          onClick={() => (onOpenBusView ? onOpenBusView(x.bus.id) : setOpenBus(on ? null : x.bus.id))}
+                          onMouseEnter={fxLift} onMouseLeave={fxDrop} className="relative text-left rounded-xl p-2.5" style={{ background: t.surface2, border: "1.5px solid " + col, boxShadow: on ? `0 0 0 2px ${t.primary}` : "none" }}>
                           <span className="absolute rounded-full" style={{ right: 8, top: 8, width: 8, height: 8, background: col }} />
                           <div className="text-xs font-semibold truncate" style={{ color: t.text, maxWidth: "84%" }}>{x.bus.vehicle}</div>
                           <div className="flex items-baseline gap-1 mt-1">
@@ -951,15 +953,17 @@ function CostCard({ t, bus, profile, wd, onChange }) {
 }
 
 /* ============================ BUS-WISE (Unit → Bus → details) ============================ */
-function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, onBusCost, toast }) {
+function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, onBusCost, toast, focusBusId, onBack }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const allDates = useMemo(() => unionDates(records, attendance), [records, attendance]);
   const visBuses = buses.filter((b) => unit === "all" || b.unit === unit);
   const [q, setQ] = useState({}); // per-company search text: { Gainup: "", Technotek: "" }
-  const [sel, setSel] = useState(visBuses[0] ? visBuses[0].id : null);
+  const [sel, setSel] = useState(focusBusId || (visBuses[0] ? visBuses[0].id : null));
   const [range, setRange] = useState({ from: "", to: "" });
   const [openEmp, setOpenEmp] = useState(null);
+  // opened from a Live bus card → jump straight to that bus
+  useEffect(() => { if (focusBusId) setSel(focusBusId); }, [focusBusId]);
 
   // default the date range to the latest day that has data
   useEffect(() => {
@@ -1005,6 +1009,15 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
   const optVal = <span title={RUN_OPTIMISER} className="text-sm font-semibold italic leading-tight" style={{ color: t.primary }}>Run optimiser →</span>;
 
   return (
+    <div className="flex flex-col gap-3">
+      {onBack && (
+        <div>
+          <button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold"
+            style={{ border: "1px solid " + t.border, background: t.surface, color: t.text, cursor: "pointer" }}>
+            <ArrowLeft size={15} /> Back to Live
+          </button>
+        </div>
+      )}
     <div className="flex flex-col md:flex-row gap-4">
       <div className="md:w-72 shrink-0 flex flex-col gap-4 md:sticky md:self-start" style={{ top: 72, maxHeight: "calc(100vh - 150px)" }}>
         {(unit === "all" ? UNITS : [unit]).map((u) => {
@@ -1124,6 +1137,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
           <p className="text-xs mt-4" style={{ color: t.muted }}>Travel time is filled once the route is planned in the Optimiser. Department &amp; designation come from the ERP.</p>
         </Modal>
       )}
+    </div>
     </div>
   );
 }
@@ -1464,11 +1478,6 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
     </Card>
   );
 }
-function EquationsView({ t, unit, buses, records, employees, attendance, formulas, settings, variables }) {
-  if (!formulas.length) return <Empty t={t} title="No metrics yet" sub="Create metrics in the Metrics tab — each one becomes a chart here." />;
-  return <div className="space-y-4">{formulas.map((f) => <EquationChart key={f.id} t={t} formula={f} unit={unit} buses={buses} records={records} employees={employees} attendance={attendance} settings={settings} variables={variables} />)}</div>;
-}
-
 /* ============================ METRICS (was Formulas) ============================ */
 function MetricForm({ t, editing, variables, onSubmit, onCancel, toast }) {
   const [f, setF] = useState({ name: "", unit: "", decimals: "0", description: "" });
@@ -1588,7 +1597,8 @@ function MetricsView({ t, formulas, variables, onAdd, onUpdate, onDel, onAddVar,
 }
 
 /* ============================ SETTINGS ============================ */
-function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, erpStatus, toast, themeName, setThemeName }) {
+function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, erpStatus, toast, themeName, setThemeName,
+  formulas, variables, onAddMetric, onUpdateMetric, onDelMetric, onAddVar, onUpdateVar, onDelVar }) {
   const [syncing, setSyncing] = useState(false);
   const doSync = async () => { setSyncing(true); try { await onSyncErp(); } finally { setSyncing(false); } };
   const erpLabel = erpStatus.phase === "ok" ? `● Live — ${erpStatus.msg}, updated ${fmtClock(erpStatus.at)}`
@@ -1680,6 +1690,11 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
         <div className="flex flex-wrap gap-3"><Btn t={t} variant="ghost" onClick={onExport}><Download size={15} /> Export all data (JSON)</Btn><Btn t={t} variant="danger" onClick={onReset}><Trash2 size={15} /> Reset to sample data</Btn></div>
         <div className="text-xs mt-3" style={{ color: t.muted }}>This local copy is saved on this device between sessions. Use “Sync from ERP” above to load live data.</div>
       </Card>
+
+      {/* Custom metrics — moved here from its own top-level tab */}
+      <MetricsView t={t} formulas={formulas || []} variables={variables || []} toast={toast}
+        onAdd={onAddMetric} onUpdate={onUpdateMetric} onDel={onDelMetric}
+        onAddVar={onAddVar} onUpdateVar={onUpdateVar} onDelVar={onDelVar} />
     </div>
   );
 }
@@ -1713,6 +1728,7 @@ export default function App() {
   const [themeName, setThemeName] = useState("light");
   const t = THEMES[themeName];
   const [tab, setTab] = useState("live");
+  const [busFocus, setBusFocus] = useState(null); // bus id opened from a Live card (Bus-wise has no nav entry)
   const [unit, setUnit] = useState("all");
   const [buses, setBuses] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -1854,8 +1870,10 @@ export default function App() {
     return () => clearInterval(id);
   }, [loaded, settings.erpAuto, syncErp]);
 
-  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", MapPin], ["prevroute", "Prev. route", History], ["bus", "Bus-wise", Bus], ["compare", "Compare", GitCompare], ["equations", "Equations", BarChart3], ["metrics", "Metrics", Sigma], ["settings", "Settings", SettingsIcon]];
-  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", equations: "Equations", metrics: "Custom metrics", optimiser: "", prevroute: "", settings: "Settings" };
+  // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
+  // Equations is retired; Metrics lives inside Settings now.
+  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", MapPin], ["prevroute", "Prev. route", History], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
+  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", optimiser: "", prevroute: "", settings: "Settings" };
 
   return (
     <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)" }}>
@@ -1887,24 +1905,23 @@ export default function App() {
       <div ref={mainRef} className="w-full px-6 py-6">
         {titleMap[tab] && <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
           <h2 data-fx="page-title" className="text-2xl font-bold tracking-tight">{titleMap[tab]}</h2>
-          {["live", "compare", "equations"].includes(tab) && <UnitDropdown t={t} value={unit} onChange={setUnit} />}
+          {["live", "compare"].includes(tab) && <UnitDropdown t={t} value={unit} onChange={setUnit} />}
         </div>}
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (
           <>
-            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onAddCosts={() => setTab("bus")} />}
-            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} onBusCost={setBusCost} toast={toast} />}
+            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onAddCosts={() => setTab("bus")} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} />}
+            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} onBusCost={setBusCost} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
-            {tab === "equations" && <EquationsView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} />}
-            {tab === "metrics" && <MetricsView t={t} formulas={formulas} variables={variables} toast={toast}
-              onAdd={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}
-              onUpdate={(f) => { setFormulas(formulas.map((x) => (x.id === f.id ? f : x))); toast("Metric updated"); }}
-              onDel={(id) => setFormulas(formulas.filter((f) => f.id !== id))}
+            {tab === "optimiser" && <OptimiserTab t={t} toast={toast} />}
+            {tab === "prevroute" && <PrevRouteTab t={t} />}
+            {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} toast={toast} themeName={themeName} setThemeName={setThemeName}
+              formulas={formulas} variables={variables}
+              onAddMetric={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}
+              onUpdateMetric={(f) => { setFormulas(formulas.map((x) => (x.id === f.id ? f : x))); toast("Metric updated"); }}
+              onDelMetric={(id) => setFormulas(formulas.filter((f) => f.id !== id))}
               onAddVar={(v) => { setVariables([...variables, v]); toast("Variable added"); }}
               onUpdateVar={(v) => setVariables(variables.map((x) => (x.id === v.id ? v : x)))}
               onDelVar={(id) => setVariables(variables.filter((v) => v.id !== id))} />}
-            {tab === "optimiser" && <OptimiserTab t={t} toast={toast} />}
-            {tab === "prevroute" && <PrevRouteTab t={t} />}
-            {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} toast={toast} themeName={themeName} setThemeName={setThemeName} />}
           </>
         )}
       </div>

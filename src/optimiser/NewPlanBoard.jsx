@@ -68,22 +68,14 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   const polylines = roadPolys.length ? roadPolys : straightPolys;
 
   // click a stop on the map → append it to the active bus IN CLICK ORDER (no auto-sequence, so the
-  // route chain matches the order you built it), or (if already on it) remove it AND every stop after
-  // it in that chain — breaking a link detaches the tail. Use the bus card's ↯ to optimise the order.
+  // route chain matches the order you built it), or (if already on it) remove JUST that stop —
+  // the rest of the route stays. Use the bus card's ↯ to re-optimise the order after a removal.
   const onStopClick = (stopId) => {
     const owner = busOfStop.get(stopId); // bus this stop is currently on (undefined if unassigned)
     if (activeBus) {
       const list = editor.assign.get(activeBus) || [];
       const i = list.indexOf(stopId);
-      if (i >= 0) {
-        // truncateFrom drops the segment disconnected from the factory — correct in BOTH
-        // directions (evening: this stop + everything after; morning: this stop + everything
-        // that rides through it before reaching the factory).
-        const tail = list.length - i;
-        editor.truncateFrom(activeBus, stopId);
-        if (tail > 1 && toast) toast(morning ? `Removed this stop and the ${tail - 1} before it` : `Removed this stop and ${tail - 1} after it`);
-        return;
-      }
+      if (i >= 0) { editor.unassignStop(stopId); return; }
       // clicked a stop that belongs to a DIFFERENT bus → jump focus to its bus instead of adding
       if (owner && owner !== activeBus) { setActiveBus(owner); return; }
       // evening builds outward from the factory (append); morning builds toward it (prepend, so

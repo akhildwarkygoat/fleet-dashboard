@@ -5,8 +5,9 @@
  * your saved drafts. Each saved draft is a card with a lightweight map PREVIEW
  * (an SVG of its routes), its name, last-edited time and a quick summary.
  * ==========================================================================*/
-import React from "react";
-import { Plus, Sparkles, MapPinned, Trash2, Clock, Users, Bus } from "lucide-react";
+import React, { useRef, useMemo } from "react";
+import { Plus, Sparkles, MapPinned, Trash2, Clock, Users, Bus, FileUp, History } from "lucide-react";
+import { PALETTE } from "./ui.jsx";
 
 function relTime(ts) {
   if (!ts) return "";
@@ -20,9 +21,18 @@ function relTime(ts) {
 
 /* A tiny SVG "map" of a plan's routes — depot→stops polyline per bus, fit to view.
  * Cheap to render (no Leaflet), so a whole gallery of them stays snappy. */
-function PlanThumb({ t, assignments, stopsById, depot, busColor }) {
+function PlanThumb({ t, assignments, stopsById, depot, busColor, lines }) {
   const W = 300, H = 150, pad = 16;
   const routes = [], pts = [];
+  if (lines) {
+    // pre-built [{color, coords:[[lat,lng],…]}] — used by the ERP prev-route card,
+    // whose stops come straight from the feed (no store ids to look up)
+    for (const l of lines) {
+      if (!l.coords.length) continue;
+      routes.push({ color: l.color, coords: [[depot.lat, depot.lng], ...l.coords] });
+      l.coords.forEach((c) => pts.push(c));
+    }
+  } else
   for (const busId of Object.keys(assignments || {})) {
     const coords = (assignments[busId] || []).map((id) => stopsById.get(id)).filter(Boolean).map((s) => [s.lat, s.lng]);
     if (!coords.length) continue;
@@ -53,7 +63,25 @@ function PlanThumb({ t, assignments, stopsById, depot, busColor }) {
   );
 }
 
-export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel }) {
+export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel, onImportFile, onImportPrev, prevPlan }) {
+  // hidden file input for "Import plan file" — reads a plan JSON exported by a teammate
+  const fileRef = useRef(null);
+  const prevMeta = prevPlan && prevPlan.meta;
+  // thumbnail polylines for the permanent prev-route card (drawn straight from the ERP feed)
+  const prevLines = useMemo(() => {
+    if (!prevPlan || !Array.isArray(prevPlan.buses)) return null;
+    return prevPlan.buses.map((b, i) => ({
+      color: PALETTE[i % PALETTE.length],
+      coords: (b.stops || []).filter((s) => s.lat != null && s.lng != null).map((s) => [s.lat, s.lng]),
+    })).filter((l) => l.coords.length);
+  }, [prevPlan]);
+  const onFile = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = ""; // allow picking the same file again
+    if (!f || !onImportFile) return;
+    try { onImportFile(JSON.parse(await f.text()), f.name); }
+    catch { onImportFile(null, f.name); } // parent shows the "not a plan file" toast
+  };
   return (
     <div className="space-y-5">
       <div>
@@ -62,7 +90,7 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
       </div>
 
       {/* Start options */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <button type="button" onClick={onNewBlank}
           className="flex items-center gap-3 rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5"
           style={{ border: "1.5px dashed " + t.primary, background: t.primarySoft, cursor: "pointer" }}>
@@ -75,17 +103,46 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
           <span className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: t.techno + "22", color: t.techno }}><Sparkles size={20} /></span>
           <span><span className="block font-semibold" style={{ color: t.text }}>From optimised plan{planLabel ? ` — ${planLabel}` : ""}</span><span className="block text-xs" style={{ color: t.muted }}>Import the optimiser's {planLabel ? `${planLabel} ` : ""}plan and tweak it</span></span>
         </button>
+        <button type="button" onClick={() => fileRef.current && fileRef.current.click()}
+          className="flex items-center gap-3 rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5"
+          style={{ border: "1.5px solid " + t.border, background: t.surface, cursor: "pointer" }}>
+          <span className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: t.good + "22", color: t.good }}><FileUp size={20} /></span>
+          <span><span className="block font-semibold" style={{ color: t.text }}>Import plan file</span><span className="block text-xs" style={{ color: t.muted }}>Open a plan JSON a teammate exported from their Planner</span></span>
+        </button>
+        <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={onFile} />
       </div>
 
-      {/* Saved drafts */}
+      {/* Saved drafts — the ERP's prev-route allocation always sits first as a permanent card */}
       <div>
-        <div className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: t.muted }}>Saved plans ({drafts.length})</div>
-        {drafts.length === 0 ? (
+        <div className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: t.muted }}>Plans ({drafts.length + (prevLines ? 1 : 0)})</div>
+        {drafts.length === 0 && !prevLines ? (
           <div className="rounded-2xl border py-10 text-center text-sm" style={{ borderColor: t.border, color: t.muted, borderStyle: "dashed" }}>
             No saved plans yet. Create one above and hit <b>Save</b> to keep it here.
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {prevLines && (
+              <div className="relative rounded-2xl border overflow-hidden transition-all hover:-translate-y-0.5 cursor-pointer"
+                style={{ borderColor: t.border, background: t.surface, boxShadow: "0 1px 2px rgba(15,23,42,.04)" }}
+                onClick={onImportPrev} title="Open the ERP's actual allocation in the editor">
+                <div className="h-32 w-full" style={{ borderBottom: "1px solid " + t.border }}>
+                  <PlanThumb t={t} lines={prevLines} depot={depot} />
+                </div>
+                <div className="p-3">
+                  <div className="flex items-start gap-2">
+                    <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: t.watch + "22", color: t.watch }}><History size={16} /></span>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold truncate" style={{ color: t.text }}>Previous routes</div>
+                      <div className="flex items-center gap-3 text-[11px] mt-0.5" style={{ color: t.muted }}>
+                        <span className="inline-flex items-center gap-1"><Clock size={11} /> from ERP</span>
+                        <span className="inline-flex items-center gap-1"><Users size={11} /> {prevMeta ? prevMeta.riders : "—"}</span>
+                        <span className="inline-flex items-center gap-1"><Bus size={11} /> {prevMeta ? prevMeta.vehicles : "—"}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             {drafts.map((d) => {
               const m = d.meta || {};
               return (
