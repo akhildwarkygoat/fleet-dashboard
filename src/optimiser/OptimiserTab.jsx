@@ -994,9 +994,11 @@ function KpiCell({ t, c }) {
           <Info size={12} />
         </button>
       )}
-      <div className="flex items-center gap-1.5 min-w-0" style={{ paddingRight: c.onClick ? 14 : 0 }}>
+      {/* items-start, not items-center: the label box reserves two lines, so centring would drop
+          the dot to the middle of the box instead of onto the first line of the label */}
+      <div className="flex items-start gap-1.5 min-w-0" style={{ paddingRight: c.onClick ? 14 : 0 }}>
         {/* the dot is a status light — only cells whose accent comes from a threshold get one */}
-        {c.accent && <span className="inline-block rounded-full flex-shrink-0" style={{ width: 6, height: 6, background: c.accent }} />}
+        {c.accent && <span className="inline-block rounded-full flex-shrink-0" style={{ width: 6, height: 6, marginTop: 3, background: c.accent }} />}
         {/* two lines rather than an ellipsis: "Cost / head" and "Dist / person" were both being
             cut to "COST / …" below xl. The reserved height keeps every value on the same baseline. */}
         <span className="text-[10px] uppercase tracking-wider font-semibold leading-[1.15] min-h-[2.3em] flex items-start" style={{ color: t.muted }}>{c.label}</span>
