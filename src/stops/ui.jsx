@@ -54,9 +54,10 @@ export function Empty({ t, title, sub }) {
 }
 
 /** Distinct, theme-neutral palette used to color pins/rows by route. */
+// same eight hues as the optimiser's route palette (src/optimiser/ui.jsx) — keep in step
 export const ROUTE_PALETTE = [
-  "#6366f1", "#38bdf8", "#10b981", "#f59e0b", "#f43f5e",
-  "#a78bfa", "#14b8a6", "#eab308", "#ec4899", "#0ea5e9",
+  "#2563eb", "#ea580c", "#16a34a", "#c026d3",
+  "#0891b2", "#ca8a04", "#dc2626", "#4d7c0f",
 ];
 
 /** Build a stable { routeName -> color } map from the list of route names. */
