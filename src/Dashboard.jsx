@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   LayoutDashboard, GitCompare, Database, Sigma, Settings as SettingsIcon,
   Sun, Moon, Bus, Plus, Trash2, Download, Server, Activity, BarChart3, Pencil, X, ChevronRight, ChevronDown, Search, Calendar, Clock, MapPin,
-  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff
+  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff, Route
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
@@ -18,7 +18,6 @@ import Papa from "papaparse";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { MotionPathPlugin } from "gsap/MotionPathPlugin";
-import { GlowCard } from "./components/ui/spotlight-card.jsx";
 import { SpotlightNav } from "./components/ui/spotlight-button.jsx";
 
 /* ============================ MOTION (GSAP) ============================ */
@@ -76,31 +75,36 @@ function Reveal({ children, y = 10, ...rest }) {
 const THEMES = {
   light: {
     name: "light", label: "Light", dark: false, bg: "#eef2f7", surface: "#ffffff", surface2: "#f8fafc", raised: "#f1f5f9",
-    border: "#e2e8f0", text: "#0f172a", muted: "#64748b", faint: "#94a3b8",
-    primary: "#4f46e5", primarySoft: "rgba(79,70,229,.10)", onPrimary: "#ffffff",
-    good: "#059669", watch: "#d97706", poor: "#e11d48",
-    gainup: "#0284c7", techno: "#7c3aed",
-    goodSoft: "rgba(5,150,105,.10)", watchSoft: "rgba(217,119,6,.12)", poorSoft: "rgba(225,29,90,.10)",
+    border: "#e2e8f0", text: "#0f172a", muted: "#556070", faint: "#94a3b8",
+    primary: "#2186eb", primarySoft: "rgba(33,134,235,.10)", onPrimary: "#ffffff",
+    // filled buttons carry 12-14px white text; the mid-tone brand blue only reaches 3.7:1 there
+    primaryStrong: "#1c74cf",
+    // status hues carry text at 10-12px, so they are set dark enough to clear 4.5:1 on surface/surface2
+    good: "#047857", watch: "#b45309", poor: "#be123c",
+    gainup: "#0e7490", techno: "#7c3aed",
+    goodSoft: "rgba(4,120,87,.10)", watchSoft: "rgba(180,83,9,.12)", poorSoft: "rgba(190,18,60,.10)",
     grid: "#e8edf4", inputBg: "#f8fafc",
   },
   // Dark — Cool Grey neutrals + Blue (Vivid) primary, with palette semantic colours.
   dark: {
     name: "dark", label: "Dark", dark: true, bg: "#1a222c", surface: "#222e3a", surface2: "#2b3846", raised: "#374553",
     border: "#3a4a59", text: "#f5f7fa", muted: "#9aa5b1", faint: "#616e7c",
-    primary: "#2186eb", primarySoft: "rgba(33,134,235,.18)", onPrimary: "#ffffff",
-    good: "#3ebd93", watch: "#f7d070", poor: "#ef4e4e",
-    gainup: "#47a3f3", techno: "#8888fc",
-    goodSoft: "rgba(62,189,147,.14)", watchSoft: "rgba(247,208,112,.14)", poorSoft: "rgba(239,78,78,.16)",
+    primary: "#2186eb", primarySoft: "rgba(33,134,235,.18)", onPrimary: "#ffffff", primaryStrong: "#1c74cf",
+    good: "#3ebd93", watch: "#f7d070", poor: "#f87171",
+    gainup: "#2cb1bc", techno: "#8888fc",
+    goodSoft: "rgba(62,189,147,.14)", watchSoft: "rgba(247,208,112,.14)", poorSoft: "rgba(248,113,113,.16)",
     grid: "#2b3846", inputBg: "#151d26",
   },
   // Neutral — light, low-chroma Cool Grey neutrals with a slate primary and muted semantic colours.
   neutral: {
     name: "neutral", label: "Neutral", dark: false, bg: "#eceff3", surface: "#ffffff", surface2: "#f5f7fa", raised: "#e4e7eb",
     border: "#cbd2d9", text: "#1f2933", muted: "#616e7c", faint: "#9aa5b1",
-    primary: "#52606d", primarySoft: "rgba(82,96,109,.12)", onPrimary: "#ffffff",
-    good: "#199473", watch: "#c99a2e", poor: "#ba2525",
-    gainup: "#186faf", techno: "#4c63b6",
-    goodSoft: "rgba(25,148,115,.10)", watchSoft: "rgba(201,154,46,.12)", poorSoft: "rgba(186,37,37,.10)",
+    // same blue identity as light/dark, pulled down in chroma — neutral is a quieter
+    // surface treatment of one brand, not a second brand
+    primary: "#3d6b99", primarySoft: "rgba(61,107,153,.12)", onPrimary: "#ffffff", primaryStrong: "#2f5679",
+    good: "#0f7a5f", watch: "#8d6a1a", poor: "#ba2525",
+    gainup: "#146b7d", techno: "#4c63b6",
+    goodSoft: "rgba(15,122,95,.10)", watchSoft: "rgba(141,106,26,.12)", poorSoft: "rgba(186,37,37,.10)",
     grid: "#e6e9ed", inputBg: "#f5f7fa",
   },
 };
@@ -397,7 +401,7 @@ function Card({ t, children, className = "", title, hint, right }) {
 }
 function Btn({ t, children, onClick, variant = "primary", className = "", disabled, title }) {
   const base = "inline-flex items-center gap-2 rounded-xl font-semibold px-4 py-2.5 text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
-  const style = variant === "primary" ? { background: t.primary, color: t.onPrimary || "#fff" } :
+  const style = variant === "primary" ? { background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" } :
     variant === "danger" ? { background: "transparent", color: t.poor, border: "1px solid " + t.poor } :
     { background: "transparent", color: t.text, border: "1px solid " + t.border };
   return <button title={title} disabled={disabled} onClick={onClick} onMouseDown={fxPress} className={base + " " + className} style={style}>{children}</button>;
@@ -411,7 +415,9 @@ function Pill({ t, kind }) {
 function Tile({ t, label, value, sub, accent, deltaColor }) {
   return (
     <div data-fx="tile" className="rounded-2xl border p-4 relative overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
-      <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent || t.primary }} />
+      {/* the rail is a status channel, not trim: it renders only when the caller passed a colour
+          derived from the value, so a coloured tile always means something */}
+      {accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent }} />}
       <div className="text-xs uppercase tracking-widest" style={{ color: t.muted }}>{label}</div>
       <div className="text-3xl font-bold mt-2 tabular-nums" style={{ color: t.text }}>{typeof value === "string" || typeof value === "number" ? <CountUp value={value} /> : value}</div>
       {sub && <div className="text-xs mt-1" style={{ color: deltaColor || t.muted }}>{sub}</div>}
@@ -684,7 +690,7 @@ function RouteBusLoader({ t }) {
       <path d={ERP_ROUTE_D} fill="none" stroke={t.primary} strokeOpacity="0.16" strokeWidth="5" strokeLinecap="round" />
       <path ref={pathRef} className="erp-draw" d={ERP_ROUTE_D} fill="none" stroke={t.primary} strokeWidth="5" strokeLinecap="round" strokeDasharray="235" strokeDashoffset="235" />
       <circle cx="16" cy="100" r="6" fill={t.primary} />
-      <circle cx="104" cy="20" r="6" fill="#8b5cf6" />
+      <circle cx="104" cy="20" r="6" fill={t.good} />
       <circle ref={busRef} r="5" fill={t.dark ? "#e2e8f0" : "#0f172a"} stroke={t.surface} strokeWidth="2" />
     </svg>
   );
@@ -718,9 +724,8 @@ function ErpLoading({ t, phase, progress, onSync }) {
       {/* the Live page's exact layout, blurred behind the loader — KPI tiles, controls, unit groups */}
       <div aria-hidden className="pointer-events-none select-none" style={{ filter: "blur(7px)", opacity: 0.65 }}>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-          {[t.good, t.primary, t.watch, t.techno].map((accent, i) => (
+          {[0, 1, 2, 3].map((i) => (
             <div key={i} className="rounded-2xl border p-4 relative overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
-              <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent }} />
               <Bone w={96} h={8} /><Bone w={64} h={26} mt={12} /><Bone w={76} h={8} mt={9} />
             </div>
           ))}
@@ -734,15 +739,18 @@ function ErpLoading({ t, phase, progress, onSync }) {
         <GhostGroup unitColor={t.gainup} cards={8} />
         <GhostGroup unitColor={t.techno} cards={8} />
       </div>
-      {/* the loader card floats over the ghost — GlowCard border spotlight tracks the pointer */}
+      {/* the loader card floats over the ghost — a plain raised panel, so the only thing moving
+          on screen is the route drawing itself */}
       <div className="absolute inset-0 z-10 flex items-center justify-center">
-      <GlowCard customSize width="min(400px, 92%)" glowColor={offline ? "red" : "purple"} className="text-center px-6 pt-7 pb-6">
+      <div className="text-center px-6 pt-7 pb-6 rounded-2xl border"
+        style={{ width: "min(400px, 92%)", background: t.surface, borderColor: offline ? t.poor : t.border,
+          boxShadow: t.dark ? "0 12px 40px rgba(0,0,0,.45)" : "0 12px 40px rgba(15,23,42,.14)" }}>
         {offline ? (
           <>
             <span className="w-14 h-14 rounded-2xl inline-flex items-center justify-center mb-2" style={{ background: t.poor + "1a", color: t.poor }}><WifiOff size={26} /></span>
             <div className="font-extrabold" style={{ color: t.text, fontSize: 16, letterSpacing: "-0.01em" }}>Can't reach the ERP</div>
             <div className="text-xs mt-1.5" style={{ color: t.muted }}>The transport feed didn't respond. This dashboard shows live data only — check the factory network, then retry.</div>
-            <button onClick={onSync} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold mt-4" style={{ background: t.primary, color: t.onPrimary || "#fff" }}>Try again</button>
+            <button onClick={onSync} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold mt-4" style={{ background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" }}>Try again</button>
           </>
         ) : (
           <>
@@ -752,12 +760,13 @@ function ErpLoading({ t, phase, progress, onSync }) {
               {total ? <>Loading routes… <b style={{ color: t.primary }}>{done}</b> / {total}</> : "Contacting ERP…"}
             </div>
             <div className="rounded-full overflow-hidden" style={{ height: 7, marginTop: 18, background: t.dark ? "rgba(148,163,184,.18)" : "rgba(15,23,42,.09)" }}>
-              <div className="h-full rounded-full" style={{ width: pctDone + "%", background: `linear-gradient(90deg, ${t.primary}, #8b5cf6)`, transition: "width .5s cubic-bezier(.4,0,.2,1)" }} />
+              {/* scaleX rather than width so the fill compositor-animates instead of relaying out */}
+              <div className="h-full w-full rounded-full" style={{ transform: `scaleX(${pctDone / 100})`, transformOrigin: "left center", background: t.primary, transition: "transform .5s cubic-bezier(.4,0,.2,1)" }} />
             </div>
             <div style={{ color: t.faint, fontSize: 10.5, marginTop: 11 }}>Today's fleet, riders &amp; attendance load straight from the source</div>
           </>
         )}
-      </GlowCard>
+      </div>
       </div>
     </div>
   );
@@ -805,7 +814,15 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
   const detail = (x) => (
     <Reveal className="rounded-2xl border p-4 mt-2" style={{ background: t.surface2, borderColor: t.primary }}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-        <div><div className="font-semibold flex items-center gap-2" style={{ color: t.text }}><UnitDot t={t} unit={x.bus.unit} />{x.bus.vehicle} <Pill t={t} kind={x.h} /></div>
+        <div><div className="font-semibold flex items-center gap-2" style={{ color: t.text }}><UnitDot t={t} unit={x.bus.unit} />
+          {/* the registration is the way through to the full bus-wise view; the card itself only
+              opens this preview, so a tap never skips past today's attendance */}
+          {onOpenBusView
+            ? <button onClick={() => onOpenBusView(x.bus.id)} title={`Open ${x.bus.vehicle} in Bus-wise detail`}
+                className="inline-flex items-center gap-1 font-semibold rounded hover:underline"
+                style={{ color: t.primary, textUnderlineOffset: 3 }}>{x.bus.vehicle}<ChevronRight size={14} /></button>
+            : x.bus.vehicle}
+          <Pill t={t} kind={x.h} /></div>
           <div className="text-xs mt-0.5" style={{ color: t.muted }}>{x.bus.route} · {x.bus.driver} · {x.date}</div></div>
         <button onClick={() => setOpenBus(null)} className="rounded-lg p-1.5" style={{ border: "1px solid " + t.border, color: t.muted }}><X size={14} /></button>
       </div>
@@ -832,15 +849,15 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
   return (
     <div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-        <Tile t={t} label="Riders present" value={agg.present} sub={`of ${agg.cap} seats`} accent={t.good} />
-        <Tile t={t} label="Capacity utilisation" value={pct(agg.util)} sub={`${agg.count} buses shown`} accent={t.primary} />
+        <Tile t={t} label="Riders present" value={agg.present} sub={`of ${agg.cap} seats`} />
+        <Tile t={t} label="Capacity utilisation" value={pct(agg.util)} sub={`${agg.count} buses shown`} />
         {noCosts
-          ? <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" accent={overCount ? t.watch : t.good} />
-          : <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} accent={t.watch} />}
+          ? <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" />
+          : <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} />}
         {(() => {
           const gainup = buses.filter((b) => b.unit === "Gainup").length;
           const technotek = buses.length - gainup;
-          return <Tile t={t} label="Total fleet" value={buses.length} sub={`${gainup} Gainup · ${technotek} Technotek`} accent={t.techno} />;
+          return <Tile t={t} label="Total fleet" value={buses.length} sub={`${gainup} Gainup · ${technotek} Technotek`} />;
         })()}
       </div>
 
@@ -848,7 +865,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-3 text-sm" style={{ background: t.primarySoft, borderColor: t.primary, color: t.text }}>
           <Server size={16} style={{ color: t.primary }} />
           <span>Cost, spend &amp; net-value figures stay blank until each bus's running costs are entered.</span>
-          {onAddCosts && <button onClick={onAddCosts} className="ml-auto rounded-lg px-3 py-1.5 text-xs font-semibold" style={{ background: t.primary, color: t.onPrimary || "#fff" }}>Add bus costs →</button>}
+          {onAddCosts && <button onClick={onAddCosts} className="ml-auto rounded-lg px-3 py-1.5 text-xs font-semibold" style={{ background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" }}>Add bus costs →</button>}
         </div>
       )}
 
@@ -896,8 +913,9 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
                     {list.map((x) => { const over = x.m.util > 150; const col = over ? OVER_BAND.color : hc(x.h); const on = openBus === x.bus.id;
                       const tag = over ? `OVER +${Math.round(x.m.util - 100)}%` : x.h.toUpperCase();
                       return (
-                        <button key={x.bus.id} data-fx="bus" title={`Open ${x.bus.vehicle} in Bus-wise detail`}
-                          onClick={() => (onOpenBusView ? onOpenBusView(x.bus.id) : setOpenBus(on ? null : x.bus.id))}
+                        <button key={x.bus.id} data-fx="bus" aria-expanded={on}
+                          title={on ? `Hide who's on ${x.bus.vehicle}` : `Show who's on ${x.bus.vehicle}`}
+                          onClick={() => setOpenBus(on ? null : x.bus.id)}
                           onMouseEnter={fxLift} onMouseLeave={fxDrop} className="relative text-left rounded-xl p-2.5" style={{ background: t.surface2, border: "1.5px solid " + col, boxShadow: on ? `0 0 0 2px ${t.primary}` : "none" }}>
                           <span className="absolute rounded-full" style={{ right: 8, top: 8, width: 8, height: 8, background: col }} />
                           <div className="text-xs font-semibold truncate" style={{ color: t.text, maxWidth: "84%" }}>{x.bus.vehicle}</div>
@@ -1361,7 +1379,8 @@ function CompareView({ t, unit, buses, records, employees, attendance, settings,
 }
 
 /* ============================ EQUATIONS ============================ */
-const PIE_PALETTE = ["#6366f1", "#38bdf8", "#a78bfa", "#10b981", "#f59e0b", "#f43f5e", "#14b8a6", "#eab308"];
+// same eight hues as the optimiser's route palette (src/optimiser/ui.jsx) — keep in step
+const PIE_PALETTE = ["#2563eb", "#ea580c", "#16a34a", "#c026d3", "#0891b2", "#ca8a04", "#dc2626", "#4d7c0f"];
 function EquationChart({ t, formula, unit, buses, records, employees, attendance, settings, variables }) {
   const wd = effWorkingDays(settings);
   const vmap = varMapOf(variables);
@@ -1999,11 +2018,11 @@ export default function App() {
 
   // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
   // Equations is retired; Metrics lives inside Settings now.
-  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", MapPin], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
+  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", Route], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
   const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", optimiser: "", settings: "Settings" };
 
   return (
-    <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)" }}>
+    <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "'Inter Variable', Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)" }}>
       <div ref={headerRef} className="sticky top-0 z-20" style={{ background: t.surface, borderBottom: "1px solid " + t.border }}>
         <div className="w-full px-6 flex items-center gap-4">
           <div className="flex items-center gap-3 py-2 min-w-0 shrink-0 sm:flex-1 sm:overflow-hidden">

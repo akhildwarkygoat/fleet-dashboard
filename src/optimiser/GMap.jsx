@@ -77,7 +77,7 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
     const rc = routeColors || {};
     const batch = [];
     list.forEach((s) => {
-      const color = rc[s.route] || t.primary || "#6366f1";
+      const color = rc[s.route] || t.primary;
       const mk = L.marker([s.lat, s.lng], { icon: stopDot(color, s.headcount, s.id === selRef.current), headcount: s.headcount || 0 });
       mk.bindTooltip(
         `<div style="font:600 12px/1.35 Inter,system-ui,sans-serif"><b>${esc(s.name)}</b>` +
@@ -111,7 +111,7 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
     clusterRef.current = L.markerClusterGroup({
       showCoverageOnHover: false,
       maxClusterRadius: 60,
-      iconCreateFunction: makeCluster(t.primary || "#6366f1", t.onPrimary || "#ffffff"),
+      iconCreateFunction: makeCluster(t.primary, t.onPrimary),
     }).addTo(map);
     map.on("click", (e) => { if (dropRef.current && onDropRef.current) onDropRef.current(e.latlng.lat, e.latlng.lng); });
     mapRef.current = map;

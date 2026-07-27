@@ -17,7 +17,7 @@ body {
    One theme-driven ring restores it for buttons, inputs, tabs, calendar cells, etc.
    Only shows for keyboard/programmatic focus (:focus-visible), never on mouse click. */
 *:focus-visible {
-  outline: 2px solid var(--focus-ring, #4f46e5);
+  outline: 2px solid var(--focus-ring, currentColor);
   outline-offset: 2px;
   border-radius: 6px;
 }

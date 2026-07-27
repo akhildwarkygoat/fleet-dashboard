@@ -1,14 +1,11 @@
 /* ============================================================================
- * components/ui/spotlight-button.jsx — spotlight nav (JSX port)
+ * components/ui/spotlight-button.jsx — primary nav
  * ----------------------------------------------------------------------------
- * shadcn-style UI primitive. A dark glass nav bar where the active item gets a
- * top light-bar and a soft spotlight falling onto its icon; the indicator and
- * spotlight slide as the selection moves. Adapted from the source demo into a
- * reusable, prop-driven component (items/activeKey/onChange) for the header.
- * Geometry: w-10 buttons + mx-2 → 56px pitch; px-2 bar padding → 16px offset.
+ * The header's four destinations. Each item is icon + label; the active one gets
+ * an underline indicator that measures real item widths (so labels of any length
+ * stay aligned) and a soft light cone rising off it.
  * ==========================================================================*/
 import React, { useState, useRef, useEffect } from 'react';
-import { Home, Bookmark, PlusCircle, User, Settings } from 'lucide-react';
 
 const NavItem = ({ icon: Icon, label, isActive = false, onClick, indicatorPosition, itemRef, t }) => {
   // only the selected tab is lit — the original demo bled the cone onto neighbours by
@@ -21,8 +18,7 @@ const NavItem = ({ icon: Icon, label, isActive = false, onClick, indicatorPositi
       data-fx="tab"
       title={label}
       aria-current={isActive ? 'page' : undefined}
-      aria-label={label}
-      className="relative flex items-center justify-center w-12 h-12 transition-colors duration-200"
+      className="relative flex items-center justify-center gap-2 h-12 px-3 lg:px-3.5 transition-colors duration-200"
       style={{ color: isActive ? t.primary : t.muted }}
       onClick={onClick}
       onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.color = t.text; }}
@@ -42,7 +38,12 @@ const NavItem = ({ icon: Icon, label, isActive = false, onClick, indicatorPositi
           transitionDelay: isActive ? '0.1s' : '0s',
         }}
       />
-      <Icon size={19} strokeWidth={isActive ? 2.5 : 2} className="relative" />
+      <Icon size={17} strokeWidth={isActive ? 2.5 : 2} className="relative shrink-0" />
+      {/* label is the destination; the icon only speeds up re-finding it. Below lg the four
+          labels plus the brand and the ERP pill stop fitting on one row, so the bar falls back
+          to icons and the name is carried for assistive tech only. */}
+      <span className="relative hidden lg:block text-sm font-semibold whitespace-nowrap">{label}</span>
+      <span className="sr-only lg:hidden">{label}</span>
     </button>
   );
 };
@@ -94,25 +95,5 @@ export function SpotlightNav({ items, activeKey, onChange, t, className = '' }) 
     </nav>
   );
 }
-
-/* Fallback palette so the demo renders standalone (the app always passes its own theme `t`). */
-const DEMO_THEME = { primary: '#4f46e5', text: '#0f172a', muted: '#64748b' };
-
-/** Source demo, kept for reference/reuse (self-contained, fixed items). */
-export const Component = () => {
-  const [activeKey, setActiveKey] = useState('home');
-  const navItems = [
-    { key: 'home', label: 'Home', icon: Home },
-    { key: 'bookmarks', label: 'Bookmarks', icon: Bookmark },
-    { key: 'add', label: 'Add', icon: PlusCircle },
-    { key: 'profile', label: 'Profile', icon: User },
-    { key: 'settings', label: 'Settings', icon: Settings },
-  ];
-  return (
-    <div className="w-full h-full flex items-center justify-center bg-gray-100">
-      <SpotlightNav t={DEMO_THEME} items={navItems} activeKey={activeKey} onChange={setActiveKey} />
-    </div>
-  );
-};
 
 export { NavItem };

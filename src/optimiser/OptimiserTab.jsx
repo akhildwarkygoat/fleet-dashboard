@@ -213,10 +213,10 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Tile t={t} label="Total stops" value={metrics.totalStops} accent={t.primary} />
-        <Tile t={t} label="Total people" value={metrics.totalPeople} sub="allocated · from ERP" accent={t.techno} />
-        <Tile t={t} label="Avg people / stop" value={metrics.avgPerStop.toFixed(1)} accent={t.primary} />
-        <Tile t={t} label="Avg distance / person" value={metrics.avgDist.toFixed(1) + " km"} accent={t.good} />
+        <Tile t={t} label="Total stops" value={metrics.totalStops} />
+        <Tile t={t} label="Total people" value={metrics.totalPeople} sub="allocated · from ERP" />
+        <Tile t={t} label="Avg people / stop" value={metrics.avgPerStop.toFixed(1)} />
+        <Tile t={t} label="Avg distance / person" value={metrics.avgDist.toFixed(1) + " km"} />
       </div>
 
       {checked.size > 0 && (
@@ -248,12 +248,12 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
                   onChange={() => setChecked((prev) => { const n = new Set(prev); const all = paged.every((s) => n.has(s.id)); paged.forEach((s) => all ? n.delete(s.id) : n.add(s.id)); return n; })}
                   style={{ accentColor: t.primary, cursor: "pointer", width: 14, height: 14 }} />
               </th>
-              {["Stop", "Vehicle", "Village", "Lat", "Lng", "Riders", "Company"].map((h, i, arr) => <th key={i} className="py-2.5 px-2 text-left text-xs font-semibold uppercase tracking-wider" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, color: (i === 0 || i === 2) ? t.techno : t.text, borderTopRightRadius: i === arr.length - 1 ? 10 : 0 }}>{h}</th>)}
+              {["Stop", "Vehicle", "Village", "Lat", "Lng", "Riders", "Company"].map((h, i, arr) => <th key={i} className="py-2.5 px-2 text-left text-xs font-semibold uppercase tracking-wider" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, color: t.text, fontWeight: (i === 0 || i === 2) ? 800 : 600, borderTopRightRadius: i === arr.length - 1 ? 10 : 0 }}>{h}</th>)}
             </tr></thead>
             <tbody>
               {paged.length === 0 ? <tr><td colSpan={9} className="py-3 px-2" style={{ color: t.muted }}>{stops.length ? "No stops match." : "No stops yet."}</td></tr> :
                 paged.map((s) => (
-                  <tr key={s.id} onClick={() => setSelectedId(s.id)} style={{ borderBottom: "1px solid " + t.border, background: selectedId === s.id ? t.primarySoft : checked.has(s.id) ? "rgba(99,102,241,0.10)" : s.conf === "red" ? "rgba(239,68,68,0.16)" : "transparent", cursor: "pointer" }} title={s.conf === "red" ? (s.trial ? "Headcount UNKNOWN — randomised (1-6) for the trial run" : "Headcount match confidence LOW — verify") : undefined}>
+                  <tr key={s.id} onClick={() => setSelectedId(s.id)} style={{ borderBottom: "1px solid " + t.border, background: selectedId === s.id ? t.primarySoft : checked.has(s.id) ? t.raised : s.conf === "red" ? t.poorSoft : "transparent", cursor: "pointer" }} title={s.conf === "red" ? (s.trial ? "Headcount UNKNOWN — randomised (1-6) for the trial run" : "Headcount match confidence LOW — verify") : undefined}>
                     <td className="py-2 px-2" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={checked.has(s.id)} onChange={() => toggleCheck(s.id)}
                         style={{ accentColor: t.primary, cursor: "pointer", width: 14, height: 14 }} />
@@ -517,9 +517,9 @@ function OptimiseView({ t, stops, zone, fleet, depot, toast }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Tile t={t} label="Cost / head / day" value={inr1(kpis.costPerHeadDay)} sub={inr(kpis.costPerHeadMonth) + " / month"} accent={t.good} />
-        <Tile t={t} label="Buses deployed" value={kpis.buses} sub={`${kpis.ownDeployed} own · ${kpis.rentDeployed} rented`} accent={t.primary} />
-        <Tile t={t} label="Utilisation" value={pct(kpis.utilisation)} sub={`${kpis.heads} riders seated`} accent={t.watch} />
+        <Tile t={t} label="Cost / head / day" value={inr1(kpis.costPerHeadDay)} sub={inr(kpis.costPerHeadMonth) + " / month"} />
+        <Tile t={t} label="Buses deployed" value={kpis.buses} sub={`${kpis.ownDeployed} own · ${kpis.rentDeployed} rented`} />
+        <Tile t={t} label="Utilisation" value={pct(kpis.utilisation)} sub={`${kpis.heads} riders seated`} />
         <Tile t={t} label="Max time to last stop" value={Math.round(kpis.maxRide) + " min"} sub={kpis.routesOverSoft ? `${kpis.routesOverSoft} over 45-min soft target` : "all within 45-min target"} accent={kpis.maxRide >= 60 ? t.poor : kpis.maxRide >= 45 ? t.watch : t.good} />
       </div>
 
@@ -660,7 +660,7 @@ function OptimiseView({ t, stops, zone, fleet, depot, toast }) {
                     <span className="ml-2">· Load {r.heads}/{r.bus.capacity} ({pct(r.util)})</span>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <a href={mapsLink(r)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl font-semibold px-4 py-2.5 text-sm" style={{ background: t.primary, color: t.onPrimary || "#fff" }}><MapPin size={15} /> Open in Google Maps</a>
+                    <a href={mapsLink(r)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-xl font-semibold px-4 py-2.5 text-sm" style={{ background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" }}><MapPin size={15} /> Open in Google Maps</a>
                     <Btn t={t} variant="ghost" onClick={() => { try { navigator.clipboard.writeText(mapsLink(r)); toast && toast("Route link copied"); } catch { toast && toast("Copy failed"); } }}>Copy link</Btn>
                   </div>
                 </div>
@@ -846,7 +846,7 @@ function RouteMap({ t, depot, route }) {
         const map = L.map(elRef.current, { zoomControl: true, scrollWheelZoom: false });
         L.tileLayer(OSM_URL, { attribution: OSM_ATTR, maxZoom: 19 }).addTo(map);
         mapRef.current = map;
-        const primary = t.primary || "#6366f1";
+        const primary = t.primary;
         L.marker([pts[0].lat, pts[0].lng], { icon: factoryIcon(), zIndexOffset: 1000 })
           .bindTooltip("Factory", { direction: "top", offset: [0, -16] }).addTo(map);
         route.seq.forEach((s, i) => {
@@ -875,9 +875,9 @@ function RouteMap({ t, depot, route }) {
   }, []);
   useEffect(() => {   // highlight the selected segment
     segRef.current.forEach((line, i) => line.setStyle(
-      sel == null ? { opacity: 0.7, weight: 5, color: t.primary || "#6366f1" }
+      sel == null ? { opacity: 0.7, weight: 5, color: t.primary }
                   : i === sel ? { opacity: 1, weight: 7, color: "#f59e0b" }
-                              : { opacity: 0.35, weight: 4, color: t.primary || "#6366f1" }));
+                              : { opacity: 0.35, weight: 4, color: t.primary }));
   }, [sel, t]);
   if (err) return null;
   const r1 = (x) => Math.round(x * 10) / 10;
@@ -918,7 +918,7 @@ function MasterRouteMap({ t, depot, routes, colors, height = 460, showStops = tr
           .bindTooltip("Factory", { direction: "top", offset: [0, -16] }).addTo(map);
         for (const r of routes) {
           if (cancelled) return;
-          const color = colors[r.name] || (t.primary || "#6366f1");
+          const color = colors[r.name] || (t.primary);
           const pts = [{ lat: depot[0], lng: depot[1] }, ...r.seq.map((s) => ({ lat: s.lat, lng: s.lng }))];
           // stop dots — first & last in unique colours, middle stops in route colour
           r.seq.forEach((s, i) => {
@@ -985,7 +985,7 @@ function KpiCell({ t, c }) {
   return (
     <div onClick={c.onCardClick}
       title={c.onCardClick ? c.cardHint : undefined}
-      className={"relative flex-1 min-w-0 px-3.5 py-4 transition-colors duration-150" + (c.onCardClick ? " cursor-pointer hover:brightness-[0.985]" : "")}
+      className={"relative flex-1 min-w-0 px-3 xl:px-3.5 py-4 transition-colors duration-150" + (c.onCardClick ? " cursor-pointer hover:brightness-[0.985]" : "")}
       style={{ background: c.active ? t.primarySoft : "transparent", boxShadow: c.active ? `inset 0 -2.5px 0 ${c.accent || t.primary}` : "none" }}>
       {c.onClick && (
         <button type="button" onClick={(e) => { e.stopPropagation(); c.onClick(); }} title="How this is calculated"
@@ -994,12 +994,18 @@ function KpiCell({ t, c }) {
           <Info size={12} />
         </button>
       )}
-      <div className="flex items-center gap-1.5 min-w-0" style={{ paddingRight: c.onClick ? 14 : 0 }}>
-        <span className="inline-block rounded-full flex-shrink-0" style={{ width: 6, height: 6, background: c.accent || t.primary }} />
-        <span className="text-[10px] uppercase tracking-wider font-semibold truncate" style={{ color: t.muted }}>{c.label}</span>
+      {/* items-start, not items-center: the label box reserves two lines, so centring would drop
+          the dot to the middle of the box instead of onto the first line of the label */}
+      <div className="flex items-start gap-1.5 min-w-0" style={{ paddingRight: c.onClick ? 14 : 0 }}>
+        {/* the dot is a status light — only cells whose accent comes from a threshold get one */}
+        {c.accent && <span className="inline-block rounded-full flex-shrink-0" style={{ width: 6, height: 6, marginTop: 3, background: c.accent }} />}
+        {/* two lines rather than an ellipsis: "Cost / head" and "Dist / person" were both being
+            cut to "COST / …" below xl. The reserved height keeps every value on the same baseline. */}
+        <span className="text-[10px] uppercase tracking-wider font-semibold leading-[1.15] min-h-[2.3em] flex items-start" style={{ color: t.muted }}>{c.label}</span>
       </div>
-      <div className="mt-2 font-bold tabular-nums leading-none whitespace-nowrap tracking-tight" style={{ color: t.text }}>
-        <span className="text-2xl">{c.value}</span>
+      <div className="mt-1.5 font-bold tabular-nums leading-none whitespace-nowrap tracking-tight" style={{ color: t.text }}>
+        {/* the widest real value is a 5-digit km total; it needs the smaller step below xl */}
+        <span className="text-xl xl:text-2xl">{c.value}</span>
         {c.unit && <span className="text-xs font-semibold ml-0.5" style={{ color: t.muted }}>{c.unit}</span>}
       </div>
       {c.sub && <div className="text-[10px] mt-1.5 truncate" style={{ color: t.muted }}>{c.sub}</div>}
@@ -1170,20 +1176,22 @@ function FleetPlanView({ t }) {
       {(() => {
         const clickable = (explainKey, cell) => ({ ...cell, key: cell.key || explainKey, active: explain === explainKey, onClick: () => setExplain((e) => (e === explainKey ? null : explainKey)) });
         // related KPIs clubbed within one shared container, all on a single row
-        const cost = clickable("cost", { label: "Cost / head", value: "₹" + m.cost_head.toFixed(1), sub: inr0(m.cost_head * wd) + "/mo", accent: t.primary });
+        const cost = clickable("cost", { label: "Cost / head", value: "₹" + m.cost_head.toFixed(1), sub: inr0(m.cost_head * wd) + "/mo" });
         const util = clickable("util", { label: "Utilisation", value: m.util.toFixed(0), unit: "%", sub: `${m.riders} riders`, accent: m.util >= 85 ? t.good : t.poor });
         const avgride = clickable("avgride", { label: "Avg ride", value: Math.round(wAvgRide), unit: "min", sub: "people-wtd", accent: wAvgRide <= 60 ? t.good : t.poor });
         const maxride = clickable("ride", { label: "Max ride", value: Math.round(m.max_ride), unit: "min", sub: "longest trip", accent: m.max_ride <= 110 ? t.good : t.poor });
-        const totDist = { key: "totdist", label: "Total dist", value: Math.round(m.km).toLocaleString("en-IN"), unit: "km", sub: "whole fleet", accent: t.techno };
-        const avgDist = { key: "avgdist", label: "Dist / person", value: wDistPP.toFixed(1), unit: "km", sub: "one-way", accent: t.good };
+        const totDist = { key: "totdist", label: "Total dist", value: Math.round(m.km).toLocaleString("en-IN"), unit: "km", sub: "whole fleet" };
+        const avgDist = { key: "avgdist", label: "Dist / person", value: wDistPP.toFixed(1), unit: "km", sub: "one-way" };
         // Buses split into owned vs rental — clicking the CARD filters the routes
         // table by type; the ⓘ still opens the fleet-size explanation. Active
         // highlight tracks the filter (not the explainer) for these two.
-        const owned = { ...clickable("buses", { key: "owned", label: "Owned", value: ow.buses, sub: `${ow.seats.toLocaleString("en-IN")} seats`, accent: t.primary }), active: typeFilter === "own", onCardClick: () => applyTypeFilter("own"), cardHint: "Show only owned buses in the table below" };
-        const rental = { ...clickable("buses", { key: "rental", label: "Rental", value: rt.buses, sub: `${rt.seats.toLocaleString("en-IN")} seats`, accent: t.techno }), active: typeFilter === "rent", onCardClick: () => applyTypeFilter("rent"), cardHint: "Show only rental buses in the table below" };
-        const seats = { key: "seats", label: "Seats", value: m.seats.toLocaleString("en-IN"), sub: `${m.riders} riders`, accent: t.good };
-        const avgStops = { key: "avgstops", label: "Stops/bus", value: m.avg_stops.toFixed(1), sub: "average", accent: t.primary };
-        return <KpiGroup t={t} groups={[[cost, util], [avgride, maxride], [totDist, avgDist], [owned, rental, seats, avgStops]]} />;
+        const owned = { ...clickable("buses", { key: "owned", label: "Owned", value: ow.buses, sub: `${ow.seats.toLocaleString("en-IN")} seats` }), active: typeFilter === "own", onCardClick: () => applyTypeFilter("own"), cardHint: "Show only owned buses in the table below" };
+        const rental = { ...clickable("buses", { key: "rental", label: "Rental", value: rt.buses, sub: `${rt.seats.toLocaleString("en-IN")} seats` }), active: typeFilter === "rent", onCardClick: () => applyTypeFilter("rent"), cardHint: "Show only rental buses in the table below" };
+        const seats = { key: "seats", label: "Seats", value: m.seats.toLocaleString("en-IN"), sub: `${m.riders} riders` };
+        const avgStops = { key: "avgstops", label: "Stops/bus", value: m.avg_stops.toFixed(1), sub: "average" };
+        // pairs throughout: fleet split (owned/rental) and capacity (seats/stops-per-bus) are two
+        // separate reads, so they get the card gap the other clubs have rather than a hairline
+        return <KpiGroup t={t} groups={[[cost, util], [avgride, maxride], [totDist, avgDist], [owned, rental], [seats, avgStops]]} />;
       })()}
       {/* Master map — rendered bare (no card wrapper), matching the Stops-page map */}
       <div>
@@ -1590,10 +1598,10 @@ function SimulatorView({ t }) {
         <span className="text-xs" style={{ color: t.muted }}>{baseCo === "Gainup" ? "not provided yet — upload later" : baseCo === "Combined" ? "Technotek + Gainup" : "FY24-25 actuals"}{data.baselines ? ` · ${inr(data.baselines[baseCo])}/yr` : ""}</span>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Tile t={t} label="Optimised cost" value={inr(optPeriod)} sub={`${num(p.months)} mo · ${inr(costDay)}/day`} accent={t.primary} />
+        <Tile t={t} label="Optimised cost" value={inr(optPeriod)} sub={`${num(p.months)} mo · ${inr(costDay)}/day`} />
         <Tile t={t} label="Baseline (Technotek actual)" value={inr(basePeriod)} sub="from your costing sheet (editable)" accent={t.poor} />
         <Tile t={t} label="Savings" value={inr(savePeriod)} sub={`${savePct.toFixed(0)}% cheaper`} accent={t.good} />
-        <Tile t={t} label="Bus-trips" value={trips.toLocaleString("en-IN")} sub={`${buses} buses × ${days} days`} accent={t.techno} />
+        <Tile t={t} label="Bus-trips" value={trips.toLocaleString("en-IN")} sub={`${buses} buses × ${days} days`} />
       </div>
       <Card t={t} title="Live equation" hint="The exact calculation with your current numbers — updates as you edit the assumptions below.">
         <div className="space-y-1.5">

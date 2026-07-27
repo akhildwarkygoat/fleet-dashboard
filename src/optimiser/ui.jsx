@@ -22,7 +22,7 @@ export function Card({ t, children, className = "", title, hint, right }) {
 }
 export function Btn({ t, children, onClick, variant = "primary", className = "", disabled, title }) {
   const base = "inline-flex items-center gap-2 rounded-xl font-semibold px-4 py-2.5 text-sm transition disabled:opacity-50 disabled:cursor-not-allowed";
-  const style = variant === "primary" ? { background: t.primary, color: t.onPrimary || "#fff" }
+  const style = variant === "primary" ? { background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" }
     : variant === "danger" ? { background: "transparent", color: t.poor, border: "1px solid " + t.poor }
     : { background: "transparent", color: t.text, border: "1px solid " + t.border };
   return <button title={title} disabled={disabled} onClick={onClick} className={base + " " + className} style={style}>{children}</button>;
@@ -41,7 +41,8 @@ export function SelectInput({ t, children, ...p }) {
 export function Tile({ t, label, value, sub, accent, deltaColor }) {
   return (
     <div className="rounded-2xl border p-4 relative overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
-      <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent || t.primary }} />
+      {/* status channel, not trim — see Tile in Dashboard.jsx */}
+      {accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent }} />}
       <div className="text-xs uppercase tracking-widest" style={{ color: t.muted }}>{label}</div>
       <div className="text-3xl font-bold mt-2 tabular-nums" style={{ color: t.text }}>{value}</div>
       {sub && <div className="text-xs mt-1" style={{ color: deltaColor || t.muted }}>{sub}</div>}
@@ -80,9 +81,9 @@ export function Segmented({ t, value, onChange, options, small }) {
             onMouseLeave={() => setHover((h) => (h === val ? null : h))}
             className={(small ? "px-3 py-1 text-xs" : "px-4 py-1.5 text-sm") + " rounded-full font-semibold"}
             style={{
-              background: on ? t.primary : hot ? t.raised : "transparent",
+              background: on ? (t.primaryStrong || t.primary) : hot ? t.raised : "transparent",
               color: on ? (t.onPrimary || "#fff") : hot ? t.text : t.muted,
-              boxShadow: on ? "0 1px 2px rgba(15,23,42,.16), 0 3px 8px rgba(79,70,229,.28)" : "none",
+              boxShadow: on ? `0 1px 2px rgba(15,23,42,.16), 0 3px 8px ${t.primarySoft}` : "none",
               transform: on ? "translateY(-0.5px)" : "none",
               transition: "background .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease",
               letterSpacing: "0.01em",
@@ -106,7 +107,9 @@ export function makeTooltip(t) {
     );
   };
 }
-/** Fixed palette for route colours (independent of theme). */
-const PALETTE = ["#6366f1", "#38bdf8", "#a78bfa", "#10b981", "#f59e0b", "#f43f5e", "#14b8a6", "#eab308", "#ec4899", "#8b5cf6"];
+/** Fixed palette for route colours (independent of theme). Eight hues at even spacing with
+ *  alternating lightness, so neighbouring route indices never collide at 1.6px stroke on a map —
+ *  the old list led with three near-identical indigo/violets in slots 1, 3 and 10. */
+const PALETTE = ["#2563eb", "#ea580c", "#16a34a", "#c026d3", "#0891b2", "#ca8a04", "#dc2626", "#4d7c0f"];
 export function routeColorMap(routes) { const m = {}; routes.forEach((r, i) => (m[r] = PALETTE[i % PALETTE.length])); return m; }
 export { PALETTE };

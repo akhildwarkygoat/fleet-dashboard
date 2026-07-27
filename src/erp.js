@@ -45,6 +45,17 @@ function unitOf(compname) {
   return /technotek/i.test(compname || "") ? "Technotek" : "Gainup";
 }
 
+/* Old registrations still baked into saved plans, mapped to the name the ERP (and so the live
+   fleet) actually uses. Plans are matched to buses by name, so without this the route on a
+   renamed bus finds no fleet entry and is dropped — the bus then reads 0 riders in the Planner.
+   ERP vehicle names are correct as sent and are NOT rewritten; this is plan-side only.
+   Retire an entry once every plan under plans/ and public/ has been regenerated. */
+const PLAN_VEHICLE_ALIASES = {
+  TN57BJ3434: "TN57CJ3434",
+  TN57BK3434: "TN57CK3434",
+};
+export const canonVehicle = (veh) => PLAN_VEHICLE_ALIASES[veh] || veh;
+
 const mode = (obj) => {
   const e = Object.entries(obj).sort((a, b) => b[1] - a[1])[0];
   return e ? e[0] : null;
