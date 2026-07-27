@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { matrixFor } from "./google.js";
 import { scorePlan, RENT_TARIFF, haversineKm } from "./engine.js";
+import { canonVehicle } from "../erp.js";
 
 /* Effective daily riders per stop, using the SAME calibration as the dashboard KPIs and the
  * Python solver (registered × active-rate × (1 − absentee + buffer)) — so totals land on ~2,141,
@@ -248,12 +249,15 @@ export function fleetFromSolver(solver, storeFleet) {
   const ownTpl = (storeFleet || []).find((b) => b.type === "own") || { loanMonth: 0, driverDay: 692, maintDay: 1147, dieselPerKm: 18 };
   const rentTpl = (storeFleet || []).find((b) => b.type === "rent") || { slabFixed: 1700, slabKm: 80, perKmBeyond: 18.7 };
   return (solver.routes || []).map((r) => {
-    const existing = byName.get(r.name);
-    if (existing) return { ...existing, id: r.name, capacity: r.cap };
+    // a plan's own name becomes the bus identity on this path, so canonicalise it or the
+    // fleet gains a bus under a retired registration
+    const name = canonVehicle(r.name);
+    const existing = byName.get(name);
+    if (existing) return { ...existing, id: name, capacity: r.cap };
     const cost = r.type === "own"
       ? { loanMonth: ownTpl.loanMonth, driverDay: ownTpl.driverDay, maintDay: ownTpl.maintDay, dieselPerKm: ownTpl.dieselPerKm }
       : { slabFixed: rentTpl.slabFixed, slabKm: rentTpl.slabKm, perKmBeyond: rentTpl.perKmBeyond };
-    return { id: r.name, name: r.name, type: r.type, capacity: r.cap, ...cost };
+    return { id: name, name, type: r.type, capacity: r.cap, ...cost };
   });
 }
 
@@ -280,7 +284,9 @@ export function seedFromSolver(solver, fleet, stops) {
   const byBusName = new Map(fleet.map((b) => [b.name, b.id]));
   const seed = new Map(), extras = [], demand = new Map(), used = new Set();
   for (const r of (solver.routes || [])) {
-    const busId = byBusName.get(r.name);
+    // saved plans still carry pre-rename registrations, so canonicalise before matching —
+    // otherwise the route finds no bus and the `continue` below silently drops it
+    const busId = byBusName.get(canonVehicle(r.name));
     if (!busId) continue;
     const ids = [];
     for (const s of (r.seq || [])) {
