@@ -1,9 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./Dashboard.jsx";
-// self-hosted so the app actually gets the typeface it asks for — the numeric surfaces are
-// built on Inter's tabular figures, which the OS fallbacks don't provide
-import "@fontsource-variable/inter";
 import "./index.css";
 
 // Persistence shim: the dashboard's Store looks for `window.storage`
