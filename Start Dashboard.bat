@@ -19,10 +19,10 @@ if errorlevel 1 (
   echo.
 )
 
-rem Open the browser after a short head start for the server
-start "" cmd /c "timeout /t 6 >nul & start http://localhost:5173"
-
-call npm run dev
+rem Let Vite open the browser itself. It picks the next free port when 5173 is
+rem taken, so a hard-coded http://localhost:5173 here would land on a blank page
+rem (or somebody else's server) instead of the dashboard.
+call npm run dev -- --open
 
 echo.
 echo The dashboard stopped. If this was unexpected, take a photo of this window.
