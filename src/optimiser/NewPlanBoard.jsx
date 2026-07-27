@@ -100,14 +100,14 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   const avgRide = usedRows.reduce((n, r) => n + r.ride * r.heads, 0) / rideHeads;
 
   const tiles = row ? [
-    { label: `Riders · ${busName}`, value: `${row.heads} / ${row.cap}`, sub: row.overCap ? "over capacity" : row.overSeats ? "over seats" : "seats filled", accent: row.overCap ? t.poor : row.overSeats ? t.watch : t.techno, dc: row.overCap ? t.poor : row.overSeats ? t.watch : t.muted },
+    { label: `Riders · ${busName}`, value: `${row.heads} / ${row.cap}`, sub: row.overCap ? "over capacity" : row.overSeats ? "over seats" : "seats filled", accent: row.overCap ? t.poor : row.overSeats ? t.watch : null, dc: row.overCap ? t.poor : row.overSeats ? t.watch : t.muted },
     { label: "Utilisation", value: `${Math.round(row.fill * 100)}%`, sub: `${row.stops.length} stops`, accent: row.fill >= 0.85 ? t.good : t.watch },
-    { label: "Cost / head / day", value: row.heads ? `₹${(row.cost / row.heads).toFixed(1)}` : "—", sub: `₹${Math.round(row.cost)} / day`, accent: t.primary },
+    { label: "Cost / head / day", value: row.heads ? `₹${(row.cost / row.heads).toFixed(1)}` : "—", sub: `₹${Math.round(row.cost)} / day` },
     { label: morning ? "Ride (first stop → factory)" : "Ride (to last stop)", value: `${Math.round(row.ride)} min`, sub: row.km ? `${row.km.toFixed(1)} km/day` : "", accent: row.ride < 100 ? t.good : t.poor },
   ] : [
-    { label: "People", value: `${assignedHeads} / ${totalRiders}`, sub: `${progress.toFixed(0)}% assigned`, accent: t.techno, dc: progress >= 99.5 ? t.good : t.muted },
+    { label: "People", value: `${assignedHeads} / ${totalRiders}`, sub: `${progress.toFixed(0)}% assigned`, dc: progress >= 99.5 ? t.good : t.muted },
     { label: "Avg util", value: k ? `${k.utilisation.toFixed(0)}%` : "—", sub: `${busesUsed} bus${busesUsed === 1 ? "" : "es"} used`, accent: k && k.utilisation >= 85 ? t.good : t.watch },
-    { label: "Cost / head / day", value: k && k.heads ? `₹${k.costPerHeadDay.toFixed(1)}` : "—", sub: k ? `₹${Math.round(k.totalCost).toLocaleString("en-IN")} / day` : "", accent: t.primary },
+    { label: "Cost / head / day", value: k && k.heads ? `₹${k.costPerHeadDay.toFixed(1)}` : "—", sub: k ? `₹${Math.round(k.totalCost).toLocaleString("en-IN")} / day` : "" },
     { label: "Avg ride", value: usedRows.length ? `${Math.round(avgRide)} min` : "—", sub: `${unassignedCount} stops left`, accent: usedRows.length && avgRide <= 60 ? t.good : t.poor },
   ];
 
@@ -193,10 +193,11 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
         <div className="grid grid-cols-4 gap-2">
           {tiles.map((c, i) => (
             <div key={i} className="rounded-xl px-2.5 py-1.5 relative overflow-hidden" style={{ background: glassInner, border: "1px solid " + glassInnerBorder }}>
-              <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: c.accent || t.primary }} />
-              <div className="text-[9px] uppercase tracking-wider pl-1.5 truncate" style={{ color: t.muted }}>{c.label}</div>
-              <div className="text-lg font-bold tabular-nums pl-1.5 leading-tight" style={{ color: t.text }}>{c.value}</div>
-              <div className="text-[9px] pl-1.5 truncate" style={{ color: c.dc || t.muted }}>{c.sub}</div>
+              {/* rail only when the accent came from a threshold — see Tile in Dashboard.jsx */}
+              {c.accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: c.accent }} />}
+              <div className={"text-[9px] uppercase tracking-wider truncate" + (c.accent ? " pl-1.5" : "")} style={{ color: t.muted }}>{c.label}</div>
+              <div className={"text-lg font-bold tabular-nums leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: t.text }}>{c.value}</div>
+              <div className={"text-[9px] truncate" + (c.accent ? " pl-1.5" : "")} style={{ color: c.dc || t.muted }}>{c.sub}</div>
             </div>
           ))}
         </div>

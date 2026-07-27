@@ -985,7 +985,7 @@ function KpiCell({ t, c }) {
   return (
     <div onClick={c.onCardClick}
       title={c.onCardClick ? c.cardHint : undefined}
-      className={"relative flex-1 min-w-0 px-3.5 py-4 transition-colors duration-150" + (c.onCardClick ? " cursor-pointer hover:brightness-[0.985]" : "")}
+      className={"relative flex-1 min-w-0 px-3 xl:px-3.5 py-4 transition-colors duration-150" + (c.onCardClick ? " cursor-pointer hover:brightness-[0.985]" : "")}
       style={{ background: c.active ? t.primarySoft : "transparent", boxShadow: c.active ? `inset 0 -2.5px 0 ${c.accent || t.primary}` : "none" }}>
       {c.onClick && (
         <button type="button" onClick={(e) => { e.stopPropagation(); c.onClick(); }} title="How this is calculated"
@@ -997,10 +997,13 @@ function KpiCell({ t, c }) {
       <div className="flex items-center gap-1.5 min-w-0" style={{ paddingRight: c.onClick ? 14 : 0 }}>
         {/* the dot is a status light — only cells whose accent comes from a threshold get one */}
         {c.accent && <span className="inline-block rounded-full flex-shrink-0" style={{ width: 6, height: 6, background: c.accent }} />}
-        <span className="text-[10px] uppercase tracking-wider font-semibold truncate" style={{ color: t.muted }}>{c.label}</span>
+        {/* two lines rather than an ellipsis: "Cost / head" and "Dist / person" were both being
+            cut to "COST / …" below xl. The reserved height keeps every value on the same baseline. */}
+        <span className="text-[10px] uppercase tracking-wider font-semibold leading-[1.15] min-h-[2.3em] flex items-start" style={{ color: t.muted }}>{c.label}</span>
       </div>
-      <div className="mt-2 font-bold tabular-nums leading-none whitespace-nowrap tracking-tight" style={{ color: t.text }}>
-        <span className="text-2xl">{c.value}</span>
+      <div className="mt-1.5 font-bold tabular-nums leading-none whitespace-nowrap tracking-tight" style={{ color: t.text }}>
+        {/* the widest real value is a 5-digit km total; it needs the smaller step below xl */}
+        <span className="text-xl xl:text-2xl">{c.value}</span>
         {c.unit && <span className="text-xs font-semibold ml-0.5" style={{ color: t.muted }}>{c.unit}</span>}
       </div>
       {c.sub && <div className="text-[10px] mt-1.5 truncate" style={{ color: t.muted }}>{c.sub}</div>}
