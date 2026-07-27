@@ -1184,7 +1184,9 @@ function FleetPlanView({ t }) {
         const rental = { ...clickable("buses", { key: "rental", label: "Rental", value: rt.buses, sub: `${rt.seats.toLocaleString("en-IN")} seats` }), active: typeFilter === "rent", onCardClick: () => applyTypeFilter("rent"), cardHint: "Show only rental buses in the table below" };
         const seats = { key: "seats", label: "Seats", value: m.seats.toLocaleString("en-IN"), sub: `${m.riders} riders` };
         const avgStops = { key: "avgstops", label: "Stops/bus", value: m.avg_stops.toFixed(1), sub: "average" };
-        return <KpiGroup t={t} groups={[[cost, util], [avgride, maxride], [totDist, avgDist], [owned, rental, seats, avgStops]]} />;
+        // pairs throughout: fleet split (owned/rental) and capacity (seats/stops-per-bus) are two
+        // separate reads, so they get the card gap the other clubs have rather than a hairline
+        return <KpiGroup t={t} groups={[[cost, util], [avgride, maxride], [totDist, avgDist], [owned, rental], [seats, avgStops]]} />;
       })()}
       {/* Master map — rendered bare (no card wrapper), matching the Stops-page map */}
       <div>

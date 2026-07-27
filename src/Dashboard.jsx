@@ -814,7 +814,15 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
   const detail = (x) => (
     <Reveal className="rounded-2xl border p-4 mt-2" style={{ background: t.surface2, borderColor: t.primary }}>
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-        <div><div className="font-semibold flex items-center gap-2" style={{ color: t.text }}><UnitDot t={t} unit={x.bus.unit} />{x.bus.vehicle} <Pill t={t} kind={x.h} /></div>
+        <div><div className="font-semibold flex items-center gap-2" style={{ color: t.text }}><UnitDot t={t} unit={x.bus.unit} />
+          {/* the registration is the way through to the full bus-wise view; the card itself only
+              opens this preview, so a tap never skips past today's attendance */}
+          {onOpenBusView
+            ? <button onClick={() => onOpenBusView(x.bus.id)} title={`Open ${x.bus.vehicle} in Bus-wise detail`}
+                className="inline-flex items-center gap-1 font-semibold rounded hover:underline"
+                style={{ color: t.primary, textUnderlineOffset: 3 }}>{x.bus.vehicle}<ChevronRight size={14} /></button>
+            : x.bus.vehicle}
+          <Pill t={t} kind={x.h} /></div>
           <div className="text-xs mt-0.5" style={{ color: t.muted }}>{x.bus.route} · {x.bus.driver} · {x.date}</div></div>
         <button onClick={() => setOpenBus(null)} className="rounded-lg p-1.5" style={{ border: "1px solid " + t.border, color: t.muted }}><X size={14} /></button>
       </div>
@@ -844,7 +852,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         <Tile t={t} label="Riders present" value={agg.present} sub={`of ${agg.cap} seats`} />
         <Tile t={t} label="Capacity utilisation" value={pct(agg.util)} sub={`${agg.count} buses shown`} />
         {noCosts
-          ? <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" accent={overCount ? t.watch : t.good} />
+          ? <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" />
           : <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} />}
         {(() => {
           const gainup = buses.filter((b) => b.unit === "Gainup").length;
@@ -905,8 +913,9 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
                     {list.map((x) => { const over = x.m.util > 150; const col = over ? OVER_BAND.color : hc(x.h); const on = openBus === x.bus.id;
                       const tag = over ? `OVER +${Math.round(x.m.util - 100)}%` : x.h.toUpperCase();
                       return (
-                        <button key={x.bus.id} data-fx="bus" title={`Open ${x.bus.vehicle} in Bus-wise detail`}
-                          onClick={() => (onOpenBusView ? onOpenBusView(x.bus.id) : setOpenBus(on ? null : x.bus.id))}
+                        <button key={x.bus.id} data-fx="bus" aria-expanded={on}
+                          title={on ? `Hide who's on ${x.bus.vehicle}` : `Show who's on ${x.bus.vehicle}`}
+                          onClick={() => setOpenBus(on ? null : x.bus.id)}
                           onMouseEnter={fxLift} onMouseLeave={fxDrop} className="relative text-left rounded-xl p-2.5" style={{ background: t.surface2, border: "1.5px solid " + col, boxShadow: on ? `0 0 0 2px ${t.primary}` : "none" }}>
                           <span className="absolute rounded-full" style={{ right: 8, top: 8, width: 8, height: 8, background: col }} />
                           <div className="text-xs font-semibold truncate" style={{ color: t.text, maxWidth: "84%" }}>{x.bus.vehicle}</div>
