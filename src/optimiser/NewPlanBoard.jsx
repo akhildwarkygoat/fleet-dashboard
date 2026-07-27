@@ -200,6 +200,12 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
             </div>
           ))}
         </div>
+        {/* always-on legend so the stop-colour meaning never has to be recalled mid-rebuild */}
+        <div className="flex items-center gap-3 mt-2 text-[9px] font-medium" style={{ color: t.muted }}>
+          <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ background: UNADDED }} /> Unassigned</span>
+          <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ background: ADDED }} /> On a bus</span>
+          {activeBus && <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{ background: busColor[activeBus] }} /> This bus’s stops</span>}
+        </div>
       </div>
       )}
 
@@ -247,7 +253,9 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                     <span className="text-[10px]" style={{ color: t.muted }}>{Math.round(r.ride)}m · ₹{Math.round(r.cost)}</span>
                     <span className="flex-1" />
                     <button type="button" title="Auto-sequence" onClick={(e) => { e.stopPropagation(); editor.autoSequence(r.bus.id); }} style={{ color: t.muted, cursor: "pointer" }}><Wand2 size={12} /></button>
-                    <button type="button" title="Clear bus" onClick={(e) => { e.stopPropagation(); editor.clearBus(r.bus.id); }} style={{ color: t.muted, cursor: "pointer" }}><Trash2 size={12} /></button>
+                    <button type="button" title="Clear this bus — removes all its stops" aria-label={`Clear all stops from ${r.bus.name}`} onClick={(e) => { e.stopPropagation(); editor.clearBus(r.bus.id); }}
+                      className="rounded-md p-0.5 transition-colors" style={{ color: t.poor, cursor: "pointer" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = t.poor + "1f")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}><Trash2 size={12} /></button>
                   </div>
                 )}
               </div>

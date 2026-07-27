@@ -7,7 +7,7 @@
  * ==========================================================================*/
 import React, { useEffect, useMemo, useState } from "react";
 import * as store from "./store.js";
-import { usePlanMetric, usePlanEditor, seedFromSolver, fleetFromSolver } from "./planEditor.js";
+import { usePlanMetric, usePlanEditor, seedFromSolver, fleetFromSolver, fleetFromErp } from "./planEditor.js";
 import { Btn, Empty, PALETTE } from "./ui.jsx";
 import NewPlanBoard from "./NewPlanBoard.jsx";
 import PlanGallery from "./PlanGallery.jsx";
@@ -18,7 +18,7 @@ import { downloadPlanJson } from "./planExport.js";
 const EMPTY = new Map();
 const mapFrom = (assignments) => { const m = new Map(); for (const k of Object.keys(assignments || {})) m.set(k, assignments[k]); return m; };
 
-export default function NewPlanView({ t, toast }) {
+export default function NewPlanView({ t, toast, erpBuses }) {
   const depot = useMemo(() => store.getDepot(), []);
   const storeStops = useMemo(() => store.getStops().filter((s) => s.lat != null && s.lng != null), []);
 
@@ -29,7 +29,12 @@ export default function NewPlanView({ t, toast }) {
     fetch(activePlanUrl() + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null))
       .then((d) => setSolver(d)).catch(() => {}).finally(() => setSolverLoaded(true));
   }, []);
-  const fleet = useMemo(() => (solver ? fleetFromSolver(solver, store.getFleet()) : store.getFleet()), [solver]);
+  // Fleet authority: today's ERP (capacities + mileage) first, so the Planner reflects the
+  // live fleet immediately; only fall back to the solved plan / store when the ERP is absent.
+  const fleet = useMemo(() => {
+    if (erpBuses && erpBuses.length) return fleetFromErp(erpBuses, store.getFleet());
+    return solver ? fleetFromSolver(solver, store.getFleet()) : store.getFleet();
+  }, [erpBuses, solver]);
   // ERP's previously-ran allocation — always available in the gallery as a starting seed
   const [prevRoutes, setPrevRoutes] = useState(null);
   useEffect(() => {
@@ -131,6 +136,13 @@ export default function NewPlanView({ t, toast }) {
   };
   const backToGallery = () => { setDrafts(store.listPlanDrafts()); setView("gallery"); };
   const reset = () => { setImportedPlan(null); setSeed(new Map(EMPTY)); };
+  // Clear wipes the whole board and re-seeds the editor, so it can't be undone — warn first.
+  const clearWithConfirm = () => {
+    if (window.confirm("Clear the whole board?\n\nThis removes every stop from every bus and can't be undone.")) {
+      reset();
+      toast && toast("Board cleared");
+    }
+  };
   const importIntoEditor = () => {
     if (!solver) { toast && toast("No optimised plan to import"); return; }
     const { seed, extras, demand } = seedFromSolver(solver, fleet, storeStops);
@@ -169,9 +181,9 @@ export default function NewPlanView({ t, toast }) {
         <div className="flex-1" />
         <Btn t={t} variant="ghost" onClick={editor.undo} disabled={!editor.canUndo} title="Undo"><Undo2 size={15} /></Btn>
         <Btn t={t} variant="ghost" onClick={editor.redo} disabled={!editor.canRedo} title="Redo"><Redo2 size={15} /></Btn>
-        <Btn t={t} variant="ghost" onClick={() => { editor.autoFill(); toast && toast("Auto-filled remaining stops"); }} title="Cluster the unassigned stops onto free buses"><Wand2 size={15} /> Auto-fill</Btn>
-        <Btn t={t} variant="ghost" onClick={importIntoEditor} title="Load the optimiser's plan into this editor"><Sparkles size={15} /> Import optimised</Btn>
-        <Btn t={t} variant="ghost" onClick={reset}><RotateCcw size={15} /> Clear</Btn>
+        {/* Clear wipes the whole board — destructive, held apart from the safe Export/Save group, and confirmed first */}
+        <Btn t={t} variant="danger" onClick={clearWithConfirm} title="Empty the board — removes every stop from every bus"><RotateCcw size={15} /> Clear</Btn>
+        <span aria-hidden className="self-stretch mx-1" style={{ width: 1, background: t.border }} />
         <Btn t={t} variant="ghost" onClick={exportJson}><Download size={15} /> Export</Btn>
         <Btn t={t} onClick={save}><Save size={15} /> Save</Btn>
       </div>

@@ -261,8 +261,8 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
                     <td className="py-2 px-2">{s.name}</td>
                     <td className="py-2 px-2">{vehFor(s) ? <span className="inline-block rounded-md px-2 py-1 text-xs font-semibold tabular-nums" style={{ background: t.primarySoft, color: t.primary, border: "1px solid " + t.border }}>{vehFor(s)}</span> : <span className="text-xs" style={{ color: t.muted }}>—</span>}</td>
                     <td className="py-2 px-2">{s.village || "—"}</td>
-                    <td className="py-2 px-2 tabular-nums" style={{ color: t.muted }}>{s.lat != null ? (+s.lat).toFixed(5) : "—"}</td>
-                    <td className="py-2 px-2 tabular-nums" style={{ color: t.muted }}>{s.lng != null ? (+s.lng).toFixed(5) : "—"}</td>
+                    <td className="py-2 px-2 tabular-nums text-xs" style={{ color: t.faint }}>{s.lat != null ? (+s.lat).toFixed(5) : "—"}</td>
+                    <td className="py-2 px-2 tabular-nums text-xs" style={{ color: t.faint }}>{s.lng != null ? (+s.lng).toFixed(5) : "—"}</td>
                     <td className="py-2 px-2 tabular-nums">{s.headcount}</td>
                     <td className="py-2 px-2">{s.company || "Gainup"}</td>
                   </tr>
@@ -1426,8 +1426,10 @@ function FleetPlanView({ t }) {
                     <span className="rounded-full px-2 py-0.5 text-xs font-semibold" style={{ color: companyColor(t, companyOf(busCo, r.name)), background: t.surface2 }}>{companyOf(busCo, r.name)}</span>
                   </td>
                   <td className="py-2 px-2" style={{ color: t.text }}>{r.stops}</td>
-                  <td className="py-2 px-2" style={{ color: t.text }}>{r.riders}</td>
-                  <td className="py-2 px-2" style={{ color: t.text }}>{r.cap}</td>
+                  {/* riders coloured against seats: over seats+5 leniency = red, over seats = amber (same rule as the Planner bus cards) */}
+                  <td className="py-2 px-2 tabular-nums font-semibold" style={{ color: r.riders > r.cap + 5 ? t.poor : r.riders > r.cap ? t.watch : t.text }}
+                    title={r.riders > r.cap ? `${r.riders - r.cap} over ${r.cap} seats` : undefined}>{r.riders}</td>
+                  <td className="py-2 px-2" style={{ color: t.muted }}>{r.cap}</td>
                   <td className="py-2 px-2" style={{ color: t.muted }}>{r.km}</td>
                   <td className="py-2 px-2" style={{ color: r.ride <= 60 ? t.good : t.poor }}>{r.ride}</td>
                   <td className="py-2 px-2" style={{ color: t.text }}>{"₹" + (r.riders ? r.cost / r.riders : 0).toFixed(1)}</td>
@@ -1661,7 +1663,7 @@ function SimulatorView({ t }) {
   );
 }
 
-export default function OptimiserTab({ t, toast }) {
+export default function OptimiserTab({ t, toast, erpBuses }) {
   const [sub, setSub] = useState("stops");
   const [version, setVersion] = useState(0);
   const refresh = () => setVersion((v) => v + 1);
@@ -1717,7 +1719,7 @@ export default function OptimiserTab({ t, toast }) {
       </div>
       {sub === "stops" && <StopsView key={planId || "d"} t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} />}
       {sub === "plan" && <FleetPlanView key={planId || "d"} t={t} />}
-      {sub === "new" && <NewPlanView key={planId || "d"} t={t} toast={toast} />}
+      {sub === "new" && <NewPlanView key={planId || "d"} t={t} toast={toast} erpBuses={erpBuses} />}
     </div>
   );
 }

@@ -217,6 +217,32 @@ export function usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, de
 /** Canonical editing fleet = the 69 buses the solver plan actually uses (names/types/caps match
  *  the dashboard). Cost fields come from the store bus of the same name when present, else a
  *  per-type template, so engine cost stays realistic. Bus id = its name (stable, matches seq). */
+/** The live ERP fleet as editor buses: capacity/type straight from today's feed, cost
+ *  fields borrowed from a same-named store bus (else a per-type template). This is the
+ *  authority for the Planner — it must not wait on a re-solve to show new capacities. */
+export function fleetFromErp(erpBuses, storeFleet) {
+  const byName = new Map((storeFleet || []).map((b) => [b.name, b]));
+  const ownTpl = (storeFleet || []).find((b) => b.type === "own") || { loanMonth: 0, driverDay: 692, maintDay: 471, dieselPerKm: 18 };
+  const rentTpl = (storeFleet || []).find((b) => b.type === "rent") || { slabFixed: 1700, slabKm: 80, perKmBeyond: 18.7 };
+  return (erpBuses || [])
+    .filter((b) => b && b.vehicle)
+    .map((b) => {
+      const name = b.vehicle;
+      const isRent = /rent/i.test(b.type || "");
+      const existing = byName.get(name);
+      const cap = +b.capacity || (existing ? existing.capacity : 0) || 55;
+      // ERP mileage (km/L) → this bus's own ₹/km at ₹100/L; falls back to the template rate
+      const mileage = +b.mileage || 0;
+      const dieselPerKm = mileage > 0 ? 100 / mileage : (existing ? existing.dieselPerKm : ownTpl.dieselPerKm);
+      const cost = isRent
+        ? { slabFixed: (existing && existing.slabFixed) || rentTpl.slabFixed, slabKm: (existing && existing.slabKm) || rentTpl.slabKm, perKmBeyond: (existing && existing.perKmBeyond) || rentTpl.perKmBeyond }
+        : { loanMonth: (existing && existing.loanMonth) || ownTpl.loanMonth, driverDay: (existing && existing.driverDay) || ownTpl.driverDay,
+            maintDay: (existing && existing.maintDay) || ownTpl.maintDay, dieselPerKm };
+      return { id: name, name, type: isRent ? "rent" : "own", capacity: cap, unit: b.unit, mileage, ...cost };
+    })
+    .sort((a, b) => (b.capacity || 0) - (a.capacity || 0));
+}
+
 export function fleetFromSolver(solver, storeFleet) {
   const byName = new Map((storeFleet || []).map((b) => [b.name, b]));
   const ownTpl = (storeFleet || []).find((b) => b.type === "own") || { loanMonth: 0, driverDay: 692, maintDay: 1147, dieselPerKm: 18 };

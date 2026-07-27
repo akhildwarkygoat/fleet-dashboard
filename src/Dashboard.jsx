@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   LayoutDashboard, GitCompare, Database, Sigma, Settings as SettingsIcon,
   Sun, Moon, Bus, Plus, Trash2, Download, Server, Activity, BarChart3, Pencil, X, ChevronRight, ChevronDown, Search, Calendar, Clock, MapPin,
-  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft
+  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
@@ -17,9 +17,12 @@ import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
+import { MotionPathPlugin } from "gsap/MotionPathPlugin";
+import { GlowCard } from "./components/ui/spotlight-card.jsx";
+import { SpotlightNav } from "./components/ui/spotlight-button.jsx";
 
 /* ============================ MOTION (GSAP) ============================ */
-gsap.registerPlugin(useGSAP);
+gsap.registerPlugin(useGSAP, MotionPathPlugin);
 gsap.config({ nullTargetWarn: false }); // page timeline selectors may legitimately match nothing on some tabs
 const prefersReduced = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -325,7 +328,7 @@ const Store = {
 
 /* ============================ SAMPLE DATA ============================ */
 const UNITS = ["Gainup", "Technotek"];
-const SCHEMA = "fleet-v6"; // bump when the data model changes, to re-seed sample data
+const SCHEMA = "fleet-v7"; // bump to invalidate stored data; v7 discards any dummy-seeded store so the app boots empty and loads from the ERP
 const NAME_POOL = ["A. Kumar", "R. Murugan", "S. Devi", "K. Prakash", "M. Latha", "V. Raja", "P. Selvi", "T. Anand", "N. Gokul", "D. Priya", "B. Suresh", "J. Mary", "L. Karthik", "G. Divya", "H. Ramesh", "C. Anitha", "E. Vijay", "F. Sneha", "I. Manoj", "O. Kavya"];
 function sampleData() {
   const buses = [
@@ -661,7 +664,105 @@ function BandsEditor({ t, bands, setBands }) {
 }
 
 /* ============================ LIVE (grid + collapsible units) ============================ */
-function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onAddCosts, onOpenBusView }) {
+/* The Prev-route rebuild loader, faithfully: a compact glass card with a small route curve
+ * that draws itself while a bus dot travels it (GSAP MotionPath), a title, a live message
+ * line, and a gradient progress bar. Progress = routes revealed so far (real count). */
+const ERP_ROUTE_D = "M16 100 C 44 100, 40 62, 62 60 S 92 38, 104 20";
+function RouteBusLoader({ t }) {
+  const svgRef = useRef(null), busRef = useRef(null), pathRef = useRef(null);
+  useGSAP(() => {
+    // route draws in → un-draws out, forever — same 2.1s cadence as the original overlay
+    gsap.timeline({ repeat: -1, defaults: { ease: "power1.inOut" } })
+      .fromTo(".erp-draw", { strokeDashoffset: 235 }, { strokeDashoffset: 0, duration: 1.15 })
+      .to(".erp-draw", { strokeDashoffset: -235, duration: 0.95 });
+    // the bus rides the same curve end-to-end (loops are safe on hidden tabs; only from() entrances need the guard)
+    gsap.to(busRef.current, { motionPath: { path: pathRef.current, align: pathRef.current, alignOrigin: [0.5, 0.5] },
+      duration: 2.1, ease: "none", repeat: -1 });
+  }, { scope: svgRef });
+  return (
+    <svg ref={svgRef} viewBox="0 0 120 120" width="116" height="116" style={{ display: "block", margin: "0 auto 8px" }} aria-hidden>
+      <path d={ERP_ROUTE_D} fill="none" stroke={t.primary} strokeOpacity="0.16" strokeWidth="5" strokeLinecap="round" />
+      <path ref={pathRef} className="erp-draw" d={ERP_ROUTE_D} fill="none" stroke={t.primary} strokeWidth="5" strokeLinecap="round" strokeDasharray="235" strokeDashoffset="235" />
+      <circle cx="16" cy="100" r="6" fill={t.primary} />
+      <circle cx="104" cy="20" r="6" fill="#8b5cf6" />
+      <circle ref={busRef} r="5" fill={t.dark ? "#e2e8f0" : "#0f172a"} stroke={t.surface} strokeWidth="2" />
+    </svg>
+  );
+}
+function ErpLoading({ t, phase, progress, onSync }) {
+  const offline = phase === "error";
+  const total = (progress && progress.total) || 0;
+  const done = (progress && progress.done) || 0;
+  const pctDone = total ? Math.round((done / total) * 100) : 0;
+  // Skeleton bone — a neutral placeholder bar (no fabricated numbers; it all sits behind a blur)
+  const boneBg = t.dark ? "rgba(148,163,184,.22)" : "rgba(15,23,42,.08)";
+  const Bone = ({ w, h = 10, mt = 0 }) => <span style={{ display: "block", width: w, height: h, marginTop: mt, borderRadius: 6, background: boneBg }} />;
+  const GhostGroup = ({ unitColor, cards }) => (
+    <div className="rounded-2xl border mb-4 overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
+      <div className="flex items-center gap-2 px-4 py-3">
+        <span className="w-2.5 h-2.5 rounded-sm" style={{ background: unitColor }} />
+        <Bone w={76} h={12} /><Bone w={48} h={8} />
+        <span className="flex-1" /><Bone w={130} h={8} />
+      </div>
+      <div className="px-4 pb-4" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(108px, 1fr))", gap: 8 }}>
+        {Array.from({ length: cards }, (_, i) => (
+          <div key={i} className="rounded-xl p-2.5" style={{ border: "1.5px solid " + t.border, background: t.surface2 }}>
+            <Bone w="72%" h={9} /><Bone w="52%" h={17} mt={7} /><Bone w="60%" h={7} mt={7} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <div className="relative">
+      {/* the Live page's exact layout, blurred behind the loader — KPI tiles, controls, unit groups */}
+      <div aria-hidden className="pointer-events-none select-none" style={{ filter: "blur(7px)", opacity: 0.65 }}>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+          {[t.good, t.primary, t.watch, t.techno].map((accent, i) => (
+            <div key={i} className="rounded-2xl border p-4 relative overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
+              <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent }} />
+              <Bone w={96} h={8} /><Bone w={64} h={26} mt={12} /><Bone w={76} h={8} mt={9} />
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2 mb-4 items-center">
+          <div className="flex-1 rounded-xl" style={{ minWidth: 200, height: 42, background: t.inputBg, border: "1px solid " + t.border }} />
+          <div className="rounded-xl" style={{ width: 150, height: 42, background: t.inputBg, border: "1px solid " + t.border }} />
+          <div className="rounded-xl" style={{ width: 106, height: 42, background: t.surface2, border: "1px solid " + t.border }} />
+          <div className="rounded-xl" style={{ width: 146, height: 42, background: t.surface2, border: "1px solid " + t.border }} />
+        </div>
+        <GhostGroup unitColor={t.gainup} cards={8} />
+        <GhostGroup unitColor={t.techno} cards={8} />
+      </div>
+      {/* the loader card floats over the ghost — GlowCard border spotlight tracks the pointer */}
+      <div className="absolute inset-0 z-10 flex items-center justify-center">
+      <GlowCard customSize width="min(400px, 92%)" glowColor={offline ? "red" : "purple"} className="text-center px-6 pt-7 pb-6">
+        {offline ? (
+          <>
+            <span className="w-14 h-14 rounded-2xl inline-flex items-center justify-center mb-2" style={{ background: t.poor + "1a", color: t.poor }}><WifiOff size={26} /></span>
+            <div className="font-extrabold" style={{ color: t.text, fontSize: 16, letterSpacing: "-0.01em" }}>Can't reach the ERP</div>
+            <div className="text-xs mt-1.5" style={{ color: t.muted }}>The transport feed didn't respond. This dashboard shows live data only — check the factory network, then retry.</div>
+            <button onClick={onSync} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold mt-4" style={{ background: t.primary, color: t.onPrimary || "#fff" }}>Try again</button>
+          </>
+        ) : (
+          <>
+            <RouteBusLoader t={t} />
+            <div className="font-extrabold" style={{ color: t.text, fontSize: 16, letterSpacing: "-0.01em" }}>Fetching live data from ERP</div>
+            <div className="tabular-nums" style={{ color: t.muted, fontSize: 12.5, marginTop: 5, minHeight: 16 }}>
+              {total ? <>Loading routes… <b style={{ color: t.primary }}>{done}</b> / {total}</> : "Contacting ERP…"}
+            </div>
+            <div className="rounded-full overflow-hidden" style={{ height: 7, marginTop: 18, background: t.dark ? "rgba(148,163,184,.18)" : "rgba(15,23,42,.09)" }}>
+              <div className="h-full rounded-full" style={{ width: pctDone + "%", background: `linear-gradient(90deg, ${t.primary}, #8b5cf6)`, transition: "width .5s cubic-bezier(.4,0,.2,1)" }} />
+            </div>
+            <div style={{ color: t.faint, fontSize: 10.5, marginTop: 11 }}>Today's fleet, riders &amp; attendance load straight from the source</div>
+          </>
+        )}
+      </GlowCard>
+      </div>
+    </div>
+  );
+}
+function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onAddCosts, onOpenBusView, erpPhase, erpProgress, onSync }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const [q, setQ] = useState("");
@@ -675,7 +776,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
     return d ? { bus: b, rec: resolveRec(records, employees, attendance, b.id, d), date: d } : null;
   }).filter(Boolean), [buses, records, employees, attendance]);
 
-  if (!pairs.length) return <Empty t={t} title="No live data yet" sub="Once the IT team connects the punch + cost feed, live buses appear here." />;
+  if (!pairs.length) return <ErpLoading t={t} phase={erpPhase} progress={erpProgress} onSync={onSync} />;
 
   const medCph = median(pairs.map((p) => metricsFor(p.rec, p.bus, wd).cph).filter((n) => n > 0));
   const enriched = pairs.map((p) => { const m = metricsFor(p.rec, p.bus, wd); return { ...p, m, h: healthOf(m, medCph, settings), bd: bandFor(m.util, settings.bands) }; });
@@ -733,13 +834,14 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <Tile t={t} label="Riders present" value={agg.present} sub={`of ${agg.cap} seats`} accent={t.good} />
         <Tile t={t} label="Capacity utilisation" value={pct(agg.util)} sub={`${agg.count} buses shown`} accent={t.primary} />
-        {noCosts ? <>
-          <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" accent={overCount ? t.watch : t.good} />
-          <Tile t={t} label="Attendance" value={punched ? pct((agg.present / punched) * 100) : "—"} sub={`${agg.present}/${punched} punched`} accent={t.techno} />
-        </> : <>
-          <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} accent={t.watch} />
-          <Tile t={t} label={showNV ? "Net value (yr)" : "Cost / km"} value={showNV ? inrK(agg.netAnnual) : inr1(agg.cpk)} sub={showNV ? "budget − spend" : `${agg.km} km`} accent={t.techno} />
-        </>}
+        {noCosts
+          ? <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" accent={overCount ? t.watch : t.good} />
+          : <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} accent={t.watch} />}
+        {(() => {
+          const gainup = buses.filter((b) => b.unit === "Gainup").length;
+          const technotek = buses.length - gainup;
+          return <Tile t={t} label="Total fleet" value={buses.length} sub={`${gainup} Gainup · ${technotek} Technotek`} accent={t.techno} />;
+        })()}
       </div>
 
       {noCosts && (
@@ -1676,7 +1778,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
 
       <Card t={t} title="ERP connection" hint="Live buses, employees and attendance from the ERP (VehicleEmpMapDetails). Auto-sync keeps the dashboard current; your per-bus cost cards, custom metrics and settings are always kept.">
         <div className="flex items-center justify-between py-2 gap-4" style={rowStyle}>
-          <div><div className="font-semibold" style={{ color: t.text }}>Auto-sync (live updates)</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>When on, the dashboard connects to the ERP on load and refreshes every {Math.round(ERP_POLL_MS / 1000)}s. Turn off to freeze on the last pull.</div></div>
+          <div><div className="font-semibold" style={{ color: t.text }}>Auto-sync (daily)</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>When on, the dashboard fetches from the ERP once a day — on the first open — and serves that data until the day ends. Turn off to freeze on the last pull; the sync pill always fetches on demand.</div></div>
           <div className="shrink-0"><Switch t={t} label="Auto-sync from ERP" checked={settings.erpAuto !== false} onChange={(v) => setSettings({ ...settings, erpAuto: v })} /></div>
         </div>
         <div className="flex flex-wrap items-center gap-3 mt-3">
@@ -1687,7 +1789,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
       </Card>
 
       <Card t={t} title="Data">
-        <div className="flex flex-wrap gap-3"><Btn t={t} variant="ghost" onClick={onExport}><Download size={15} /> Export all data (JSON)</Btn><Btn t={t} variant="danger" onClick={onReset}><Trash2 size={15} /> Reset to sample data</Btn></div>
+        <div className="flex flex-wrap gap-3"><Btn t={t} variant="ghost" onClick={onExport}><Download size={15} /> Export all data (JSON)</Btn><Btn t={t} variant="danger" onClick={onReset}><Trash2 size={15} /> Clear local data &amp; re-sync</Btn></div>
         <div className="text-xs mt-3" style={{ color: t.muted }}>This local copy is saved on this device between sessions. Use “Sync from ERP” above to load live data.</div>
       </Card>
 
@@ -1703,7 +1805,6 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
 /* The live-ERP "current routes" view (map + routes table + edit/export), embedded from the
    self-contained public/routes_map.html so it shares one implementation with the standalone page. */
 /* ============================ APP ============================ */
-const ERP_POLL_MS = 60_000; // auto-refresh the ERP feed every 60s for live updates
 const fmtClock = (ts) => { try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
 function Toast({ t, msg }) {
   const ref = useRef(null);
@@ -1730,7 +1831,8 @@ export default function App() {
   const [formulas, setFormulas] = useState([]);
   const [variables, setVariables] = useState([]);
   const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true });
-  const [erpStatus, setErpStatus] = useState({ phase: "idle", at: null, msg: "" }); // idle|syncing|ok|error — live ERP connection
+  const [erpStatus, setErpStatus] = useState({ phase: "idle", at: null, msg: "", progress: null }); // idle|syncing|ok|error — live ERP connection; progress = {done,total} routes on first load
+  const busesRef = useRef([]); // current fleet, read inside the stable syncErp callback
   const [loaded, setLoaded] = useState(false);
   const [toastMsg, setToastMsg] = useState("");
   const toastTimer = useRef();
@@ -1814,7 +1916,10 @@ export default function App() {
         if (st.erpAuto == null) st.erpAuto = true;
         setSettings(st);
       } else {
-        const s = sampleData(); setBuses(s.buses); setEmployees(s.employees); setAttendance(s.attendance); setRecords(s.records); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings);
+        // No stored fleet yet — never seed dummy data. Keep only the config defaults
+        // (settings, custom metrics) and leave the fleet empty; the ERP sync below fills it.
+        const s = sampleData(); setSettings(s.settings); setFormulas(s.formulas); setVariables(s.variables);
+        setBuses([]); setEmployees([]); setAttendance({}); setRecords([]);
       }
       const th = await Store.get("theme"); if (th && THEMES[th]) setThemeName(th); // ignore any removed/old theme name
       setLoaded(true);
@@ -1823,6 +1928,7 @@ export default function App() {
   }, []);
   useEffect(() => { if (loaded) Store.set("schema", SCHEMA); }, [loaded]);
   useEffect(() => { if (loaded) Store.set("buses", buses); }, [buses, loaded]);
+  useEffect(() => { busesRef.current = buses; }, [buses]);
   useEffect(() => { if (loaded) Store.set("employees", employees); }, [employees, loaded]);
   useEffect(() => { if (loaded) Store.set("attendance", attendance); }, [attendance, loaded]);
   useEffect(() => { if (loaded) Store.set("records", records); }, [records, loaded]);
@@ -1838,28 +1944,57 @@ export default function App() {
   const setBusCost = (busId, prof) => setBusCosts((c) => ({ ...c, [busId]: prof }));
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
-  const resetAll = () => { const s = sampleData(); setBuses(s.buses); setEmployees(s.employees); setAttendance(s.attendance); setRecords(s.records); setBusCosts({}); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Reset to sample data"); };
+  // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
+  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setBusCosts({}); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Cleared local data — re-syncing ERP"); syncErp(); };
   // silent = auto/background refresh (no toast, no tab jump); loud = manual button press
   const syncErp = useCallback(async ({ silent = false } = {}) => {
-    setErpStatus((s) => ({ ...s, phase: "syncing" }));
+    const firstLoad = busesRef.current.length === 0; // count-up reveal only when starting from empty
+    setErpStatus((s) => ({ ...s, phase: "syncing", progress: firstLoad ? { done: 0, total: 0 } : null }));
     if (!silent) toast("Syncing from ERP…");
     try {
       const data = mapErpToDashboard(await fetchErpRaw());
+      // On the first load, reveal the fetched routes as a real count-up (0 → total) before showing
+      // the dashboard, so the loader reports genuine progress instead of an opaque spinner.
+      if (firstLoad && data.buses.length) {
+        const total = data.buses.length;
+        await new Promise((resolve) => {
+          const p = { done: 0 };
+          gsap.to(p, { done: total, duration: Math.min(1.8, 0.6 + total * 0.013), ease: "power1.inOut",
+            onUpdate: () => setErpStatus((s) => ({ ...s, phase: "syncing", progress: { done: Math.round(p.done), total } })),
+            onComplete: resolve });
+        });
+      }
       setBuses(data.buses); setEmployees(data.employees); setAttendance(data.attendance); setRecords(data.records);
-      setErpStatus({ phase: "ok", at: Date.now(), msg: `${data.buses.length} buses · ${data.employees.length} employees` });
+      Store.set("lastErpSync", Date.now()); // daily-fetch marker: today's data is now on disk
+      setErpStatus({ phase: "ok", at: Date.now(), msg: `${data.buses.length} buses · ${data.employees.length} employees`, progress: null });
       if (!silent) { setTab("live"); toast(`ERP synced · ${data.buses.length} buses · ${data.employees.length} employees`); }
     } catch (e) {
-      setErpStatus((s) => ({ ...s, phase: "error", msg: e.message || String(e) }));
+      setErpStatus((s) => ({ ...s, phase: "error", msg: e.message || String(e), progress: null }));
       if (!silent) toast("ERP sync failed: " + (e.message || e));
     }
   }, []);
 
-  // live connection: sync once on load and then poll while auto-sync is on
+  // Daily connection: fetch from the ERP ONCE per calendar day — on the first open of the day.
+  // The stored snapshot then serves the whole day; a rollover watcher pulls the new day's feed
+  // if the app is left open past midnight. Manual sync (pill / Try again / Settings) always fetches.
   useEffect(() => {
     if (!loaded || !settings.erpAuto) return;
-    syncErp({ silent: true });
-    const id = setInterval(() => syncErp({ silent: true }), ERP_POLL_MS);
-    return () => clearInterval(id);
+    let cancelled = false;
+    const sameDay = (a, b) => { const x = new Date(a), y = new Date(b); return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate(); };
+    (async () => {
+      const last = await Store.get("lastErpSync");
+      if (cancelled) return;
+      if (last && sameDay(last, Date.now()) && busesRef.current.length > 0) {
+        setErpStatus({ phase: "ok", at: last, msg: "today's data · loaded " + fmtClock(last), progress: null });
+        return; // already fetched today — serve the stored snapshot
+      }
+      syncErp({ silent: true });
+    })();
+    const id = setInterval(async () => {
+      const last = await Store.get("lastErpSync");
+      if (!last || !sameDay(last, Date.now())) syncErp({ silent: true });
+    }, 10 * 60_000);
+    return () => { cancelled = true; clearInterval(id); };
   }, [loaded, settings.erpAuto, syncErp]);
 
   // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
@@ -1871,22 +2006,26 @@ export default function App() {
     <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)" }}>
       <div ref={headerRef} className="sticky top-0 z-20" style={{ background: t.surface, borderBottom: "1px solid " + t.border }}>
         <div className="w-full px-6 flex items-center gap-4">
-          <div className="flex-1 flex items-center gap-3 py-2 min-w-0 overflow-hidden">
+          <div className="flex items-center gap-3 py-2 min-w-0 shrink-0 sm:flex-1 sm:overflow-hidden">
             <div data-fx="logo" className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: t.primary }}><Bus size={20} color={t.onPrimary || "#fff"} /></div>
-            <div data-fx="brand" className="font-bold text-lg leading-tight tracking-tight truncate">Transport dashboard</div>
+            {/* brand text is dropped below sm so the tabs and status pill never collide on a phone */}
+            <div data-fx="brand" className="font-bold text-lg leading-tight tracking-tight truncate hidden sm:block">Transport dashboard</div>
           </div>
-          <div className="flex gap-1 overflow-x-auto shrink-0">
-            {TABS.map(([k, l, Icon]) => { const on = tab === k; return <button key={k} data-fx="tab" onClick={() => setTab(k)} aria-current={on ? "page" : undefined} className="flex items-center gap-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition-colors" style={{ color: on ? t.primary : t.muted, borderBottom: "2px solid " + (on ? t.primary : "transparent") }} onMouseEnter={(e) => { if (!on) e.currentTarget.style.color = t.text; }} onMouseLeave={(e) => { if (!on) e.currentTarget.style.color = t.muted; }}><Icon size={16} /> {l}</button>; })}
+          <div className="flex overflow-x-auto flex-1 min-w-0 sm:flex-none py-1.5">
+            {/* spotlight nav: sliding top light-bar + light cone on the active tab */}
+            <SpotlightNav t={t} items={TABS.map(([k, l, Icon]) => ({ key: k, label: l, icon: Icon }))} activeKey={tab} onChange={setTab} />
           </div>
-          <div className="flex-1 flex justify-end min-w-0">
+          <div className="flex justify-end min-w-0 shrink-0 sm:flex-1">
             {(() => {
               const p = erpStatus.phase;
               const dot = p === "ok" ? t.good : p === "syncing" ? t.watch : p === "error" ? t.poor : t.faint;
               const label = p === "syncing" ? "Syncing…" : p === "error" ? "ERP offline" : p === "ok" ? `Live · ${fmtClock(erpStatus.at)}` : "Connecting…";
               return (
-                <button onClick={() => syncErp()} aria-live="polite" title={erpStatus.msg ? `${erpStatus.msg}${erpStatus.at ? " · updated " + fmtClock(erpStatus.at) : ""}` : "Sync from ERP now"}
-                  className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold whitespace-nowrap" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}>
-                  <span ref={erpDotRef} className="w-2 h-2 rounded-full" style={{ background: dot }} />{label}
+                // below sm the pill collapses to just its status dot so it can't clip the Settings tab
+                <button onClick={() => syncErp()} aria-live="polite" aria-label={`ERP status: ${label}. Tap to sync.`}
+                  title={erpStatus.msg ? `${erpStatus.msg}${erpStatus.at ? " · updated " + fmtClock(erpStatus.at) : ""}` : "Sync from ERP now"}
+                  className="inline-flex items-center gap-2 rounded-full px-2 sm:px-3 py-1.5 text-xs font-semibold whitespace-nowrap" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}>
+                  <span ref={erpDotRef} className="w-2 h-2 rounded-full shrink-0" style={{ background: dot }} /><span className="hidden sm:inline">{label}</span>
                 </button>
               );
             })()}
@@ -1897,14 +2036,14 @@ export default function App() {
       <div ref={mainRef} className="w-full px-6 py-6">
         {titleMap[tab] && <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
           <h2 data-fx="page-title" className="text-2xl font-bold tracking-tight">{titleMap[tab]}</h2>
-          {["live", "compare"].includes(tab) && <UnitDropdown t={t} value={unit} onChange={setUnit} />}
+          {["compare"].includes(tab) && <UnitDropdown t={t} value={unit} onChange={setUnit} />}
         </div>}
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (
           <>
-            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onAddCosts={() => setTab("bus")} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} />}
+            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onAddCosts={() => setTab("bus")} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} erpPhase={erpStatus.phase} onSync={() => syncErp()} />}
             {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} onBusCost={setBusCost} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
-            {tab === "optimiser" && <OptimiserTab t={t} toast={toast} />}
+            {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} />}
             {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} toast={toast} themeName={themeName} setThemeName={setThemeName}
               formulas={formulas} variables={variables}
               onAddMetric={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}

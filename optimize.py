@@ -40,15 +40,23 @@ OWN_ROADTAX_YR    = 33_000 * 4                 # road tax, 4 quarters         = 
 # FC (fitness certificate) works @ ₹55,000/visit. 10+yr buses renew yearly; <10yr every
 # 2yr (→ ₹27,500/yr). Fleet blend: 8 of 29 owned buses are 10+yr (rest <10yr). [ASSUMPTION:
 # per-bus age isn't in the solver, so FC is spread as a fleet-average annual cost.]
-OWN_FC_10PLUS, OWN_FLEET = 8, 29
+OWN_FC_10PLUS, OWN_FLEET = 7, 38
 OWN_FC_YR = round((OWN_FC_10PLUS * 55_000 + (OWN_FLEET - OWN_FC_10PLUS) * 27_500) / OWN_FLEET)  # ≈35,086
 # --- per working day (₹/bus/day), grouped into the solver's three fixed buckets ---
 OWN_DRIVER    = round(OWN_DRIVER_YR / WORKING_DAYS_YEAR)                                   # 692
 OWN_MAINT     = round((OWN_MAINT_YR + OWN_TIRE_YR + OWN_TIREMAINT_YR + OWN_FC_YR) / WORKING_DAYS_YEAR)  # maint+tyres+FC
 OWN_INSURANCE = round((OWN_INSURANCE_YR + OWN_ROADTAX_YR) / WORKING_DAYS_YEAR)             # insurance + road tax
-OWN_DIESEL_KM = 18.0                            # ₹/km (flat, user-provided)
-DIESEL_PER_LITRE = 100.0                        # display only (Equations editor); 100 ÷ 5.56 ≈ 18/km
-MILEAGE_KMPL     = round(DIESEL_PER_LITRE / OWN_DIESEL_KM, 2)
+# Diesel is PER BUS: the ERP now carries each vehicle's Mileage (km/L), so ₹/km is
+# diesel price ÷ that bus's mileage. Buses missing a mileage fall back to the fleet default.
+DIESEL_PER_LITRE = 100.0                        # ₹ per litre
+DEFAULT_MILEAGE  = 5.56                         # km/L fallback (the old flat ₹18/km assumption)
+OWN_DIESEL_KM = round(DIESEL_PER_LITRE / DEFAULT_MILEAGE, 2)   # ₹/km for a bus with no mileage on file
+MILEAGE_KMPL     = DEFAULT_MILEAGE
+def diesel_per_km(mileage):
+    """₹/km for one bus from its km/L (falls back to the fleet default when unknown)."""
+    try: m = float(mileage or 0)
+    except (TypeError, ValueError): m = 0.0
+    return DIESEL_PER_LITRE / (m if m > 0 else DEFAULT_MILEAGE)
 RENT_EPS_KM = 2                        # tiny compactness cost so rentals don't wander
 OWN_FAR_PEN = float(os.environ.get("OWN_FAR_PEN", 6))  # owned buses pay this x (stop's km-from-depot) as a surcharge,
                                        # so they favour CLOSE stops and the flat-tariff rentals absorb
@@ -65,24 +73,24 @@ def rent_cost(km):                     # true rental day tariff (recomputed afte
 # ---------------------------------------------------------------------- fleet
 # FULL company fleet (June 2026 attendance): 69 physical buses = 57 Technotek +
 # 14 Gainup rows minus 2 cross-company shared buses. 29 owned + 40 rental.
-OWNED = [("TN57BC3636",50),("TN57BP3434",55),("TN57BS3434",55),("TN57CB3434",55),
-         ("TN57CD3434",55),("TN57CE3434",55),("TN57CF3434",55),("TN57CF3636",55),
-         ("TN57CH3636",55),("TN57CJ3636",55),("TN57CL3434",54),("TN58BK3636",54),
-         ("TN58BL3434",55),("TN58BL3636",54),("TN58BM3434",55),("TN58BP3434",55),
-         ("TN60AP3434",55),("TN60AQ3434",55),("TN60AS3434",55),("TN60AS3636",55),
-         ("TN57BQ3434",55),("TN57BQ3636",42),("TN57CA3636",50),("TN57CB3636",50),
-         ("TN57CC3636",50),("TN57CK3636",55),("TN58BM3636",54),("TN58BR3434",55),
-         ("TN58BS3434",54)]
-RENTAL = [("TN02AB5688",15),("TN030857",15),("TN05V6697",15),("TN20AJ3944",15),
-          ("TN20AK5513",15),("TN20AL3611",15),("TN20AU6396",15),("TN23AC2721",15),
-          ("TN25M4073",15),("TN25M4928",15),("TN31AB3789",15),("TN31AC0182",15),
-          ("TN31AY8208",15),("TN31CD6636",15),("TN31J6001",15),("TN32AA4015",15),
-          ("TN36L5458",15),("TN39AP2287",15),("TN39AZ4680",15),("TN40W3708",15),
-          ("TN41S5818",15),("TN41T5270",15),("TN41W8996",15),("TN42A3533",15),
-          ("TN45AP3948",15),("TN46F3361",15),("TN49AW5908",15),("TN54T2368",15),
-          ("TN57L8446",15),("TN57P6909",15),("TN58S5303",15),("TN59AB3444",15),
-          ("TN59AH9703",15),("TN63E9861",15),("TN69M1957",15),("TN74AW0645",15),
-          ("TN58BC3494",9),("TN32X3929",15),("TN63U4754",15),("TN74AY1634",15)]
+OWNED = [("TN57BC3636",50,0.0),("TN57BP3434",55,0.0),("TN57BS3434",55,0.0),("TN57CB3434",55,0.0),
+         ("TN57CD3434",55,0.0),("TN57CE3434",55,0.0),("TN57CF3434",55,0.0),("TN57CF3636",55,0.0),
+         ("TN57CH3636",55,0.0),("TN57CJ3636",55,0.0),("TN57CL3434",54,0.0),("TN58BK3636",54,0.0),
+         ("TN58BL3434",55,0.0),("TN58BL3636",54,0.0),("TN58BM3434",55,0.0),("TN58BP3434",55,0.0),
+         ("TN60AP3434",55,0.0),("TN60AQ3434",55,0.0),("TN60AS3434",55,0.0),("TN60AS3636",55,0.0),
+         ("TN57BQ3434",55,0.0),("TN57BQ3636",42,0.0),("TN57CA3636",50,0.0),("TN57CB3636",50,0.0),
+         ("TN57CC3636",50,0.0),("TN57CK3636",55,0.0),("TN58BM3636",54,0.0),("TN58BR3434",55,0.0),
+         ("TN58BS3434",54,0.0)]
+RENTAL = [("TN02AB5688",15,0.0),("TN030857",15,0.0),("TN05V6697",15,0.0),("TN20AJ3944",15,0.0),
+          ("TN20AK5513",15,0.0),("TN20AL3611",15,0.0),("TN20AU6396",15,0.0),("TN23AC2721",15,0.0),
+          ("TN25M4073",15,0.0),("TN25M4928",15,0.0),("TN31AB3789",15,0.0),("TN31AC0182",15,0.0),
+          ("TN31AY8208",15,0.0),("TN31CD6636",15,0.0),("TN31J6001",15,0.0),("TN32AA4015",15,0.0),
+          ("TN36L5458",15,0.0),("TN39AP2287",15,0.0),("TN39AZ4680",15,0.0),("TN40W3708",15,0.0),
+          ("TN41S5818",15,0.0),("TN41T5270",15,0.0),("TN41W8996",15,0.0),("TN42A3533",15,0.0),
+          ("TN45AP3948",15,0.0),("TN46F3361",15,0.0),("TN49AW5908",15,0.0),("TN54T2368",15,0.0),
+          ("TN57L8446",15,0.0),("TN57P6909",15,0.0),("TN58S5303",15,0.0),("TN59AB3444",15,0.0),
+          ("TN59AH9703",15,0.0),("TN63E9861",15,0.0),("TN69M1957",15,0.0),("TN74AW0645",15,0.0),
+          ("TN58BC3494",9,0.0),("TN32X3929",15,0.0),("TN63U4754",15,0.0),("TN74AY1634",15,0.0)]
 
 # Override the hardcoded fleet with the CURRENT live ERP fleet (latest day): each
 # vehicle's seats = its modal Seat, owned/rental from the Type field. Falls back to
@@ -93,7 +101,7 @@ def _fleet_from_erp(path="data/erp_live.json"):
     rows = _json.load(open(path))
     def _n(s): return (s or "").strip()
     latest = sorted({_n(r.get("date")) for r in rows if _n(r.get("date"))})[-1]
-    veh = _dd(lambda: {"seat": _C(), "type": _C()})
+    veh = _dd(lambda: {"seat": _C(), "type": _C(), "mil": _C()})
     for r in rows:
         if _n(r.get("date")) != latest:
             continue
@@ -106,13 +114,18 @@ def _fleet_from_erp(path="data/erp_live.json"):
             info["seat"][s] += 1
         if r.get("Type"):
             info["type"]["rent" if "rent" in r["Type"].lower() else "own"] += 1
+        m = _n(r.get("Mileage"))                       # per-bus km/L (new ERP column)
+        if m and m not in ("0", "0.00"):
+            info["mil"][m] += 1
     owned, rental = [], []
     for v, info in veh.items():
         # ERP sometimes has a blank Seat (e.g. TN57BJ3434/TN57BK3434) -> default to a
         # standard 55-seat bus so the vehicle is still dispatched (no bus dropped).
         cap = int(info["seat"].most_common(1)[0][0]) if info["seat"] else 55
         is_own = (info["type"].most_common(1)[0][0] == "own") if info["type"] else True
-        (owned if is_own else rental).append((v, cap))
+        try:    mil = float(info["mil"].most_common(1)[0][0]) if info["mil"] else 0.0
+        except ValueError: mil = 0.0
+        (owned if is_own else rental).append((v, cap, mil))
     owned.sort(key=lambda x: -x[1]); rental.sort(key=lambda x: -x[1])
     return owned, rental
 
@@ -121,7 +134,7 @@ try:
     if _o and _r:
         OWNED, RENTAL = _o, _r
         print(f"Fleet from live ERP: {len(OWNED)} owned + {len(RENTAL)} rental = "
-              f"{sum(c for _, c in OWNED) + sum(c for _, c in RENTAL)} seats")
+              f"{sum(c for _, c, _m in OWNED) + sum(c for _, c, _m in RENTAL)} seats")
 except Exception as _e:
     print(f"(ERP fleet unavailable, using hardcoded fleet: {_e})")
 
@@ -281,8 +294,8 @@ def main():
     km, mins = build_matrices(coords, midxs)
 
     # vehicles: owned first (cheaper), then rental
-    fleet = ([{"name": nm, "cap": cap, "own": True}  for nm, cap in OWNED] +
-             [{"name": nm, "cap": cap, "own": False} for nm, cap in RENTAL])
+    fleet = ([{"name": nm, "cap": cap, "own": True,  "mileage": mil, "dkm": diesel_per_km(mil)} for nm, cap, mil in OWNED] +
+             [{"name": nm, "cap": cap, "own": False, "mileage": mil, "dkm": diesel_per_km(mil)} for nm, cap, mil in RENTAL])
     V = len(fleet)
     # Ride-banded capacity (real-world rule): standing is fine on SHORT rides, so a bus may
     # carry up to ~150% of seats; but on LONG rides standing is hard, so keep ~100%. A route's
@@ -318,9 +331,15 @@ def main():
                     c += km[0][b] * far_pen        # owned: surcharge to reach a far-from-depot stop
                 return int(round(c))
             return routing.RegisterTransitCallback(cb)
-        own_cost, rent_cb = make_cost(OWN_DIESEL_KM, OWN_FAR_PEN), make_cost(RENT_EPS_KM)
+        # one arc-cost callback per DISTINCT owned ₹/km (each bus burns at its own mileage),
+        # plus the single flat-tariff callback the rentals share
+        rent_cb = make_cost(RENT_EPS_KM)
+        own_cbs = {}
+        for f in fleet:
+            if f["own"] and f["dkm"] not in own_cbs:
+                own_cbs[f["dkm"]] = make_cost(f["dkm"], OWN_FAR_PEN)
         for v, f in enumerate(fleet):
-            routing.SetArcCostEvaluatorOfVehicle(own_cost if f["own"] else rent_cb, v)
+            routing.SetArcCostEvaluatorOfVehicle(own_cbs[f["dkm"]] if f["own"] else rent_cb, v)
             # goal model: no activation penalty -> idle buses get pulled in freely
             # (user: dispatch all 69). True Rs recomputed after the solve.
             routing.SetFixedCostOfVehicle(0 if (goal or f["own"]) else 1700, v)
@@ -502,7 +521,7 @@ def main():
         dist = 2 * one_way               # DAY km: morning pickup + evening drop
                                          # (bus parks at the last stop overnight — no deadhead)
         ride = ride_of(seq)              # chain time factory -> ... -> last stop
-        cost = (OWN_DRIVER + OWN_MAINT + OWN_INSURANCE + OWN_DIESEL_KM * dist) if fleet[v]["own"] else rent_cost(dist)
+        cost = (OWN_DRIVER + OWN_MAINT + OWN_INSURANCE + fleet[v]["dkm"] * dist) if fleet[v]["own"] else rent_cost(dist)
         routes.append({"v": v, "name": fleet[v]["name"], "own": fleet[v]["own"],
                        "cap": fleet[v]["cap"], "stops": len(seq), "riders": load,
                        "km": dist, "ride": ride, "cost": cost, "seq": seq})
@@ -566,8 +585,9 @@ def main():
         "params": {"riders": args.riders, "demand": total_dem, "max_ride": args.max_ride,
                    "seconds": args.seconds, "stops": n_stops, "depot": list(DEPOT), "method": "OR-Tools VRP"},
         "assumptions": {
-            "own_driver_day": OWN_DRIVER, "own_maint_day": OWN_MAINT, "own_diesel_per_km": OWN_DIESEL_KM,
-            "own_diesel_per_litre": DIESEL_PER_LITRE, "own_mileage_kmpl": MILEAGE_KMPL,
+            "own_driver_day": OWN_DRIVER, "own_maint_day": OWN_MAINT,
+            "own_diesel_per_km": "per bus: ₹%.0f/L ÷ its ERP mileage (fallback %.2f km/L → ₹%.2f/km)" % (DIESEL_PER_LITRE, DEFAULT_MILEAGE, OWN_DIESEL_KM),
+            "own_diesel_per_litre": DIESEL_PER_LITRE, "own_mileage_kmpl": "from ERP, per bus",
             "own_insurance_day": OWN_INSURANCE,
             "rent_tariff": "≤80km ₹1700 · ≤95km ₹1900 · beyond ₹18.7/km",
             "absentee_pct": round(ABSENTEE * 100), "buffer_pct": round(BUFFER * 100),

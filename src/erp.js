@@ -76,12 +76,14 @@ export function mapErpToDashboard(rows) {
 
     // bus — tally capacity, brand and owned/rental across its rows
     let bs = buses.get(veh);
-    if (!bs) { bs = { seat: {}, unit: {}, type: new Set() }; buses.set(veh, bs); }
+    if (!bs) { bs = { seat: {}, unit: {}, type: new Set(), mil: {} }; buses.set(veh, bs); }
     const seat = String(r.Seat || r.Seat_New || "").trim();
     if (seat && seat !== "0") bs.seat[seat] = (bs.seat[seat] || 0) + 1;
     const u = unitOf(r.Compname);
     bs.unit[u] = (bs.unit[u] || 0) + 1;
     if (r.Type) bs.type.add(/rent/i.test(r.Type) ? "Rental" : "Owned");
+    const mil = String(r.Mileage || "").trim();   // per-bus km/L (ERP column)
+    if (mil && mil !== "0" && mil !== "0.00") bs.mil[mil] = (bs.mil[mil] || 0) + 1;
   }
 
   const busList = [...buses.entries()].map(([veh, bs]) => ({
@@ -90,6 +92,7 @@ export function mapErpToDashboard(rows) {
     unit: mode(bs.unit) || "Gainup",
     capacity: parseInt(mode(bs.seat) || "0", 10) || 0,
     type: [...bs.type][0] || "",       // Owned / Rental
+    mileage: parseFloat(mode(bs.mil) || "0") || 0,   // km/L — drives this bus's diesel ₹/km
     route: RUN_OPTIMISER,
     driver: NEEDS_ERP,
     phone: NEEDS_ERP,
