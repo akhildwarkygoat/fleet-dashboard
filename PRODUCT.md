@@ -33,11 +33,11 @@ Optimises against the **real ERP feed**, not a spreadsheet: per-stop rider count
 
 ## Capabilities and Constraints
 
-- **Surfaces:** Live snapshot (fleet health at a glance); Optimiser with Stops / Fleet plan / Planner sub-tabs (the stop network, the solved plan, and a map-first manual plan editor with morning/evening direction, plan import/export, and a permanent ERP previous-routes seed); Compare; Settings (theme, ERP sync, per-bus cost cards, and custom Metrics); Bus-wise detail reached by clicking a bus on Live.
+- **Surfaces:** Live snapshot (fleet health at a glance); Optimiser with Stops / Fleet plan / Planner sub-tabs (the stop network, the solved plan, and a map-first manual plan editor with morning/evening direction, plan import/export, and a permanent ERP previous-routes seed); Compare; Settings (theme, ERP sync, and custom Metrics); Bus-wise detail reached by clicking a bus on Live.
 - **Current scale:** 77 buses (39 owned + 38 rented), 3,021 GPS-located riders across 739 stops.
 - **Stack:** React + Vite + Tailwind, Leaflet maps, client-side persistence in localStorage; no server database. GSAP for entrance/motion.
 - **Cost model:** owned buses moving to a per-bus basis (mileage and vehicle age coming into the ERP so diesel/km and fitness-certificate cost vary per vehicle); loan/EMI is excluded as capital, not operating cost.
-- **Undecided / in flight:** the cost-lean plan variant is stale pending a re-solve; per-bus cost cards in the dashboard are not yet filled, so Live money columns read ₹0 until entered.
+- **Undecided / in flight:** the cost-lean plan variant is stale pending a re-solve. Running costs are owned by the ERP and shown read-only in the dashboard, but the feed does not carry them yet, so Live money columns read ₹0 until those columns exist (candidate names are listed in `ERP_COST_FIELDS` in src/erp.js).
 
 ## Brand Commitments
 

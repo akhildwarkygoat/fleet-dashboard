@@ -61,6 +61,65 @@ const mode = (obj) => {
   return e ? e[0] : null;
 };
 
+/* ------------------------------------------------------------------ bus costs
+ * Running costs are owned by the ERP — the dashboard displays them and never
+ * edits them. Each entry maps one of the dashboard's cost lines to the ERP
+ * column(s) that carry it, and to the period that column is quoted in.
+ *
+ * The feed does not expose any of these yet (VehicleEmpMapDetails returns 30
+ * fields, none of them costs), so today every bus resolves to no profile and the
+ * cost tiles stay blank — the same honest blank they showed before. When the ERP
+ * team adds the columns, put their real names in `from` and nothing else has to
+ * change: `period` and `qty` already match how the dashboard normalises to
+ * ₹/working-day. Names are matched case-insensitively.
+ */
+const ERP_COST_FIELDS = [
+  // amount is the RATE PER LITRE and quantity the litres/day — the dashboard multiplies the
+  // two (COST_TYPES.diesel is qty:true), so a per-day total here would be counted litres times over
+  { type: "diesel",    period: "day",   from: ["DieselRatePerLitre", "Diesel_Rate", "FuelRate"], qtyFrom: ["DieselLitres", "Litres_Per_Day"] },
+  { type: "driver",    period: "month", from: ["DriverSalary", "Driver_Sal", "DriverWageMonth"] },
+  { type: "maint",     period: "month", from: ["Maintenance", "Maint_Amt", "MaintenanceMonth"] },
+  { type: "tires",     period: "year",  from: ["TyreCost", "Tire_Amt"], qtyFrom: ["TyreCount", "No_Of_Tyres"] },
+  { type: "tiremaint", period: "year",  from: ["TyreMaintenance", "Tyre_Maint"], qtyFrom: ["TyreCount", "No_Of_Tyres"] },
+  { type: "fc",        period: "year",  from: ["FCWorks", "FC_Amt", "FitnessCost"] },
+  { type: "taxes",     period: "year",  from: ["RoadTax", "Tax_Amt", "Taxes"] },
+  { type: "insurance", period: "year",  from: ["Insurance", "Insurance_Amt"] },
+];
+const ERP_BUDGET_FIELDS = { from: ["Budget", "Budget_Amt", "BudgetMonth"], period: "month" };
+
+/* first non-empty numeric value among `names` on a row, or null */
+function numFrom(row, names) {
+  for (const n of names || []) {
+    const key = Object.keys(row).find((k) => k.toLowerCase() === n.toLowerCase());
+    if (key == null) continue;
+    const v = parseFloat(String(row[key]).replace(/[^0-9.-]/g, ""));
+    if (isFinite(v) && v !== 0) return v;
+  }
+  return null;
+}
+
+/* Fold the cost columns tallied for one vehicle into the profile shape the
+ * dashboard already understands: { budget:{amount,period}, lines:[…] }.
+ * Returns null when the ERP carried no costs for this bus. */
+function costProfileFrom(tally) {
+  const lines = [];
+  for (const spec of ERP_COST_FIELDS) {
+    const amount = tally[spec.type];
+    if (amount == null) continue;
+    lines.push({
+      id: "erp-" + spec.type, type: spec.type, amount, period: spec.period,
+      ...(spec.qtyFrom ? { quantity: tally[spec.type + ":qty"] ?? 1 } : {}),
+    });
+  }
+  const budget = tally.budget;
+  if (!lines.length && budget == null) return null;
+  return {
+    source: "erp",
+    budget: budget != null ? { amount: budget, period: ERP_BUDGET_FIELDS.period } : { amount: "", period: "month" },
+    lines,
+  };
+}
+
 /**
  * Fold raw ERP rows into { buses, employees, attendance, records }.
  * - bus.id      = vehicle reg (stable across syncs, so cost profiles survive)
@@ -87,7 +146,13 @@ export function mapErpToDashboard(rows) {
 
     // bus — tally capacity, brand and owned/rental across its rows
     let bs = buses.get(veh);
-    if (!bs) { bs = { seat: {}, unit: {}, type: new Set(), mil: {} }; buses.set(veh, bs); }
+    if (!bs) { bs = { seat: {}, unit: {}, type: new Set(), mil: {}, cost: {} }; buses.set(veh, bs); }
+    // running costs, if the ERP carries them — first non-empty value per bus wins
+    for (const spec of ERP_COST_FIELDS) {
+      if (bs.cost[spec.type] == null) { const v = numFrom(r, spec.from); if (v != null) bs.cost[spec.type] = v; }
+      if (spec.qtyFrom && bs.cost[spec.type + ":qty"] == null) { const q = numFrom(r, spec.qtyFrom); if (q != null) bs.cost[spec.type + ":qty"] = q; }
+    }
+    if (bs.cost.budget == null) { const b = numFrom(r, ERP_BUDGET_FIELDS.from); if (b != null) bs.cost.budget = b; }
     const seat = String(r.Seat || r.Seat_New || "").trim();
     if (seat && seat !== "0") bs.seat[seat] = (bs.seat[seat] || 0) + 1;
     const u = unitOf(r.Compname);
@@ -104,6 +169,7 @@ export function mapErpToDashboard(rows) {
     capacity: parseInt(mode(bs.seat) || "0", 10) || 0,
     type: [...bs.type][0] || "",       // Owned / Rental
     mileage: parseFloat(mode(bs.mil) || "0") || 0,   // km/L — drives this bus's diesel ₹/km
+    costProfile: costProfileFrom(bs.cost),           // ERP-owned running costs, or null
     route: RUN_OPTIMISER,
     driver: NEEDS_ERP,
     phone: NEEDS_ERP,

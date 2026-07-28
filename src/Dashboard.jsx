@@ -771,7 +771,7 @@ function ErpLoading({ t, phase, progress, onSync }) {
     </div>
   );
 }
-function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onAddCosts, onOpenBusView, erpPhase, erpProgress, onSync }) {
+function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onOpenBusView, erpPhase, erpProgress, onSync }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const [q, setQ] = useState("");
@@ -864,8 +864,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
       {noCosts && (
         <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-3 text-sm" style={{ background: t.primarySoft, borderColor: t.primary, color: t.text }}>
           <Server size={16} style={{ color: t.primary }} />
-          <span>Cost, spend &amp; net-value figures stay blank until each bus's running costs are entered.</span>
-          {onAddCosts && <button onClick={onAddCosts} className="ml-auto rounded-lg px-3 py-1.5 text-xs font-semibold" style={{ background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" }}>Add bus costs →</button>}
+          <span>Cost, spend &amp; net-value figures stay blank until running costs are entered against each vehicle in the ERP. They appear here on the next sync.</span>
         </div>
       )}
 
@@ -1017,63 +1016,64 @@ function BusDocuments({ t, busId, busLabel, toast }) {
 }
 
 /* ============================ PER-BUS COST CARD ============================ */
-/* Recurring cost profile for one bus: a Budget (amount + period) plus any number of
-   cost lines (Diesel, Driver Salary, Maintenance, Tires, …). Every value is normalised
-   to ₹/day and summed into the bus's daily spend (see mergeCostsIntoRecords). */
-function CostCard({ t, bus, profile, wd, onChange }) {
-  const prof = profile || { budget: { amount: "", period: "month" }, lines: [] };
-  const lines = prof.lines || [];
-  const budget = prof.budget || { amount: "", period: "month" };
-  const set = (next) => onChange({ ...prof, ...next });
-  const setBudget = (patch) => set({ budget: { ...budget, ...patch } });
-  const addLine = () => { const first = COST_TYPES[0]; set({ lines: [...lines, { id: uid(), type: first.key, amount: "", quantity: first.qty ? "" : undefined, period: first.period }] }); };
-  const updLine = (id, patch) => set({ lines: lines.map((l) => (l.id === id ? { ...l, ...patch } : l)) });
-  const delLine = (id) => set({ lines: lines.filter((l) => l.id !== id) });
-  const onType = (id, key) => { const spec = COST_TYPE_MAP[key]; updLine(id, { type: key, period: spec.period, quantity: spec.qty ? (lines.find((l) => l.id === id)?.quantity ?? "") : undefined }); };
-
-  const dailySpend = profileDailySpend(prof, wd);
-  const dailyBudget = profileDailyBudget(prof, wd);
-  const inputBase = { background: t.inputBg, border: "1px solid " + t.border, color: t.text };
-  const cell = "rounded-lg px-2.5 py-2 text-sm outline-none";
+/* Read-only view of one bus's running costs. The ERP owns these values; the dashboard
+   shows what it was given and normalises each line to ₹/day (see mergeCostsIntoRecords).
+   Nothing here is editable — costs are corrected in the ERP and arrive on the next sync. */
+function CostCard({ t, bus, profile, wd }) {
+  const lines = (profile && profile.lines) || [];
+  const dailySpend = profileDailySpend(profile, wd);
+  const dailyBudget = profileDailyBudget(profile, wd);
+  const periodLabel = (p) => (COST_PERIODS.find(([v]) => v === p) || [, p])[1];
 
   return (
-    <Card t={t} title="Cost breakdown" hint={`Recurring costs for ${bus.vehicle}. Each line is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Saved per bus.`}>
-      {/* Budget */}
-      <div className="flex flex-wrap items-end gap-3 mb-4">
-        <Field t={t} strong label="Budget (₹)"><input type="number" min="0" value={budget.amount} onChange={(e) => setBudget({ amount: e.target.value })} placeholder="0" className={"w-40 " + cell} style={inputBase} /></Field>
-        <Field t={t} label="Per"><select value={budget.period} onChange={(e) => setBudget({ period: e.target.value })} className={cell} style={inputBase}>{COST_PERIODS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
-        <div className="text-xs pb-2" style={{ color: t.muted }}>= <b style={{ color: t.text }}>{inr(dailyBudget)}</b>/day</div>
-      </div>
+    <Card t={t} title="Cost breakdown"
+      hint={`Running costs for ${bus.vehicle}, as recorded in the ERP. Each line is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Edit these in the ERP — the dashboard reads them.`}>
+      {lines.length || dailyBudget ? (
+        <>
+          <div className="flex flex-wrap items-baseline gap-3 mb-4">
+            <div className="text-xs uppercase tracking-widest" style={{ color: t.muted }}>Budget</div>
+            <div className="text-xl font-bold tabular-nums" style={{ color: t.text }}>{inr(dailyBudget)}<span className="text-xs font-semibold ml-1" style={{ color: t.muted }}>/day</span></div>
+          </div>
 
-      {/* Cost lines */}
-      {lines.length ? (
-        <div className="space-y-2">
-          {lines.map((l) => { const spec = COST_TYPE_MAP[l.type] || {}; return (
-            <div key={l.id} className="flex flex-wrap items-end gap-2 rounded-xl p-2" style={{ background: t.surface2, border: "1px solid " + t.border }}>
-              <Field t={t} label="Type"><select value={l.type} onChange={(e) => onType(l.id, e.target.value)} className={cell} style={inputBase}>{COST_TYPES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}</select></Field>
-              <Field t={t} strong label={"Amount (₹" + (spec.qty ? " each" : "") + ")"}><input type="number" min="0" value={l.amount} onChange={(e) => updLine(l.id, { amount: e.target.value })} placeholder="0" className={"w-32 " + cell} style={inputBase} /></Field>
-              {spec.qty && <Field t={t} label={spec.qtyLabel || "Qty"}><input type="number" min="0" value={l.quantity ?? ""} onChange={(e) => updLine(l.id, { quantity: e.target.value })} placeholder="0" className={"w-28 " + cell} style={inputBase} /></Field>}
-              <Field t={t} label="Per"><select value={l.period} onChange={(e) => updLine(l.id, { period: e.target.value })} className={cell} style={inputBase}>{COST_PERIODS.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}</select></Field>
-              <div className="text-xs pb-2 ml-auto whitespace-nowrap" style={{ color: t.muted }}>= <b style={{ color: t.text }}>{inr(lineDaily(l, wd))}</b>/day</div>
-              <button onClick={() => delLine(l.id)} title="Remove cost line" aria-label="Remove cost line" className="rounded-lg p-2 mb-0.5" style={{ border: "1px solid " + t.border, color: t.poor }}><Trash2 size={14} /></button>
-            </div>
-          ); })}
-        </div>
-      ) : <div className="text-sm rounded-xl border border-dashed py-6 text-center" style={{ borderColor: t.border, color: t.muted }}>No costs added yet — add Diesel, Driver Salary, Insurance, etc.</div>}
+          <div className="rounded-xl overflow-hidden" style={{ border: "1px solid " + t.border }}>
+            <table className="w-full text-sm">
+              <thead><tr style={{ background: t.surface2 }}>
+                {["Cost", "Amount", "Qty", "Per", "₹/day"].map((h, i) => (
+                  <th key={h} className={"py-2 px-3 text-xs font-semibold uppercase tracking-wider " + (i > 0 ? "text-right" : "text-left")} style={{ color: t.muted }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {lines.map((l) => { const spec = COST_TYPE_MAP[l.type] || {}; return (
+                  <tr key={l.id} style={{ borderTop: "1px solid " + t.border }}>
+                    <td className="py-2 px-3" style={{ color: t.text }}>{spec.label || l.type}</td>
+                    <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.text }}>{inr(+l.amount || 0)}</td>
+                    <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.muted }}>{spec.qty ? (l.quantity ?? "—") : "—"}</td>
+                    <td className="py-2 px-3 text-right" style={{ color: t.muted }}>{periodLabel(l.period || spec.period)}</td>
+                    <td className="py-2 px-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{inr(lineDaily(l, wd))}</td>
+                  </tr>
+                ); })}
+              </tbody>
+            </table>
+          </div>
 
-      <div className="flex flex-wrap items-center gap-3 mt-3">
-        <Btn t={t} variant="ghost" onClick={addLine}><Plus size={15} /> Add cost</Btn>
-        <div className="ml-auto flex flex-wrap gap-4 text-sm">
-          <div>Total spend: <b style={{ color: t.text }}>{inr(dailySpend)}</b>/day · <span style={{ color: t.muted }}>{inr(dailySpend * wd / 12)}/mo</span></div>
-          <div>Variance: <b style={{ color: dailyBudget - dailySpend >= 0 ? t.good : t.poor }}>{inr(dailyBudget - dailySpend)}</b>/day</div>
+          <div className="flex flex-wrap items-center gap-4 mt-3 text-sm">
+            <div>Total spend: <b style={{ color: t.text }}>{inr(dailySpend)}</b>/day · <span style={{ color: t.muted }}>{inr(dailySpend * wd / 12)}/mo</span></div>
+            <div className="ml-auto">Variance: <b style={{ color: dailyBudget - dailySpend >= 0 ? t.good : t.poor }}>{inr(dailyBudget - dailySpend)}</b>/day</div>
+          </div>
+        </>
+      ) : (
+        <div className="text-sm rounded-xl border border-dashed py-8 px-4 text-center" style={{ borderColor: t.border, color: t.muted }}>
+          <div style={{ color: t.text }} className="font-semibold mb-1">No running costs in the ERP for {bus.vehicle}</div>
+          Add this vehicle's diesel, driver, maintenance, FC, tax and insurance figures in the ERP.
+          They appear here on the next sync.
         </div>
-      </div>
+      )}
     </Card>
   );
 }
 
 /* ============================ BUS-WISE (Unit → Bus → details) ============================ */
-function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, onBusCost, toast, focusBusId, onBack }) {
+function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, toast, focusBusId, onBack }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const allDates = useMemo(() => unionDates(records, attendance), [records, attendance]);
@@ -1203,7 +1203,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
               {showNV && metricTile("Net value (yr)", inrK(m.netAnnual), m.netAnnual >= 0 ? t.good : t.poor)}
             </div>
           ) : <div className="text-sm" style={{ color: t.muted }}>No attendance / cost data for this bus in the selected range.</div>}
-          <p className="text-xs mt-3" style={{ color: t.muted }}>Cost/km and ride times show "{RUN_OPTIMISER}" until the route is planned in the Optimiser (that's where per-bus km &amp; travel time are computed). Cost/head, budget, spend &amp; net value come from the cost card below.</p>
+          <p className="text-xs mt-3" style={{ color: t.muted }}>Cost/km and ride times show "{RUN_OPTIMISER}" until the route is planned in the Optimiser (that's where per-bus km &amp; travel time are computed). Cost/head, budget, spend &amp; net value come from the ERP's running costs for this vehicle (shown below).</p>
         </Card>
 
         {/* Bus & driver info now sit BELOW the metrics */}
@@ -1216,7 +1216,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
           </Card>
         </div>
 
-        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} onChange={(p) => onBusCost(bus.id, p)} />
+        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} />
 
         <Card t={t} title={`Employees (${emps.length})`} hint="Latest punch status · click an employee for full details">
           {emps.length ? <div className="flex flex-wrap gap-1.5">{emps.slice().sort((a, b) => { const r = (st) => (st === "A" ? 0 : st === "P" ? 2 : 1); return r(day[a.id]) - r(day[b.id]); }).map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
@@ -1846,7 +1846,9 @@ export default function App() {
   const [employees, setEmployees] = useState([]);
   const [attendance, setAttendance] = useState({});
   const [records, setRecords] = useState([]);
-  const [busCosts, setBusCosts] = useState({}); // busId -> { budget, lines[] } recurring cost profile
+  // Running costs come from the ERP and are read-only here — the dashboard displays them,
+  // it no longer stores or edits them. Derived from the synced fleet, so a re-sync is the
+  // only way they change.
   const [formulas, setFormulas] = useState([]);
   const [variables, setVariables] = useState([]);
   const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true });
@@ -1926,7 +1928,7 @@ export default function App() {
       const att = (await Store.get("attendance")) || {};
       const hasData = b && b.length && (recs.length || Object.keys(att).length);
       if (schema === SCHEMA && hasData) {
-        setBuses(b); setRecords(recs); setAttendance(att); setEmployees((await Store.get("employees")) || []); setBusCosts((await Store.get("busCosts")) || {}); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
+        setBuses(b); setRecords(recs); setAttendance(att); setEmployees((await Store.get("employees")) || []); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
         const st = (await Store.get("settings")) || {};
         if (!st.bands || !st.bands.length) st.bands = DEFAULT_BANDS.map((x) => ({ ...x }));
         if (st.workingDays == null) st.workingDays = 312;
@@ -1951,7 +1953,6 @@ export default function App() {
   useEffect(() => { if (loaded) Store.set("employees", employees); }, [employees, loaded]);
   useEffect(() => { if (loaded) Store.set("attendance", attendance); }, [attendance, loaded]);
   useEffect(() => { if (loaded) Store.set("records", records); }, [records, loaded]);
-  useEffect(() => { if (loaded) Store.set("busCosts", busCosts); }, [busCosts, loaded]);
   useEffect(() => { if (loaded) Store.set("formulas", formulas); }, [formulas, loaded]);
   useEffect(() => { if (loaded) Store.set("variables", variables); }, [variables, loaded]);
   useEffect(() => { if (loaded) Store.set("settings", settings); }, [settings, loaded]);
@@ -1959,12 +1960,12 @@ export default function App() {
 
   // records the tabs actually read: base records with each bus's cost profile overlaid as daily spend/budget
   const wd = effWorkingDays(settings);
+  const busCosts = useMemo(() => Object.fromEntries(buses.filter((b) => b.costProfile).map((b) => [b.id, b.costProfile])), [buses]);
   const effRecords = useMemo(() => mergeCostsIntoRecords(records, buses, attendance, busCosts, wd), [records, buses, attendance, busCosts, wd]);
-  const setBusCost = (busId, prof) => setBusCosts((c) => ({ ...c, [busId]: prof }));
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
-  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setBusCosts({}); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Cleared local data — re-syncing ERP"); syncErp(); };
+  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Cleared local data — re-syncing ERP"); syncErp(); };
   // silent = auto/background refresh (no toast, no tab jump); loud = manual button press
   const syncErp = useCallback(async ({ silent = false } = {}) => {
     const firstLoad = busesRef.current.length === 0; // count-up reveal only when starting from empty
@@ -2059,8 +2060,8 @@ export default function App() {
         </div>}
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (
           <>
-            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onAddCosts={() => setTab("bus")} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} erpPhase={erpStatus.phase} onSync={() => syncErp()} />}
-            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} onBusCost={setBusCost} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
+            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} erpPhase={erpStatus.phase} onSync={() => syncErp()} />}
+            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
             {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} />}
             {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} toast={toast} themeName={themeName} setThemeName={setThemeName}
