@@ -2,11 +2,11 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   LayoutDashboard, GitCompare, Database, Sigma, Settings as SettingsIcon,
   Sun, Moon, Bus, Plus, Trash2, Download, Server, Activity, BarChart3, Pencil, X, ChevronRight, ChevronDown, Search, Calendar, Clock, MapPin,
-  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff, Route
+  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff, Route, RefreshCw
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
-import { fetchErpRaw, mapErpToDashboard, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
+import { fetchErpRaw, fetchErpCostRaw, mapErpToDashboard, mapErpCosts, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   BarChart, Bar, Cell, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter,
@@ -157,6 +157,9 @@ const COST_TYPES = [
   { key: "fc", label: "FC Works", qty: false, period: "year" },
   { key: "taxes", label: "Taxes", qty: false, period: "year" },
   { key: "insurance", label: "Insurance", qty: false, period: "year" },
+  // heads the costing feed carries that predate this list (see ERP_COST_HEADS in erp.js)
+  { key: "rto", label: "RTO expense", qty: false, period: "year" },
+  { key: "adblue", label: "AdBlue", qty: true, qtyLabel: "litres / year", period: "year" },
 ];
 const COST_TYPE_MAP = Object.fromEntries(COST_TYPES.map((c) => [c.key, c]));
 const COST_PERIODS = [["day", "Per day"], ["month", "Per month"], ["year", "Per year"]];
@@ -279,10 +282,19 @@ function healthOf(m, medCph, s) {
   const sc0 = bandRankPoints(m.util, s.bands);
   // no cost data in scope yet → score honestly on utilisation alone (don't hand out phantom points)
   if (medCph <= 0) return sc0 >= 2 ? "good" : sc0 >= 1 ? "watch" : "poor";
-  let sc = sc0;
+  // Score against the points actually on offer. A criterion the data can't speak to is left out
+  // of BOTH the score and the maximum — otherwise it silently caps every bus below the grade it
+  // earned. The ERP costing feed carries no budget, so without this the variance points are
+  // unwinnable and no bus can ever read "good", however well utilised and however cheap it is.
+  let sc = sc0, max = 2;
+  max += 2;
   if (m.cph <= medCph) sc += 2; else if (m.cph <= medCph * 1.25) sc += 1;
-  if (m.budget > 0) { if (m.variance >= 0) sc += 2; else if (m.variance >= -0.1 * m.budget) sc += 1; }
-  return sc >= 5 ? "good" : sc >= 3 ? "watch" : "poor";
+  if (m.budget > 0) {
+    max += 2;
+    if (m.variance >= 0) sc += 2; else if (m.variance >= -0.1 * m.budget) sc += 1;
+  }
+  const r = sc / max;                       // same 5/6 and 3/6 cut-offs as when a budget exists
+  return r >= 5 / 6 ? "good" : r >= 0.5 ? "watch" : "poor";
 }
 /* custom variables -> {name: value} map for the formula scope */
 function varMapOf(variables) { return Object.fromEntries((variables || []).map((v) => [v.name, Number(v.value) || 0])); }
@@ -806,7 +818,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
 
   const showUnits = unit === "all" ? UNITS : [unit];
   const agg = aggregate(filtered, wd);
-  const noCosts = agg.spend === 0 && agg.budget === 0; // no per-bus cost cards filled yet
+  const noCosts = agg.spend === 0 && agg.budget === 0; // the ERP costing feed brought back nothing for this fleet
   const overCount = filtered.filter((x) => x.m.util > 150).length; // heavily over-loaded (>150%)
   const punched = agg.present + agg.absent;
   const inputBase = { background: t.inputBg, border: "1px solid " + t.border, color: t.text };
@@ -864,7 +876,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
       {noCosts && (
         <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-3 text-sm" style={{ background: t.primarySoft, borderColor: t.primary, color: t.text }}>
           <Server size={16} style={{ color: t.primary }} />
-          <span>Cost, spend &amp; net-value figures stay blank until running costs are entered against each vehicle in the ERP. They appear here on the next sync.</span>
+          <span>Cost, spend &amp; net-value figures stay blank until approved cost lines exist for these vehicles in the ERP. They arrive with the daily sync — or use Resync costing in Settings.</span>
         </div>
       )}
 
@@ -1016,18 +1028,27 @@ function BusDocuments({ t, busId, busLabel, toast }) {
 }
 
 /* ============================ PER-BUS COST CARD ============================ */
-/* Read-only view of one bus's running costs. The ERP owns these values; the dashboard
-   shows what it was given and normalises each line to ₹/day (see mergeCostsIntoRecords).
-   Nothing here is editable — costs are corrected in the ERP and arrive on the next sync. */
-function CostCard({ t, bus, profile, wd }) {
+/* Read-only view of one bus's running costs, from the ERP costing feed
+   (VehicleEmpMapProjectDetails). The dashboard shows what it was given and normalises
+   each line to ₹/day (see mergeCostsIntoRecords). Nothing here is editable — costs are
+   corrected in the ERP and arrive on the next sync, or on the Resync button. */
+function CostCard({ t, bus, profile, wd, costMeta, costPhase, onSyncCosts }) {
   const lines = (profile && profile.lines) || [];
   const dailySpend = profileDailySpend(profile, wd);
   const dailyBudget = profileDailyBudget(profile, wd);
   const periodLabel = (p) => (COST_PERIODS.find(([v]) => v === p) || [, p])[1];
+  const busy = costPhase === "syncing";
+  const windowLabel = costMeta && costMeta.from ? `${costMeta.from} → ${costMeta.to}` : "the last 12 months";
 
   return (
     <Card t={t} title="Cost breakdown"
-      hint={`Running costs for ${bus.vehicle}, as recorded in the ERP. Each line is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Edit these in the ERP — the dashboard reads them.`}>
+      hint={`Approved cost lines for ${bus.vehicle} from the ERP costing feed, covering ${windowLabel}. Each is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Edit these in the ERP — the dashboard reads them.`}
+      right={onSyncCosts && (
+        <Btn t={t} variant="ghost" className="shrink-0" onClick={onSyncCosts} disabled={busy}
+          title="Re-fetch the costing feed from the ERP now">
+          <RefreshCw size={15} className={busy ? "animate-spin" : ""} /> {busy ? "Resyncing…" : "Resync costs"}
+        </Btn>
+      )}>
       {lines.length || dailyBudget ? (
         <>
           <div className="flex flex-wrap items-baseline gap-3 mb-4">
@@ -1045,7 +1066,10 @@ function CostCard({ t, bus, profile, wd }) {
               <tbody>
                 {lines.map((l) => { const spec = COST_TYPE_MAP[l.type] || {}; return (
                   <tr key={l.id} style={{ borderTop: "1px solid " + t.border }}>
-                    <td className="py-2 px-3" style={{ color: t.text }}>{spec.label || l.type}</td>
+                    <td className="py-2 px-3" style={{ color: t.text }}>
+                      {l.label || spec.label || l.type}
+                      {l.erpLines > 1 && <span className="text-xs ml-1.5" style={{ color: t.muted }}>· {l.erpLines} lines</span>}
+                    </td>
                     <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.text }}>{inr(+l.amount || 0)}</td>
                     <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.muted }}>{spec.qty ? (l.quantity ?? "—") : "—"}</td>
                     <td className="py-2 px-3 text-right" style={{ color: t.muted }}>{periodLabel(l.period || spec.period)}</td>
@@ -1060,12 +1084,16 @@ function CostCard({ t, bus, profile, wd }) {
             <div>Total spend: <b style={{ color: t.text }}>{inr(dailySpend)}</b>/day · <span style={{ color: t.muted }}>{inr(dailySpend * wd / 12)}/mo</span></div>
             <div className="ml-auto">Variance: <b style={{ color: dailyBudget - dailySpend >= 0 ? t.good : t.poor }}>{inr(dailyBudget - dailySpend)}</b>/day</div>
           </div>
+          <div className="text-xs mt-3" style={{ color: t.muted }}>
+            Standing costs only — diesel and driver salary are in neither ERP feed, so this total is not the full running cost of the bus.
+          </div>
         </>
       ) : (
         <div className="text-sm rounded-xl border border-dashed py-8 px-4 text-center" style={{ borderColor: t.border, color: t.muted }}>
-          <div style={{ color: t.text }} className="font-semibold mb-1">No running costs in the ERP for {bus.vehicle}</div>
-          Add this vehicle's diesel, driver, maintenance, FC, tax and insurance figures in the ERP.
-          They appear here on the next sync.
+          <div style={{ color: t.text }} className="font-semibold mb-1">No approved costs in the ERP for {bus.vehicle}</div>
+          {bus.type === "Rental"
+            ? "Rented buses carry no cost lines in the costing feed — their hire charge is invoiced rather than planned against the vehicle."
+            : `Nothing was purchased against this vehicle between ${windowLabel}. Approve its cost lines in the ERP and they appear on the next sync.`}
         </div>
       )}
     </Card>
@@ -1073,7 +1101,7 @@ function CostCard({ t, bus, profile, wd }) {
 }
 
 /* ============================ BUS-WISE (Unit → Bus → details) ============================ */
-function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, toast, focusBusId, onBack }) {
+function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, costMeta, costPhase, onSyncCosts, toast, focusBusId, onBack }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const allDates = useMemo(() => unionDates(records, attendance), [records, attendance]);
@@ -1216,7 +1244,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
           </Card>
         </div>
 
-        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} />
+        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} costMeta={costMeta} costPhase={costPhase} onSyncCosts={onSyncCosts} />
 
         <Card t={t} title={`Employees (${emps.length})`} hint="Latest punch status · click an employee for full details">
           {emps.length ? <div className="flex flex-wrap gap-1.5">{emps.slice().sort((a, b) => { const r = (st) => (st === "A" ? 0 : st === "P" ? 2 : 1); return r(day[a.id]) - r(day[b.id]); }).map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
@@ -1719,12 +1747,17 @@ function MetricsView({ t, formulas, variables, onAdd, onUpdate, onDel, onAddVar,
 
 /* ============================ SETTINGS ============================ */
 function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, erpStatus, toast, themeName, setThemeName,
+  onSyncCosts, costStatus, costMeta,
   formulas, variables, onAddMetric, onUpdateMetric, onDelMetric, onAddVar, onUpdateVar, onDelVar }) {
   const [syncing, setSyncing] = useState(false);
   const doSync = async () => { setSyncing(true); try { await onSyncErp(); } finally { setSyncing(false); } };
   const erpLabel = erpStatus.phase === "ok" ? `● Live — ${erpStatus.msg}, updated ${fmtClock(erpStatus.at)}`
     : erpStatus.phase === "syncing" ? "● Syncing…"
     : erpStatus.phase === "error" ? `● Offline — ${erpStatus.msg}` : "● Not connected yet";
+  const costBusy = costStatus.phase === "syncing";
+  const costLabel = costStatus.phase === "ok" ? `● Live — ${costStatus.msg}, updated ${fmtClock(costStatus.at)}`
+    : costBusy ? "● Resyncing…"
+    : costStatus.phase === "error" ? `● Offline — ${costStatus.msg}` : "● Not connected yet";
   const setNum = (k) => (e) => setSettings({ ...settings, [k]: parseFloat(e.target.value) || settings[k] });
   const rowStyle = { borderBottom: "1px solid " + t.border };
   const bands = settings.bands || DEFAULT_BANDS;
@@ -1807,6 +1840,26 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
         <div className="text-xs mt-3" style={{ color: t.muted }}>Route / driver / phone aren't in this feed → shown as "{NEEDS_ERP}". Per-bus km, ride times &amp; stops come from the Optimiser → "{RUN_OPTIMISER}". In production this call is routed through the backend passthrough; in dev it uses the Vite proxy.</div>
       </Card>
 
+      <Card t={t} title="ERP costing" hint="Approved vehicle cost lines from the ERP (VehicleEmpMapProjectDetails) — road tax, insurance, FC work, servicing, tyres, RTO and AdBlue. Pulled with the daily sync; resync here to pick up approvals made today.">
+        <div className="flex flex-wrap items-center gap-3">
+          <Btn t={t} onClick={onSyncCosts} disabled={costBusy}><RefreshCw size={15} className={costBusy ? "animate-spin" : ""} /> {costBusy ? "Resyncing…" : "Resync costing now"}</Btn>
+          <span className="text-xs" style={{ color: costStatus.phase === "error" ? t.poor : costStatus.phase === "ok" ? t.good : t.muted }}>{costLabel}</span>
+        </div>
+        {costMeta && (
+          <div className="flex flex-wrap gap-x-6 gap-y-1 mt-3 text-xs" style={{ color: t.muted }}>
+            <span>Window <b style={{ color: t.text }}>{costMeta.from} → {costMeta.to}</b> (trailing 12 months)</span>
+            <span>Costed buses <b style={{ color: t.text }}>{costMeta.vehicles}</b></span>
+            <span>Cost lines <b style={{ color: t.text }}>{costMeta.used}</b> of {costMeta.rows}</span>
+            <span>Total <b style={{ color: t.text }}>{inr(costMeta.total)}</b></span>
+            {costMeta.skippedUnapproved > 0 && <span>Unapproved skipped <b style={{ color: t.text }}>{costMeta.skippedUnapproved}</b></span>}
+          </div>
+        )}
+        <div className="text-xs mt-3" style={{ color: t.muted }}>
+          A line counts once it is approved — an unapproved line carries a zero amount and is left out. Rented buses have no cost lines in this feed. <b style={{ color: t.text }}>Diesel and driver salary are in neither ERP feed</b>, so per-bus totals are standing costs only.
+          {costMeta && costMeta.heads && costMeta.heads.length ? ` Heads in this pull: ${costMeta.heads.join(", ")}.` : ""}
+        </div>
+      </Card>
+
       <Card t={t} title="Data">
         <div className="flex flex-wrap gap-3"><Btn t={t} variant="ghost" onClick={onExport}><Download size={15} /> Export all data (JSON)</Btn><Btn t={t} variant="danger" onClick={onReset}><Trash2 size={15} /> Clear local data &amp; re-sync</Btn></div>
         <div className="text-xs mt-3" style={{ color: t.muted }}>This local copy is saved on this device between sessions. Use “Sync from ERP” above to load live data.</div>
@@ -1846,9 +1899,12 @@ export default function App() {
   const [employees, setEmployees] = useState([]);
   const [attendance, setAttendance] = useState({});
   const [records, setRecords] = useState([]);
-  // Running costs come from the ERP and are read-only here — the dashboard displays them,
-  // it no longer stores or edits them. Derived from the synced fleet, so a re-sync is the
-  // only way they change.
+  // Running costs come from the ERP costing feed and are read-only here. They live in their
+  // own state (not on the bus) so the costing feed can be resynced on its own, without
+  // refetching the much larger punch feed.
+  const [costProfiles, setCostProfiles] = useState({});   // vehicle -> cost profile
+  const [costMeta, setCostMeta] = useState(null);         // { from, to, vehicles, total, ... }
+  const [costStatus, setCostStatus] = useState({ phase: "idle", at: null, msg: "" });
   const [formulas, setFormulas] = useState([]);
   const [variables, setVariables] = useState([]);
   const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true });
@@ -1942,6 +1998,13 @@ export default function App() {
         const s = sampleData(); setSettings(s.settings); setFormulas(s.formulas); setVariables(s.variables);
         setBuses([]); setEmployees([]); setAttendance({}); setRecords([]);
       }
+      // Costs are stored alongside the fleet so the last pull is on screen before the
+      // first fetch of the day lands; they refresh with it.
+      const cp = await Store.get("costProfiles");
+      if (cp && cp.profiles) {
+        setCostProfiles(cp.profiles); setCostMeta(cp.meta || null);
+        if (cp.at) setCostStatus({ phase: "ok", at: cp.at, msg: `${Object.keys(cp.profiles).length} buses costed` });
+      }
       const th = await Store.get("theme"); if (th && THEMES[th]) setThemeName(th); // ignore any removed/old theme name
       setLoaded(true);
     })();
@@ -1960,22 +2023,50 @@ export default function App() {
 
   // records the tabs actually read: base records with each bus's cost profile overlaid as daily spend/budget
   const wd = effWorkingDays(settings);
-  const busCosts = useMemo(() => Object.fromEntries(buses.filter((b) => b.costProfile).map((b) => [b.id, b.costProfile])), [buses]);
+  const busCosts = costProfiles;   // keyed by vehicle reg, which is also the bus id
   const effRecords = useMemo(() => mergeCostsIntoRecords(records, buses, attendance, busCosts, wd), [records, buses, attendance, busCosts, wd]);
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
-  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Cleared local data — re-syncing ERP"); syncErp(); };
+  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setCostProfiles({}); setCostMeta(null); setCostStatus({ phase: "idle", at: null, msg: "" }); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Cleared local data — re-syncing ERP"); syncErp(); };
+  /* Costing feed — fetched with the punch feed on the daily sync, and on its own from the
+     Resync buttons. Kept separate so a costing failure never costs you the fleet, and so
+     re-pulling costs (a few hundred rows) doesn't drag the punch feed with it. */
+  const syncCosts = useCallback(async ({ silent = false } = {}) => {
+    setCostStatus((s) => ({ ...s, phase: "syncing" }));
+    try {
+      const { profiles, meta } = mapErpCosts(await fetchErpCostRaw());
+      const at = Date.now();
+      setCostProfiles(profiles); setCostMeta(meta);
+      setCostStatus({ phase: "ok", at, msg: `${meta.vehicles} buses · ${meta.used} cost lines` });
+      Store.set("costProfiles", { profiles, meta, at });
+      Store.set("lastCostSync", at);
+      if (!silent) toast(`Costing synced · ${meta.vehicles} buses · ${inr(meta.total)} over ${meta.from} → ${meta.to}`);
+      return meta;
+    } catch (e) {
+      setCostStatus({ phase: "error", at: Date.now(), msg: e.message || String(e) });
+      if (!silent) toast("Costing sync failed: " + (e.message || e));
+      return null;
+    }
+  }, []);
+
   // silent = auto/background refresh (no toast, no tab jump); loud = manual button press
   const syncErp = useCallback(async ({ silent = false } = {}) => {
     const firstLoad = busesRef.current.length === 0; // count-up reveal only when starting from empty
     setErpStatus((s) => ({ ...s, phase: "syncing", progress: firstLoad ? { done: 0, total: 0 } : null }));
     if (!silent) toast("Syncing from ERP…");
+    // Both feeds are pulled on every sync — punch records and costing — and they run
+    // concurrently. syncCosts settles its own status and never throws, so a costing
+    // outage leaves the fleet sync untouched.
+    const costing = syncCosts({ silent: true });
     try {
       const data = mapErpToDashboard(await fetchErpRaw());
       // On the first load, reveal the fetched routes as a real count-up (0 → total) before showing
       // the dashboard, so the loader reports genuine progress instead of an opaque spinner.
-      if (firstLoad && data.buses.length) {
+      // Only when the tab is visible: rAF is paused on a backgrounded tab, so awaiting the tween
+      // there would never resolve and the sync would hang short of setBuses — which is exactly the
+      // case the daily rollover sync runs in. Same rule as canEntrance(), applied to a promise.
+      if (firstLoad && data.buses.length && canEntrance()) {
         const total = data.buses.length;
         await new Promise((resolve) => {
           const p = { done: 0 };
@@ -1987,12 +2078,17 @@ export default function App() {
       setBuses(data.buses); setEmployees(data.employees); setAttendance(data.attendance); setRecords(data.records);
       Store.set("lastErpSync", Date.now()); // daily-fetch marker: today's data is now on disk
       setErpStatus({ phase: "ok", at: Date.now(), msg: `${data.buses.length} buses · ${data.employees.length} employees`, progress: null });
-      if (!silent) { setTab("live"); toast(`ERP synced · ${data.buses.length} buses · ${data.employees.length} employees`); }
+      const cm = await costing;
+      if (!silent) {
+        setTab("live");
+        toast(`ERP synced · ${data.buses.length} buses · ${data.employees.length} employees`
+          + (cm ? ` · ${cm.vehicles} costed` : " · costing unavailable"));
+      }
     } catch (e) {
       setErpStatus((s) => ({ ...s, phase: "error", msg: e.message || String(e), progress: null }));
       if (!silent) toast("ERP sync failed: " + (e.message || e));
     }
-  }, []);
+  }, [syncCosts]);
 
   // Daily connection: fetch from the ERP ONCE per calendar day — on the first open of the day.
   // The stored snapshot then serves the whole day; a rollover watcher pulls the new day's feed
@@ -2006,16 +2102,22 @@ export default function App() {
       if (cancelled) return;
       if (last && sameDay(last, Date.now()) && busesRef.current.length > 0) {
         setErpStatus({ phase: "ok", at: last, msg: "today's data · loaded " + fmtClock(last), progress: null });
+        // Punch records are today's, but costing is its own feed on its own marker — a day
+        // where only the costing pull failed still gets caught up here.
+        const lastCost = await Store.get("lastCostSync");
+        if (!cancelled && (!lastCost || !sameDay(lastCost, Date.now()))) syncCosts({ silent: true });
         return; // already fetched today — serve the stored snapshot
       }
       syncErp({ silent: true });
     })();
     const id = setInterval(async () => {
       const last = await Store.get("lastErpSync");
-      if (!last || !sameDay(last, Date.now())) syncErp({ silent: true });
+      if (!last || !sameDay(last, Date.now())) return syncErp({ silent: true });
+      const lastCost = await Store.get("lastCostSync");
+      if (!lastCost || !sameDay(lastCost, Date.now())) syncCosts({ silent: true });
     }, 10 * 60_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [loaded, settings.erpAuto, syncErp]);
+  }, [loaded, settings.erpAuto, syncErp, syncCosts]);
 
   // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
   // Equations is retired; Metrics lives inside Settings now.
@@ -2061,10 +2163,10 @@ export default function App() {
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (
           <>
             {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} erpPhase={erpStatus.phase} onSync={() => syncErp()} />}
-            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
+            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
             {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} />}
-            {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} toast={toast} themeName={themeName} setThemeName={setThemeName}
+            {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} onSyncCosts={() => syncCosts()} costStatus={costStatus} costMeta={costMeta} toast={toast} themeName={themeName} setThemeName={setThemeName}
               formulas={formulas} variables={variables}
               onAddMetric={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}
               onUpdateMetric={(f) => { setFormulas(formulas.map((x) => (x.id === f.id ? f : x))); toast("Metric updated"); }}

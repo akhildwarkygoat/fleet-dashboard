@@ -1,36 +1,49 @@
 /* ============================================================================
  * erp.js — live ERP ingestion for the fleet dashboard
  *
- * Source: POST http://172.16.10.169:8089/api/general/VehicleEmpMapDetails
- * In dev the browser calls it through the Vite proxy at /erp (see vite.config.js);
+ * TWO endpoints, one per kind of data. Both are POSTed with an empty JSON body.
+ *
+ *   /api/general/VehicleEmpMapDetails         employee punch records
+ *   /api/general/VehicleEmpMapProjectDetails  vehicle costing (approved cost lines)
+ *
+ * In dev the browser calls them through the Vite proxy at /erp (see vite.config.js);
  * in prod route the same /erp path through the backend passthrough.
  *
- * The endpoint returns ONE row per (employee, date) with the employee's home GPS,
- * their assigned vehicle, capacity, company, department, role and attendance.
- * mapErpToDashboard() folds those rows into the 4 objects the dashboard renders:
- * { buses, employees, attendance, records }.
+ * PUNCH FEED — one row per (employee, date) with the employee's home GPS, their
+ * assigned vehicle, capacity, company, department, role and attendance.
+ * mapErpToDashboard() folds those rows into { buses, employees, attendance, records }.
+ *
+ * COSTING FEED — one row per approved cost line: a vehicle, a cost head, the period
+ * it covers and what was purchased. mapErpCosts() folds those into one read-only
+ * cost profile per bus, which is what the Bus-wise cost card renders.
  *
  * What the ERP DOES NOT carry (kept as explicit placeholders, never faked):
  *   - route / ride-time / per-bus km / stops  -> RUN_OPTIMISER
  *   - driver name / phone                     -> NEEDS_ERP
- *   - per-bus cost (diesel, salary, insurance…) -> entered in the Bus-wise cost card
+ *   - diesel and driver salary                -> absent from BOTH feeds (see ERP_COST_HEADS)
  * ==========================================================================*/
 
 export const RUN_OPTIMISER = "Run optimiser to find out";
 export const NEEDS_ERP = "Needs to be added to the ERP";
 
 const ERP_ENDPOINT = "/erp/general/VehicleEmpMapDetails";
+const ERP_COST_ENDPOINT = "/erp/general/VehicleEmpMapProjectDetails";
 
-/* Fetch the raw ERP payload (array of per-employee/day rows). Throws on non-2xx. */
-export async function fetchErpRaw() {
-  const res = await fetch(ERP_ENDPOINT, {
+/* Both feeds need a body/Content-Length or the endpoint 411s. */
+async function erpPost(endpoint) {
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: "{}", // the endpoint needs a body/Content-Length or it 411s
+    body: "{}",
   });
   if (!res.ok) throw new Error(`ERP HTTP ${res.status}`);
   return res.json();
 }
+
+/* Raw punch payload (array of per-employee/day rows). Throws on non-2xx. */
+export const fetchErpRaw = () => erpPost(ERP_ENDPOINT);
+/* Raw costing payload (array of per-vehicle cost lines). Throws on non-2xx. */
+export const fetchErpCostRaw = () => erpPost(ERP_COST_ENDPOINT);
 
 /* "15-07-2026 00:00:00" -> "2026-07-15" (ISO, so it sorts + matches the date pickers) */
 function normDate(s) {
@@ -61,62 +74,130 @@ const mode = (obj) => {
   return e ? e[0] : null;
 };
 
-/* ------------------------------------------------------------------ bus costs
- * Running costs are owned by the ERP — the dashboard displays them and never
- * edits them. Each entry maps one of the dashboard's cost lines to the ERP
- * column(s) that carry it, and to the period that column is quoted in.
+/* ============================== COSTING FEED ==============================
+ * VehicleEmpMapProjectDetails returns one row per approved cost line:
  *
- * The feed does not expose any of these yet (VehicleEmpMapDetails returns 30
- * fields, none of them costs), so today every bus resolves to no profile and the
- * cost tiles stay blank — the same honest blank they showed before. When the ERP
- * team adds the columns, put their real names in `from` and nothing else has to
- * change: `period` and `qty` already match how the dashboard normalises to
- * ₹/working-day. Names are matched case-insensitively.
+ *   Veh_Name  Proj_Activity_Name  Period_Name  From_Date/To_Date  Rate  Pur_Amount
+ *
+ * Two things about that shape decide how it is read here:
+ *
+ *  1. Rate is a UNIT rate and Pur_Amount is rate x quantity. They are equal only
+ *     where the quantity is 1. AdBlue is quoted per litre (~Rs 60) against a
+ *     Rs 36,600 purchase, tyres per tyre. Pur_Amount is the figure to sum; Rate
+ *     never is. The feed has no quantity column, so it is recovered as
+ *     Pur_Amount / Rate — a whole number on 1,028 of 1,029 priced rows.
+ *  2. A line is a plan until it is approved, and an unapproved line carries
+ *     Pur_Amount 0. Summing Pur_Amount therefore counts spend, not intent.
+ *
+ * Each head maps to one of the dashboard's cost lines. `qty` marks the heads whose
+ * Rate is a unit price: for those the dashboard is handed the rate and the quantity
+ * (COST_TYPES multiplies them back out), for the rest just the amount.
+ *
+ * DIESEL and DRIVER SALARY are in neither feed — the two largest running costs are
+ * not in the ERP yet, so a bus's profile here is its standing costs only.
  */
-const ERP_COST_FIELDS = [
-  // amount is the RATE PER LITRE and quantity the litres/day — the dashboard multiplies the
-  // two (COST_TYPES.diesel is qty:true), so a per-day total here would be counted litres times over
-  { type: "diesel",    period: "day",   from: ["DieselRatePerLitre", "Diesel_Rate", "FuelRate"], qtyFrom: ["DieselLitres", "Litres_Per_Day"] },
-  { type: "driver",    period: "month", from: ["DriverSalary", "Driver_Sal", "DriverWageMonth"] },
-  { type: "maint",     period: "month", from: ["Maintenance", "Maint_Amt", "MaintenanceMonth"] },
-  { type: "tires",     period: "year",  from: ["TyreCost", "Tire_Amt"], qtyFrom: ["TyreCount", "No_Of_Tyres"] },
-  { type: "tiremaint", period: "year",  from: ["TyreMaintenance", "Tyre_Maint"], qtyFrom: ["TyreCount", "No_Of_Tyres"] },
-  { type: "fc",        period: "year",  from: ["FCWorks", "FC_Amt", "FitnessCost"] },
-  { type: "taxes",     period: "year",  from: ["RoadTax", "Tax_Amt", "Taxes"] },
-  { type: "insurance", period: "year",  from: ["Insurance", "Insurance_Amt"] },
-];
-const ERP_BUDGET_FIELDS = { from: ["Budget", "Budget_Amt", "BudgetMonth"], period: "month" };
+const ERP_COST_HEADS = {
+  "ROAD TAX": { type: "taxes", label: "Road tax" },
+  "VEHICLE INSURANCE": { type: "insurance", label: "Vehicle insurance" },
+  "FC WORK": { type: "fc", label: "FC work" },
+  "VEHICLE OUTSIDE SERVICES": { type: "maint", label: "Vehicle outside services" },
+  "RTO EXPENSE": { type: "rto", label: "RTO expense" },
+  TYRE: { type: "tires", label: "Tyre", qty: true },
+  ADBLU: { type: "adblue", label: "AdBlue", qty: true },
+};
+/* A head the ERP adds later still lands on the card, under its own name, rather than
+   being silently dropped — as a plain yearly amount, which is the safe reading. */
+const headSpec = (head) =>
+  ERP_COST_HEADS[String(head || "").trim().toUpperCase()] ||
+  { type: "erp:" + String(head || "other").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") };
 
-/* first non-empty numeric value among `names` on a row, or null */
-function numFrom(row, names) {
-  for (const n of names || []) {
-    const key = Object.keys(row).find((k) => k.toLowerCase() === n.toLowerCase());
-    if (key == null) continue;
-    const v = parseFloat(String(row[key]).replace(/[^0-9.-]/g, ""));
-    if (isFinite(v) && v !== 0) return v;
-  }
-  return null;
+/* "01-04-2026 00:00:00" -> Date (local midnight). Invalid/blank -> null. */
+function erpDateVal(s) {
+  const m = String(s || "").match(/^(\d{2})-(\d{2})-(\d{4})/);
+  if (!m) return null;
+  const d = new Date(+m[3], +m[2] - 1, +m[1]);
+  return isNaN(d) ? null : d;
 }
+const numVal = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.-]/g, "")); return isFinite(n) ? n : 0; };
+const sentenceCase = (s) => { const x = String(s || "").toLowerCase().trim(); return x.charAt(0).toUpperCase() + x.slice(1); };
+/* local calendar date, not toISOString() — that shifts to UTC and reports the day before
+   for any evening in IST, which would put the wrong window on the cost card */
+const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-/* Fold the cost columns tallied for one vehicle into the profile shape the
- * dashboard already understands: { budget:{amount,period}, lines:[…] }.
- * Returns null when the ERP carried no costs for this bus. */
-function costProfileFrom(tally) {
-  const lines = [];
-  for (const spec of ERP_COST_FIELDS) {
-    const amount = tally[spec.type];
-    if (amount == null) continue;
-    lines.push({
-      id: "erp-" + spec.type, type: spec.type, amount, period: spec.period,
-      ...(spec.qtyFrom ? { quantity: tally[spec.type + ":qty"] ?? 1 } : {}),
-    });
+/**
+ * Fold costing rows into one read-only profile per vehicle.
+ *
+ * Window: the 12 months ending at `asOf`, by each line's From_Date. A trailing year
+ * is what makes the figure a running cost — it always holds four quarters of road tax
+ * and one insurance renewal, and it rolls forward on its own. Summing a financial year
+ * instead would read low for most of the year, because a period that has not started
+ * yet has no row in the feed.
+ *
+ * Returns { profiles: { [vehicle]: profile }, meta: {...} }; a vehicle with no
+ * approved spend in the window is absent rather than present with zeros.
+ */
+export function mapErpCosts(rows, { asOf = Date.now(), days = 365 } = {}) {
+  // whole calendar days at both ends: asOf mid-afternoon must not clip a line that started
+  // at midnight exactly `days` ago, and setDate() keeps month/DST boundaries honest
+  const to = new Date(asOf); to.setHours(23, 59, 59, 999);
+  const from = new Date(to); from.setDate(from.getDate() - (days - 1)); from.setHours(0, 0, 0, 0);
+  const tally = new Map();  // veh -> { head -> { total, qty, rated, lines } }
+  const meta = { rows: (rows || []).length, used: 0, skippedUnapproved: 0, outsideWindow: 0, total: 0, heads: new Set() };
+
+  for (const r of rows || []) {
+    const veh = String(r.Veh_Name || "").trim();
+    const start = erpDateVal(r.From_Date);
+    if (!veh || !start) continue;
+    if (start < from || start > to) { meta.outsideWindow++; continue; }
+    const amount = numVal(r.Pur_Amount);
+    if (amount <= 0) { meta.skippedUnapproved++; continue; }   // planned, not purchased
+
+    const head = String(r.Proj_Activity_Name || "").trim() || "OTHER";
+    let byHead = tally.get(veh);
+    if (!byHead) { byHead = new Map(); tally.set(veh, byHead); }
+    let cell = byHead.get(head);
+    if (!cell) { cell = { total: 0, qty: 0, rated: 0, lines: 0 }; byHead.set(head, cell); }
+    cell.total += amount;
+    cell.lines++;
+    const rate = numVal(r.Rate);
+    if (rate > 0) { cell.qty += amount / rate; cell.rated += amount; }   // rated = the part qty covers
+    meta.used++; meta.total += amount;
+    meta.heads.add(head);
   }
-  const budget = tally.budget;
-  if (!lines.length && budget == null) return null;
+
+  const profiles = {};
+  for (const [veh, byHead] of tally) {
+    const lines = [];
+    for (const [head, cell] of byHead) {
+      const spec = headSpec(head);
+      // A unit-rate head is shown the way the ERP quotes it — rate x quantity — using the
+      // quantity-weighted average rate, so rate * qty is exactly the amount purchased.
+      // A quantity-typed line MUST carry a quantity: the dashboard multiplies amount by it and
+      // reads a missing one as zero, which would drop the line from every total in silence. When
+      // no rate came back to divide by, fall back to the whole amount at quantity 1.
+      const useQty = spec.qty && cell.qty > 0;
+      lines.push({
+        id: spec.type,
+        type: spec.type,
+        label: spec.label || sentenceCase(head),
+        amount: useQty ? cell.total / cell.qty : cell.total,
+        ...(spec.qty ? { quantity: useQty ? Math.round(cell.qty * 100) / 100 : 1 } : {}),
+        period: "year",
+        erpLines: cell.lines,
+      });
+    }
+    lines.sort((a, b) => b.amount * (b.quantity || 1) - a.amount * (a.quantity || 1));
+    profiles[veh] = {
+      source: "erp-project",
+      // No budget in this feed — the cost card shows a blank budget rather than inventing one.
+      budget: { amount: "", period: "month" },
+      lines,
+    };
+  }
+
   return {
-    source: "erp",
-    budget: budget != null ? { amount: budget, period: ERP_BUDGET_FIELDS.period } : { amount: "", period: "month" },
-    lines,
+    profiles,
+    meta: { ...meta, heads: [...meta.heads].sort(), vehicles: Object.keys(profiles).length, from: isoLocal(from), to: isoLocal(to) },
   };
 }
 
@@ -124,7 +205,7 @@ function costProfileFrom(tally) {
  * Fold raw ERP rows into { buses, employees, attendance, records }.
  * - bus.id      = vehicle reg (stable across syncs, so cost profiles survive)
  * - employee.id = Empl_no (attendance is keyed on this)
- * - records     = [] — daily spend/budget is filled from each bus's cost card
+ * - records     = [] — daily spend/budget comes from the costing feed (mapErpCosts)
  */
 export function mapErpToDashboard(rows) {
   const buses = new Map();      // veh -> { seat:{}, unit:{}, type:Set }
@@ -146,13 +227,7 @@ export function mapErpToDashboard(rows) {
 
     // bus — tally capacity, brand and owned/rental across its rows
     let bs = buses.get(veh);
-    if (!bs) { bs = { seat: {}, unit: {}, type: new Set(), mil: {}, cost: {} }; buses.set(veh, bs); }
-    // running costs, if the ERP carries them — first non-empty value per bus wins
-    for (const spec of ERP_COST_FIELDS) {
-      if (bs.cost[spec.type] == null) { const v = numFrom(r, spec.from); if (v != null) bs.cost[spec.type] = v; }
-      if (spec.qtyFrom && bs.cost[spec.type + ":qty"] == null) { const q = numFrom(r, spec.qtyFrom); if (q != null) bs.cost[spec.type + ":qty"] = q; }
-    }
-    if (bs.cost.budget == null) { const b = numFrom(r, ERP_BUDGET_FIELDS.from); if (b != null) bs.cost.budget = b; }
+    if (!bs) { bs = { seat: {}, unit: {}, type: new Set(), mil: {} }; buses.set(veh, bs); }
     const seat = String(r.Seat || r.Seat_New || "").trim();
     if (seat && seat !== "0") bs.seat[seat] = (bs.seat[seat] || 0) + 1;
     const u = unitOf(r.Compname);
@@ -169,7 +244,6 @@ export function mapErpToDashboard(rows) {
     capacity: parseInt(mode(bs.seat) || "0", 10) || 0,
     type: [...bs.type][0] || "",       // Owned / Rental
     mileage: parseFloat(mode(bs.mil) || "0") || 0,   // km/L — drives this bus's diesel ₹/km
-    costProfile: costProfileFrom(bs.cost),           // ERP-owned running costs, or null
     route: RUN_OPTIMISER,
     driver: NEEDS_ERP,
     phone: NEEDS_ERP,

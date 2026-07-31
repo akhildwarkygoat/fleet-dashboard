@@ -20,6 +20,7 @@ Thumbs.db
 # ERP-derived data — contains employee PII (names + home GPS + attendance).
 # NEVER commit to a public repo. Regenerate locally with the build_*.py scripts.
 data/erp_live.json
+data/erp_project_live.json
 data/erp_raw.json
 data/stops_live.json
 data/stops_merged.json
