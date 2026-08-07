@@ -58,7 +58,10 @@ export default defineConfig({
     // route the same /erp path through the backend (Laravel Http::post passthrough).
     proxy: {
       "/erp": {
-        target: "http://172.16.10.169:8089",
+        // public hostname, not the 172.16.x LAN address: the LAN IP only resolves inside the
+        // office network, so the dashboard died the moment anyone opened it from home or a
+        // phone. life.gainup.in serves the same ERP and works from either side.
+        target: process.env.ERP_BASE || "http://life.gainup.in:8089",
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/erp/, "/api"),
       },

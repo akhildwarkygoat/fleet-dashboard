@@ -2,11 +2,12 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import {
   LayoutDashboard, GitCompare, Database, Sigma, Settings as SettingsIcon,
   Sun, Moon, Bus, Plus, Trash2, Download, Server, Activity, BarChart3, Pencil, X, ChevronRight, ChevronDown, Search, Calendar, Clock, MapPin,
-  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff, Route, RefreshCw
+  Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff, Route, RefreshCw, IndianRupee
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
+import { serviceIdFor } from "./optimiser/services.js";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
-import { fetchErpRaw, fetchErpCostRaw, mapErpToDashboard, mapErpCosts, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
+import { fetchErpRaw, fetchErpCostRaw, mapErpToDashboard, mapErpCosts, canonVehicle, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   BarChart, Bar, Cell, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter,
@@ -45,7 +46,14 @@ function CountUp({ value }) {
   const str = String(value);
   useGSAP(() => {
     const m = str.match(/^([^0-9-]*)(-?[\d,]+(?:\.\d+)?)(.*)$/);
-    if (!m || prefersReduced()) { prevRef.current = null; return; }
+    // No tween unless the tab is actually visible. GSAP's ticker is paused on a backgrounded
+    // tab, so the count-up below would set the text to its START value and never reach the
+    // target — freezing the tile on a number that was never real. React has already rendered
+    // the correct string, so bailing out here leaves it right.
+    if (!m || !canEntrance()) {
+      prevRef.current = m ? parseFloat(m[2].replace(/,/g, "")) : null;
+      return;
+    }
     const target = parseFloat(m[2].replace(/,/g, ""));
     const dec = (m[2].split(".")[1] || "").length;
     const obj = { v: prevRef.current == null ? 0 : prevRef.current };
@@ -81,7 +89,7 @@ const THEMES = {
     primaryStrong: "#1c74cf",
     // status hues carry text at 10-12px, so they are set dark enough to clear 4.5:1 on surface/surface2
     good: "#047857", watch: "#b45309", poor: "#be123c",
-    gainup: "#0e7490", techno: "#7c3aed",
+    gainup: "#0e7490", techno: "#7c3aed", zenwear: "#be1250",
     goodSoft: "rgba(4,120,87,.10)", watchSoft: "rgba(180,83,9,.12)", poorSoft: "rgba(190,18,60,.10)",
     grid: "#e8edf4", inputBg: "#f8fafc",
   },
@@ -91,7 +99,7 @@ const THEMES = {
     border: "#3a4a59", text: "#f5f7fa", muted: "#9aa5b1", faint: "#616e7c",
     primary: "#2186eb", primarySoft: "rgba(33,134,235,.18)", onPrimary: "#ffffff", primaryStrong: "#1c74cf",
     good: "#3ebd93", watch: "#f7d070", poor: "#f87171",
-    gainup: "#2cb1bc", techno: "#8888fc",
+    gainup: "#2cb1bc", techno: "#8888fc", zenwear: "#f2648c",
     goodSoft: "rgba(62,189,147,.14)", watchSoft: "rgba(247,208,112,.14)", poorSoft: "rgba(248,113,113,.16)",
     grid: "#2b3846", inputBg: "#151d26",
   },
@@ -103,7 +111,7 @@ const THEMES = {
     // surface treatment of one brand, not a second brand
     primary: "#3d6b99", primarySoft: "rgba(61,107,153,.12)", onPrimary: "#ffffff", primaryStrong: "#2f5679",
     good: "#0f7a5f", watch: "#8d6a1a", poor: "#ba2525",
-    gainup: "#146b7d", techno: "#4c63b6",
+    gainup: "#146b7d", techno: "#4c63b6", zenwear: "#a8325a",
     goodSoft: "rgba(15,122,95,.10)", watchSoft: "rgba(141,106,26,.12)", poorSoft: "rgba(186,37,37,.10)",
     grid: "#e6e9ed", inputBg: "#f5f7fa",
   },
@@ -160,6 +168,8 @@ const COST_TYPES = [
   // heads the costing feed carries that predate this list (see ERP_COST_HEADS in erp.js)
   { key: "rto", label: "RTO expense", qty: false, period: "year" },
   { key: "adblue", label: "AdBlue", qty: true, qtyLabel: "litres / year", period: "year" },
+  // plan-derived lines (see withPlanCosts): rental day tariff from the finalised plan
+  { key: "hire", label: "Hire (day tariff)", qty: false, period: "day" },
 ];
 const COST_TYPE_MAP = Object.fromEntries(COST_TYPES.map((c) => [c.key, c]));
 const COST_PERIODS = [["day", "Per day"], ["month", "Per month"], ["year", "Per year"]];
@@ -190,10 +200,94 @@ function mergeCostsIntoRecords(records, buses, attendance, busCosts, wd) {
     dates.forEach((d) => {
       const k = b.id + "|" + d;
       const ex = byKey.get(k) || { busId: b.id, date: d, km: 0 };
-      byKey.set(k, { ...ex, spend, budget });
+      // route km from the finalised plan, so cost/km and the km roll-ups are real
+      byKey.set(k, { ...ex, spend, budget, km: +ex.km || +b.planKm || 0 });
     });
   });
   return [...byKey.values()];
+}
+
+/* ---- finalised route plan (public/finalised_plan.json) ----
+   The approved plan gives each bus its route: km/day, stops, riders, ride time. Its own cost
+   model was  fixed ₹1,934/day (driver 692 + maintenance 1,242, assumed flat per owned bus)
+   + diesel at ₹100/L ÷ ERP mileage × km  — verified to reproduce all 70 route costs exactly —
+   and the slab tariff for rentals. On the Live page the planner's ASSUMED fixed part is
+   REPLACED by the bus's real standing costs from the ERP costing feed; only the km-variable
+   part survives from the plan: diesel for owned buses, the whole day tariff for rentals
+   (a rented bus has no cost lines in the ERP — the tariff IS its cost). */
+/* Bumped whenever a cost profile gains fields the card relies on. A profile stored under an
+   older shape still renders, but a background resync is kicked off so the new fields arrive
+   without the user having to press Resync. */
+const COST_SHAPE = 3;                 // 2 = per-line `detail` rows · 3 = financial-year window (was trailing 12 months)
+const PLAN_DIESEL_PER_LITRE = 100;    // ₹/L — the same constant the plan editor prices with
+const PLAN_FALLBACK_KMPL = 100 / 18;  // editor's template ₹18/km, for a bus with no ERP mileage
+
+/* Overlay the plan onto the fleet: route summary + km on each routed bus, and the plan's
+   km-variable costs merged into the ERP cost profiles. Pure; returns {buses, profiles}. */
+function withPlanCosts(buses, costProfiles, planByVeh) {
+  if (!planByVeh || !planByVeh.size) return { buses, profiles: costProfiles };
+  const profiles = { ...costProfiles };
+  const outBuses = buses.map((b) => {
+    const r = planByVeh.get(b.id);
+    if (!r) return b;
+    if (r.type === "rent") {
+      profiles[b.id] = {
+        source: "plan",
+        budget: { amount: "", period: "month" },
+        lines: [{
+          id: "plan-hire", type: "hire", label: "Hire — plan tariff", amount: +r.cost || 0, period: "day",
+          planned: true,
+          basis: [["Route distance", `${r.km} km/day`], ["Riders on the route", `${r.riders}`],
+            ["Tariff slab", r.km <= 80 ? "≤80 km → ₹1,700" : r.km <= 95 ? "80–95 km → ₹1,900" : "over 95 km → ₹18.70/km"],
+            ["Day tariff", inr(+r.cost || 0)]],
+        }],
+      };
+    } else {
+      const kmpl = +b.mileage > 0 ? +b.mileage : PLAN_FALLBACK_KMPL;
+      const litres = Math.round((r.km / kmpl) * 100) / 100;
+      const base = profiles[b.id];
+      profiles[b.id] = {
+        source: base ? base.source + "+plan" : "plan",
+        budget: base ? base.budget : { amount: "", period: "month" },
+        lines: [
+          ...(base ? base.lines : []),
+          {
+            id: "plan-diesel", type: "diesel", label: "Diesel — plan route", amount: PLAN_DIESEL_PER_LITRE,
+            quantity: litres, period: "day", planned: true,
+            basis: [["Route distance", `${r.km} km/day`],
+              ["Mileage", +b.mileage > 0 ? `${b.mileage} km/L (ERP)` : `${PLAN_FALLBACK_KMPL.toFixed(2)} km/L (no ERP mileage — planner default)`],
+              ["Diesel price", `${inr(PLAN_DIESEL_PER_LITRE)}/L (assumed)`],
+              ["Litres per day", `${litres} L`], ["Cost per day", inr(PLAN_DIESEL_PER_LITRE * litres)]],
+          },
+        ],
+      };
+    }
+    return { ...b, planKm: +r.km || 0, planStops: r.seq || [], planRide: r.ride, planRiders: r.riders,
+      route: `${r.stops} stops · ${r.km} km · ${r.ride} min ride` };
+  });
+  return { buses: outBuses, profiles };
+}
+
+/* ---- per-vehicle details the ERP does not carry ----
+   Budget, driver name and phone have no home in either ERP feed (the costing feed carries no
+   budget at all, and the punch feed no driver). They are entered here and kept on this device,
+   keyed by vehicle so they survive every re-sync. Everything else on the card stays read-only.
+   A budget on a bus with no cost lines still needs a profile to live in, so one is created. */
+function applyBusInfo(buses, profiles, busInfo) {
+  if (!busInfo || !Object.keys(busInfo).length) return { buses, profiles };
+  const out = { ...profiles };
+  const outBuses = buses.map((b) => {
+    const info = busInfo[b.id];
+    if (!info) return b;
+    const amount = info.budgetAmount;
+    if (amount !== "" && amount != null) {
+      const budget = { amount, period: info.budgetPeriod || "month" };
+      const base = out[b.id];
+      out[b.id] = base ? { ...base, budget } : { source: "local", budget, lines: [] };
+    }
+    return { ...b, driver: info.driver || b.driver, phone: info.phone || b.phone };
+  });
+  return { buses: outBuses, profiles: out };
 }
 
 function metricsFor(rec, bus, workingDays) {
@@ -343,7 +437,15 @@ const Store = {
 };
 
 /* ============================ SAMPLE DATA ============================ */
-const UNITS = ["Gainup", "Technotek"];
+/* The brands the fleet is split by. Zenwear is the third entity (Comp_New "ZENWEAR",
+   Compname "SUBBULAPURAM") — the company is Zenwear, the site it runs from is
+   Subbulapuram, and the dashboard names units by company. See unitOf in erp.js. */
+const UNITS = ["Gainup", "Technotek", "Zenwear"];
+const unitColor = (t, u) => (u === "Gainup" ? t.gainup : u === "Zenwear" ? t.zenwear : t.techno);
+/* Buses/ledger rows stored under the old unit name before the rename. Harmless to keep;
+   drop it once no device can still be holding a pre-rename snapshot. */
+const UNIT_RENAMES = { Subbulapuram: "Zenwear" };
+const canonUnit = (u) => UNIT_RENAMES[u] || u;
 const SCHEMA = "fleet-v7"; // bump to invalidate stored data; v7 discards any dummy-seeded store so the app boots empty and loads from the ERP
 const NAME_POOL = ["A. Kumar", "R. Murugan", "S. Devi", "K. Prakash", "M. Latha", "V. Raja", "P. Selvi", "T. Anand", "N. Gokul", "D. Priya", "B. Suresh", "J. Mary", "L. Karthik", "G. Divya", "H. Ramesh", "C. Anitha", "E. Vijay", "F. Sneha", "I. Manoj", "O. Kavya"];
 function sampleData() {
@@ -389,7 +491,7 @@ function sampleData() {
   ];
   // user-defined variables — independent values you set by hand (not derivable from other data)
   const variables = [{ id: uid(), name: "tailors", value: 40 }];
-  const settings = { showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true };
+  const settings = { showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true, erpRefreshMin: 30 };
   const erp = {};
   return { buses, employees, attendance, records, formulas, variables, settings, erp };
 }
@@ -463,7 +565,7 @@ function Segmented({ t, value, onChange, options, small }) {
     </div>
   );
 }
-const UnitDot = ({ t, unit }) => <span className="inline-block w-2 h-2 rounded-sm mr-2 align-middle" style={{ background: unit === "Gainup" ? t.gainup : t.techno }} />;
+const UnitDot = ({ t, unit }) => <span className="inline-block w-2 h-2 rounded-sm mr-2 align-middle" style={{ background: unitColor(t, unit) }} />;
 function Empty({ t, title, sub }) {
   return <Card t={t}><div className="text-center py-10"><div className="text-xl font-semibold" style={{ color: t.text }}>{title}</div><div className="text-sm mt-1" style={{ color: t.muted }}>{sub}</div></div></Card>;
 }
@@ -496,7 +598,7 @@ function UnitDropdown({ t, value, onChange }) {
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
-  const opts = [["all", "Combined", t.primary], ["Gainup", "Gainup", t.gainup], ["Technotek", "Technotek", t.techno]];
+  const opts = [["all", "Combined", t.primary], ...UNITS.map((u) => [u, u, unitColor(t, u)])];
   const cur = opts.find((o) => o[0] === value) || opts[0];
   return (
     <div ref={ref} className="relative" style={{ minWidth: 170 }}>
@@ -591,8 +693,9 @@ function TrendChart({ t, data, unit }) {
         <XAxis dataKey="date" tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={{ stroke: t.border }} />
         <YAxis tick={{ fill: t.muted, fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
         <Tooltip content={TT} />
-        {(unit === "all" || unit === "Gainup") && <Line type="monotone" dataKey="Gainup" stroke={t.gainup} strokeWidth={2} dot={{ r: 2.5 }} connectNulls />}
-        {(unit === "all" || unit === "Technotek") && <Line type="monotone" dataKey="Technotek" stroke={t.techno} strokeWidth={2} dot={{ r: 2.5 }} connectNulls />}
+        {UNITS.filter((u) => unit === "all" || unit === u).map((u) => (
+          <Line key={u} type="monotone" dataKey={u} stroke={unitColor(t, u)} strokeWidth={2} dot={{ r: 2.5 }} connectNulls />
+        ))}
         {unit === "all" && <Line type="monotone" dataKey="Combined" stroke={t.primary} strokeWidth={2.5} dot={{ r: 2.5 }} connectNulls />}
       </LineChart>
     </ResponsiveContainer>
@@ -783,7 +886,7 @@ function ErpLoading({ t, phase, progress, onSync }) {
     </div>
   );
 }
-function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onOpenBusView, erpPhase, erpProgress, onSync }) {
+function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onOpenBusView, erpPhase, erpProgress, onSync, planSummary }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const [q, setQ] = useState("");
@@ -867,9 +970,9 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
           ? <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" />
           : <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} />}
         {(() => {
-          const gainup = buses.filter((b) => b.unit === "Gainup").length;
-          const technotek = buses.length - gainup;
-          return <Tile t={t} label="Total fleet" value={buses.length} sub={`${gainup} Gainup · ${technotek} Technotek`} />;
+          const n = (u) => buses.filter((b) => b.unit === u).length;
+          const sub = UNITS.map((u) => `${n(u)} ${u}`).filter((x) => !x.startsWith("0 ")).join(" · ");
+          return <Tile t={t} label="Total fleet" value={buses.length} sub={sub} />;
         })()}
       </div>
 
@@ -877,6 +980,16 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-3 text-sm" style={{ background: t.primarySoft, borderColor: t.primary, color: t.text }}>
           <Server size={16} style={{ color: t.primary }} />
           <span>Cost, spend &amp; net-value figures stay blank until approved cost lines exist for these vehicles in the ERP. They arrive with the daily sync — or use Resync costing in Settings.</span>
+        </div>
+      )}
+
+      {planSummary && (
+        <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm" style={{ background: t.surface, borderColor: t.border }}>
+          <span className="font-semibold flex items-center gap-2" style={{ color: t.text }}><Route size={15} style={{ color: t.primary }} /> Finalised plan</span>
+          <span className="tabular-nums" style={{ color: t.muted }}><b style={{ color: t.text }}>{planSummary.buses}</b> routes ({planSummary.matched} on today's fleet)</span>
+          <span className="tabular-nums" style={{ color: t.muted }}><b style={{ color: t.text }}>{planSummary.km.toLocaleString("en-IN")}</b> km/day</span>
+          <span className="tabular-nums" style={{ color: t.muted }}>plan cost <b style={{ color: t.text }}>{inr(planSummary.cost)}</b>/day · {inr(planSummary.cost_head)}/head</span>
+          <span className="text-xs" style={{ color: t.faint }}>Live spend below swaps the plan's assumed fixed ₹1,934/bus for each bus's real ERP standing costs; km &amp; diesel are the plan's.</span>
         </div>
       )}
 
@@ -901,7 +1014,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         const counts = { good: 0, watch: 0, poor: 0 }; list.forEach((x) => counts[x.h]++);
         const ua = aggregate(list, wd);
         const isCol = !!collapsed[u];
-        const accent = u === "Gainup" ? t.gainup : t.techno;
+        const accent = unitColor(t, u);
         const openHere = openBus && list.find((x) => x.bus.id === openBus);
         return (
           <div key={u} data-fx="card" className="mb-4 rounded-2xl border overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
@@ -919,7 +1032,13 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
             </button>
             {!isCol && (
               <div className="p-3">
-                {list.length === 0 ? <div className="text-sm py-4 text-center" style={{ color: t.muted }}>No buses match.</div> : (
+                {list.length === 0 ? (
+                  <div className="text-sm py-5 px-4 text-center" style={{ color: t.muted }}>
+                    {buses.some((b) => b.unit === u)
+                      ? "No buses match."
+                      : <>No buses here yet — the ERP has no <b style={{ color: t.text }}>{u}</b> unit on any vehicle. They appear the moment it tags one.</>}
+                  </div>
+                ) : (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(108px, 1fr))", gap: 8 }}>
                     {list.map((x) => { const over = x.m.util > 150; const col = over ? OVER_BAND.color : hc(x.h); const on = openBus === x.bus.id;
                       const tag = over ? `OVER +${Math.round(x.m.util - 100)}%` : x.h.toUpperCase();
@@ -1032,17 +1151,22 @@ function BusDocuments({ t, busId, busLabel, toast }) {
    (VehicleEmpMapProjectDetails). The dashboard shows what it was given and normalises
    each line to ₹/day (see mergeCostsIntoRecords). Nothing here is editable — costs are
    corrected in the ERP and arrive on the next sync, or on the Resync button. */
-function CostCard({ t, bus, profile, wd, costMeta, costPhase, onSyncCosts }) {
+function CostCard({ t, bus, profile, wd, costMeta, costPhase, onSyncCosts, budget, onSetBudget }) {
+  const [open, setOpen] = useState({});          // line id -> expanded
+  const [editBudget, setEditBudget] = useState(false);
+  const [draft, setDraft] = useState({ amount: "", period: "month" });
   const lines = (profile && profile.lines) || [];
   const dailySpend = profileDailySpend(profile, wd);
   const dailyBudget = profileDailyBudget(profile, wd);
   const periodLabel = (p) => (COST_PERIODS.find(([v]) => v === p) || [, p])[1];
   const busy = costPhase === "syncing";
-  const windowLabel = costMeta && costMeta.from ? `${costMeta.from} → ${costMeta.to}` : "the last 12 months";
+  const windowLabel = costMeta && costMeta.fy ? `FY ${costMeta.fy} (${costMeta.from} → ${costMeta.to})` : "the current financial year";
 
   return (
     <Card t={t} title="Cost breakdown"
-      hint={`Approved cost lines for ${bus.vehicle} from the ERP costing feed, covering ${windowLabel}. Each is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Edit these in the ERP — the dashboard reads them.`}
+      hint={lines.some((l) => l.id === "plan-hire")
+        ? `Day tariff for ${bus.vehicle}'s route in the finalised plan. Drives Cost/head, Spend & Net value.`
+        : `Approved cost lines for ${bus.vehicle} from the ERP costing feed (${windowLabel})${lines.some((l) => l.id === "plan-diesel") ? ", plus diesel for its finalised-plan route" : ""}. Each is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Edit these in the ERP — the dashboard reads them.`}
       right={onSyncCosts && (
         <Btn t={t} variant="ghost" className="shrink-0" onClick={onSyncCosts} disabled={busy}
           title="Re-fetch the costing feed from the ERP now">
@@ -1051,9 +1175,35 @@ function CostCard({ t, bus, profile, wd, costMeta, costPhase, onSyncCosts }) {
       )}>
       {lines.length || dailyBudget ? (
         <>
-          <div className="flex flex-wrap items-baseline gap-3 mb-4">
+          <div className="flex flex-wrap items-center gap-3 mb-4">
             <div className="text-xs uppercase tracking-widest" style={{ color: t.muted }}>Budget</div>
-            <div className="text-xl font-bold tabular-nums" style={{ color: t.text }}>{inr(dailyBudget)}<span className="text-xs font-semibold ml-1" style={{ color: t.muted }}>/day</span></div>
+            {editBudget ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span style={{ color: t.muted }}>₹</span>
+                <input autoFocus type="number" min="0" value={draft.amount} placeholder="0"
+                  onChange={(e) => setDraft({ ...draft, amount: e.target.value })}
+                  aria-label={`Budget amount for ${bus.vehicle}`} className="rounded-lg px-2.5 py-1.5 text-sm outline-none w-32 tabular-nums"
+                  style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }} />
+                <select value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })}
+                  aria-label="Budget period" className="rounded-lg px-2 py-1.5 text-sm outline-none"
+                  style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }}>
+                  {COST_PERIODS.map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
+                </select>
+                <Btn t={t} className="!px-3 !py-1.5" onClick={() => { onSetBudget({ budgetAmount: draft.amount === "" ? "" : +draft.amount || 0, budgetPeriod: draft.period }); setEditBudget(false); }}>Save</Btn>
+                <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={() => setEditBudget(false)}>Cancel</Btn>
+              </div>
+            ) : (
+              <>
+                <div className="text-xl font-bold tabular-nums" style={{ color: t.text }}>{inr(dailyBudget)}<span className="text-xs font-semibold ml-1" style={{ color: t.muted }}>/day</span></div>
+                {budget && budget.budgetAmount !== "" && budget.budgetAmount != null && (
+                  <span className="text-xs" style={{ color: t.muted }}>({inr(+budget.budgetAmount)} {periodLabel(budget.budgetPeriod || "month").toLowerCase()})</span>
+                )}
+                <Btn t={t} variant="ghost" className="!px-3 !py-1.5"
+                  onClick={() => { setDraft({ amount: budget && budget.budgetAmount != null ? budget.budgetAmount : "", period: (budget && budget.budgetPeriod) || "month" }); setEditBudget(true); }}>
+                  <Pencil size={14} /> {dailyBudget ? "Edit budget" : "Set budget"}
+                </Btn>
+              </>
+            )}
           </div>
 
           <div className="rounded-xl overflow-hidden" style={{ border: "1px solid " + t.border }}>
@@ -1064,28 +1214,94 @@ function CostCard({ t, bus, profile, wd, costMeta, costPhase, onSyncCosts }) {
                 ))}
               </tr></thead>
               <tbody>
-                {lines.map((l) => { const spec = COST_TYPE_MAP[l.type] || {}; return (
-                  <tr key={l.id} style={{ borderTop: "1px solid " + t.border }}>
-                    <td className="py-2 px-3" style={{ color: t.text }}>
-                      {l.label || spec.label || l.type}
-                      {l.erpLines > 1 && <span className="text-xs ml-1.5" style={{ color: t.muted }}>· {l.erpLines} lines</span>}
-                    </td>
-                    <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.text }}>{inr(+l.amount || 0)}</td>
-                    <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.muted }}>{spec.qty ? (l.quantity ?? "—") : "—"}</td>
-                    <td className="py-2 px-3 text-right" style={{ color: t.muted }}>{periodLabel(l.period || spec.period)}</td>
-                    <td className="py-2 px-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{inr(lineDaily(l, wd))}</td>
-                  </tr>
-                ); })}
+                {lines.map((l) => {
+                  const spec = COST_TYPE_MAP[l.type] || {};
+                  const rows = l.detail || [], basis = l.basis || [];
+                  const canOpen = rows.length > 0 || basis.length > 0;
+                  const isOpen = !!open[l.id];
+                  // plan-derived lines are tinted so an assumed figure never reads as an ERP one
+                  const bg = l.planned ? t.primarySoft : undefined;
+                  return (
+                    <React.Fragment key={l.id}>
+                      <tr onClick={canOpen ? () => setOpen({ ...open, [l.id]: !isOpen }) : undefined}
+                        aria-expanded={canOpen ? isOpen : undefined}
+                        title={canOpen ? (isOpen ? "Hide the lines behind this figure" : "Show the lines behind this figure") : undefined}
+                        style={{ borderTop: "1px solid " + t.border, background: bg, cursor: canOpen ? "pointer" : "default" }}>
+                        <td className="py-2 px-3" style={{ color: t.text }}>
+                          <span className="inline-flex items-center gap-1.5">
+                            {canOpen && <ChevronRight size={13} style={{ color: t.muted, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }} />}
+                            {l.label || spec.label || l.type}
+                          </span>
+                          {l.planned && <span className="text-[10px] font-bold uppercase tracking-wider ml-2 rounded px-1.5 py-0.5" style={{ background: t.primary, color: t.onPrimary || "#fff" }}>Plan</span>}
+                          {l.erpLines > 1 && <span className="text-xs ml-1.5" style={{ color: t.muted }}>· {l.erpLines} lines</span>}
+                        </td>
+                        <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.text }}>{inr(+l.amount || 0)}</td>
+                        <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.muted }}>{spec.qty ? (l.quantity ?? "—") : "—"}</td>
+                        <td className="py-2 px-3 text-right" style={{ color: t.muted }}>{periodLabel(l.period || spec.period)}</td>
+                        <td className="py-2 px-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{inr(lineDaily(l, wd))}</td>
+                      </tr>
+                      {isOpen && (
+                        <tr style={{ background: l.planned ? t.primarySoft : t.surface2 }}>
+                          <td colSpan={5} className="px-3 py-3">
+                            {rows.length > 0 ? (
+                              <table className="w-full text-xs">
+                                <thead><tr style={{ color: t.muted }}>
+                                  {["Description", "Period", "Covers", "Rate", "Qty", "Amount", "Approved"].map((h, i) => (
+                                    <th key={h} className={"pb-1.5 font-semibold uppercase tracking-wider " + (i > 2 ? "text-right pl-3" : "text-left pr-3")}>{h}</th>
+                                  ))}
+                                </tr></thead>
+                                <tbody>
+                                  {rows.map((d, i) => (
+                                    <tr key={i} style={{ borderTop: "1px solid " + t.border }}>
+                                      <td className="py-1.5 pr-3" style={{ color: t.text }}>{d.desc}</td>
+                                      <td className="py-1.5 pr-3" style={{ color: t.muted }}>{d.period || "—"}</td>
+                                      <td className="py-1.5 pr-3 tabular-nums" style={{ color: t.muted }}>{d.from}{d.to ? ` → ${d.to}` : ""}</td>
+                                      <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.rate ? inr(d.rate) : "—"}</td>
+                                      <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.qty != null && d.qty !== 1 ? d.qty : "—"}</td>
+                                      <td className="py-1.5 pl-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{inr(d.amount)}</td>
+                                      <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.approved || "—"}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            ) : (
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
+                                {basis.map(([k, v]) => (
+                                  <div key={k} className="flex justify-between gap-4 text-xs">
+                                    <span style={{ color: t.muted }}>{k}</span><span className="tabular-nums font-semibold" style={{ color: t.text }}>{v}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className="text-[11px] mt-2" style={{ color: t.faint }}>
+                              {rows.length ? `From the ERP costing feed — the ${rows.length === 1 ? "line" : rows.length + " lines"} that make up this figure.` : "Worked out from the finalised plan — not an ERP figure."}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          {lines.some((l) => l.planned) && (
+            <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: t.muted }}>
+              <span className="inline-block w-3 h-3 rounded" style={{ background: t.primarySoft, border: "1px solid " + t.border }} />
+              Tinted rows come from the finalised plan, not the ERP. Click any row to see how it was worked out.
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center gap-4 mt-3 text-sm">
             <div>Total spend: <b style={{ color: t.text }}>{inr(dailySpend)}</b>/day · <span style={{ color: t.muted }}>{inr(dailySpend * wd / 12)}/mo</span></div>
             <div className="ml-auto">Variance: <b style={{ color: dailyBudget - dailySpend >= 0 ? t.good : t.poor }}>{inr(dailyBudget - dailySpend)}</b>/day</div>
           </div>
           <div className="text-xs mt-3" style={{ color: t.muted }}>
-            Standing costs only — diesel and driver salary are in neither ERP feed, so this total is not the full running cost of the bus.
+            {lines.some((l) => l.id === "plan-hire")
+              ? "Rented bus — its cost is the finalised plan's day tariff for this route; the ERP carries no cost lines for hired vehicles."
+              : lines.some((l) => l.id === "plan-diesel")
+                ? "Financial-year ERP standing costs plus diesel priced from the finalised plan's route km (₹100/L at this bus's ERP mileage). Driver salary is in neither ERP feed, so the total remains short of the full running cost."
+                : "Standing costs only — this bus has no route in the finalised plan, and diesel and driver salary are in neither ERP feed."}
           </div>
         </>
       ) : (
@@ -1093,15 +1309,380 @@ function CostCard({ t, bus, profile, wd, costMeta, costPhase, onSyncCosts }) {
           <div style={{ color: t.text }} className="font-semibold mb-1">No approved costs in the ERP for {bus.vehicle}</div>
           {bus.type === "Rental"
             ? "Rented buses carry no cost lines in the costing feed — their hire charge is invoiced rather than planned against the vehicle."
-            : `Nothing was purchased against this vehicle between ${windowLabel}. Approve its cost lines in the ERP and they appear on the next sync.`}
+            : `Nothing has been purchased against this vehicle in ${windowLabel}. Approve its cost lines in the ERP and they appear on the next sync.`}
+          <div className="mt-3">
+            {editBudget ? (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <span>₹</span>
+                <input autoFocus type="number" min="0" value={draft.amount} placeholder="0"
+                  onChange={(e) => setDraft({ ...draft, amount: e.target.value })}
+                  aria-label={`Budget amount for ${bus.vehicle}`} className="rounded-lg px-2.5 py-1.5 text-sm outline-none w-32 tabular-nums"
+                  style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }} />
+                <select value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })}
+                  aria-label="Budget period" className="rounded-lg px-2 py-1.5 text-sm outline-none"
+                  style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }}>
+                  {COST_PERIODS.map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
+                </select>
+                <Btn t={t} className="!px-3 !py-1.5" onClick={() => { onSetBudget({ budgetAmount: draft.amount === "" ? "" : +draft.amount || 0, budgetPeriod: draft.period }); setEditBudget(false); }}>Save</Btn>
+                <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={() => setEditBudget(false)}>Cancel</Btn>
+              </div>
+            ) : (
+              <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={() => { setDraft({ amount: "", period: "month" }); setEditBudget(true); }}><Pencil size={14} /> Set a budget for this bus</Btn>
+            )}
+          </div>
         </div>
       )}
     </Card>
   );
 }
 
+/* Driver name + phone. Neither is in the ERP feed, so they are entered here and kept on this
+   device against the vehicle — the ERP placeholder shows only while nothing has been entered. */
+function DriverCard({ t, bus, info, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({ driver: "", phone: "" });
+  const start = () => { setDraft({ driver: (info && info.driver) || "", phone: (info && info.phone) || "" }); setEditing(true); };
+  const save = () => { onSave({ driver: draft.driver.trim(), phone: draft.phone.trim() }); setEditing(false); };
+  const field = (label, key, props) => (
+    <div>
+      <label className="text-xs" style={{ color: t.muted }} htmlFor={`drv-${key}-${bus.id}`}>{label}</label>
+      <input id={`drv-${key}-${bus.id}`} value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+        onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+        className="w-full rounded-lg px-2.5 py-1.5 text-sm outline-none mt-1"
+        style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }} {...props} />
+    </div>
+  );
+  const shown = (v) => (v ? <span style={{ color: t.text }}>{v}</span> : <span className="italic" title={NEEDS_ERP} style={{ color: t.muted }}>Not set</span>);
+  return (
+    <Card t={t} title="Driver info"
+      right={!editing && <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={start}><Pencil size={14} /> {info && (info.driver || info.phone) ? "Edit" : "Add"}</Btn>}>
+      {editing ? (
+        <>
+          <div className="grid grid-cols-2 gap-4">
+            {field("Driver", "driver", { placeholder: "Driver name", autoFocus: true })}
+            {field("Phone", "phone", { placeholder: "Phone number", type: "tel", inputMode: "tel" })}
+          </div>
+          <div className="flex gap-2 mt-3">
+            <Btn t={t} className="!px-3 !py-1.5" onClick={save}>Save</Btn>
+            <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={() => setEditing(false)}>Cancel</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-4">
+            <div><div className="text-xs" style={{ color: t.muted }}>Driver</div><div className="text-sm mt-0.5">{shown(info && info.driver)}</div></div>
+            <div><div className="text-xs" style={{ color: t.muted }}>Phone</div><div className="text-sm mt-0.5">{shown(info && info.phone)}</div></div>
+          </div>
+          <div className="text-xs mt-3" style={{ color: t.faint }}>Not carried by either ERP feed — entered here and saved on this device against {bus.vehicle}.</div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+/* ============================ COST REPORT ============================
+   Costs only, drilled Unit-wise → Bus-wise → one bus's lines. Every figure uses the
+   SAME normalisation as the cost card (lineDaily / profileDailySpend), so a number here
+   can never disagree with the one on the bus page.
+
+   On top of the ERP's costs it carries a small local ledger: amounts ALLOTTED (money that
+   will be given out — an advance, a deposit, a scheduled payment) and amounts RECEIVED
+   (a refund, an insurance claim, a rebate). Neither is in the ERP, so both are entered
+   here and kept on this device, against a unit or a single bus. */
+const LEDGER_PERIODS = [["once", "One-off"], ["day", "Per day"], ["month", "Per month"], ["year", "Per year"]];
+
+/* An entry's contribution to ₹/working-day. A one-off is a lump sum, not a rate, so it
+   never becomes a daily figure — it is reported separately and never silently annualised. */
+function ledgerDaily(e, wd) { return e.period === "once" ? 0 : perDay(+e.amount || 0, e.period, wd); }
+function ledgerTotals(entries, wd) {
+  const z = { givenDaily: 0, recvDaily: 0, givenOnce: 0, recvOnce: 0, count: entries.length };
+  entries.forEach((e) => {
+    const once = e.period === "once", amt = +e.amount || 0;
+    if (e.direction === "received") { if (once) z.recvOnce += amt; else z.recvDaily += ledgerDaily(e, wd); }
+    else if (once) z.givenOnce += amt; else z.givenDaily += ledgerDaily(e, wd);
+  });
+  return z;
+}
+
+function LedgerCard({ t, title, hint, scope, target, entries, onAdd, onDelete, wd }) {
+  const [open, setOpen] = useState(false);
+  const blank = { direction: "given", label: "", amount: "", period: "once", date: new Date().toISOString().slice(0, 10) };
+  const [draft, setDraft] = useState(blank);
+  const mine = entries.filter((e) => e.scope === scope && e.target === target);
+  const z = ledgerTotals(mine, wd);
+  const field = { background: t.inputBg, border: "1px solid " + t.border, color: t.text };
+  const save = () => {
+    if (draft.amount === "" || !(+draft.amount)) return;
+    onAdd({ ...draft, id: "led-" + Date.now(), scope, target, amount: +draft.amount });
+    setDraft(blank); setOpen(false);
+  };
+  return (
+    <Card t={t} title={title} hint={hint}
+      right={!open && <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={() => setOpen(true)}><Plus size={14} /> Add entry</Btn>}>
+      {open && (
+        <div className="rounded-xl p-3 mb-3 flex flex-wrap items-end gap-2" style={{ background: t.surface2, border: "1px solid " + t.border }}>
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: t.faint }}>Direction</div>
+            <div className="inline-flex rounded-lg overflow-hidden" style={{ border: "1px solid " + t.border }}>
+              {[["given", "To be given"], ["received", "Received"]].map(([v, lab]) => (
+                <button key={v} type="button" onClick={() => setDraft({ ...draft, direction: v })}
+                  className="px-3 py-1.5 text-xs font-semibold"
+                  style={{ background: draft.direction === v ? (v === "received" ? t.goodSoft : t.poorSoft) : "transparent",
+                           color: draft.direction === v ? (v === "received" ? t.good : t.poor) : t.muted, cursor: "pointer" }}>{lab}</button>
+              ))}
+            </div>
+          </div>
+          <div className="flex-1" style={{ minWidth: 160 }}>
+            <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: t.faint }}>What for</div>
+            <input value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })}
+              placeholder="Diesel advance, insurance claim…" aria-label="What the entry is for"
+              className="w-full rounded-lg px-2.5 py-1.5 text-sm outline-none" style={field} />
+          </div>
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: t.faint }}>Amount ₹</div>
+            <input type="number" min="0" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })}
+              onKeyDown={(e) => { if (e.key === "Enter") save(); }} placeholder="0" aria-label="Amount"
+              className="rounded-lg px-2.5 py-1.5 text-sm outline-none w-28 tabular-nums" style={field} />
+          </div>
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: t.faint }}>Period</div>
+            <select value={draft.period} onChange={(e) => setDraft({ ...draft, period: e.target.value })} aria-label="Period"
+              className="rounded-lg px-2 py-1.5 text-sm outline-none" style={field}>
+              {LEDGER_PERIODS.map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
+            </select>
+          </div>
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: t.faint }}>Date</div>
+            <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} aria-label="Date"
+              className="rounded-lg px-2 py-1.5 text-sm outline-none" style={field} />
+          </div>
+          <Btn t={t} className="!px-3 !py-1.5" onClick={save}>Save</Btn>
+          <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={() => { setDraft(blank); setOpen(false); }}>Cancel</Btn>
+        </div>
+      )}
+
+      {mine.length ? (
+        <>
+          <div className="rounded-xl overflow-hidden" style={{ border: "1px solid " + t.border }}>
+            <table className="w-full text-sm">
+              <thead><tr style={{ background: t.surface2 }}>
+                {["Entry", "Date", "Amount", "Per", "₹/day", ""].map((h, i) => (
+                  <th key={h + i} className={"py-2 px-3 text-xs font-semibold uppercase tracking-wider " + (i > 1 ? "text-right" : "text-left")} style={{ color: t.muted }}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {mine.slice().sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((e) => {
+                  const recv = e.direction === "received", c = recv ? t.good : t.poor;
+                  return (
+                    <tr key={e.id} style={{ borderTop: "1px solid " + t.border }}>
+                      <td className="py-2 px-3" style={{ color: t.text }}>
+                        <span className="text-[9px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 mr-2"
+                          style={{ background: recv ? t.goodSoft : t.poorSoft, color: c }}>{recv ? "Received" : "To give"}</span>
+                        {e.label || (recv ? "Received" : "Allotted")}
+                      </td>
+                      <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>{e.date || "—"}</td>
+                      <td className="py-2 px-3 text-right tabular-nums font-semibold" style={{ color: c }}>{recv ? "+" : "−"}{inr(e.amount)}</td>
+                      <td className="py-2 px-3 text-right" style={{ color: t.muted }}>{(LEDGER_PERIODS.find(([v]) => v === e.period) || [, e.period])[1]}</td>
+                      <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.muted }}>{e.period === "once" ? "—" : inr(ledgerDaily(e, wd))}</td>
+                      <td className="py-2 px-3 text-right">
+                        <button onClick={() => onDelete(e.id)} title="Delete this entry" style={{ color: t.faint, cursor: "pointer" }}><X size={13} /></button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-wrap gap-x-6 gap-y-1 mt-3 text-sm">
+            <span style={{ color: t.muted }}>To be given: <b style={{ color: t.poor }}>{inr(z.givenDaily)}</b>/day{z.givenOnce ? <> · <b style={{ color: t.poor }}>{inr(z.givenOnce)}</b> one-off</> : null}</span>
+            <span style={{ color: t.muted }}>Received: <b style={{ color: t.good }}>{inr(z.recvDaily)}</b>/day{z.recvOnce ? <> · <b style={{ color: t.good }}>{inr(z.recvOnce)}</b> one-off</> : null}</span>
+          </div>
+        </>
+      ) : (
+        <div className="text-sm rounded-xl border border-dashed py-6 px-4 text-center" style={{ borderColor: t.border, color: t.muted }}>
+          Nothing allotted or received here yet. Use <b style={{ color: t.text }}>Add entry</b> for money going out (an advance, a deposit) or coming in (a claim, a rebate).
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CostReportView({ t, buses, records, employees, attendance, settings, busCosts, costMeta, costPhase, onSyncCosts, ledger, onAddLedger, onDelLedger, busInfo, onSetBusField, toast }) {
+  const wd = effWorkingDays(settings);
+  const [unitSel, setUnitSel] = useState(null);   // null = all units
+  const [busSel, setBusSel] = useState(null);
+
+  // one row per bus, on its latest day with data — same resolution the Live board uses
+  const rows = useMemo(() => buses.map((b) => {
+    const d = busLatestDate(records, employees, attendance, b.id);
+    const rec = d ? resolveRec(records, employees, attendance, b.id, d) : null;
+    const m = rec ? metricsFor(rec, b, wd) : null;
+    const prof = busCosts && busCosts[b.id];
+    return { bus: b, m, prof, spend: profileDailySpend(prof, wd), budget: profileDailyBudget(prof, wd) };
+  }), [buses, records, employees, attendance, busCosts, wd]);
+
+  const ledgerFor = (scope, target) => ledger.filter((e) => e.scope === scope && e.target === target);
+  const unitLedger = (u) => ledger.filter((e) => (e.scope === "unit" && e.target === u)
+    || (e.scope === "bus" && rows.some((r) => r.bus.id === e.target && r.bus.unit === u)));
+
+  const unitRows = UNITS.map((u) => {
+    const rs = rows.filter((r) => r.bus.unit === u);
+    const spend = rs.reduce((s, r) => s + r.spend, 0);
+    const budget = rs.reduce((s, r) => s + r.budget, 0);
+    const present = rs.reduce((s, r) => s + (r.m ? r.m.present : 0), 0);
+    return { unit: u, buses: rs.length, spend, budget, present, cph: present ? spend / present : 0, led: ledgerTotals(unitLedger(u), wd) };
+  });
+
+  const fleet = {
+    spend: unitRows.reduce((s, u) => s + u.spend, 0),
+    present: unitRows.reduce((s, u) => s + u.present, 0),
+    led: ledgerTotals(ledger, wd),
+  };
+  const money = (n, c) => <span className="tabular-nums" style={{ color: c || t.text }}>{inr(n)}</span>;
+
+  const crumb = (
+    <div className="flex flex-wrap items-center gap-1.5 text-sm mb-4">
+      <button onClick={() => { setUnitSel(null); setBusSel(null); }} className="font-semibold" style={{ color: unitSel ? t.primary : t.text, cursor: "pointer" }}>All units</button>
+      {unitSel && <><ChevronRight size={14} style={{ color: t.faint }} />
+        <button onClick={() => setBusSel(null)} className="font-semibold inline-flex items-center gap-1.5" style={{ color: busSel ? t.primary : t.text, cursor: "pointer" }}>
+          <UnitDot t={t} unit={unitSel} />{unitSel}</button></>}
+      {busSel && <><ChevronRight size={14} style={{ color: t.faint }} />
+        <span className="font-semibold" style={{ color: t.text }}>{busSel}</span></>}
+    </div>
+  );
+
+  const selBus = busSel && rows.find((r) => r.bus.id === busSel);
+
+  return (
+    <div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        <Tile t={t} label="Fleet spend" value={inr(fleet.spend)} sub={`per working day · ${inr(fleet.spend * wd / 12)}/mo`} />
+        <Tile t={t} label="Cost / head" value={inr(fleet.present ? fleet.spend / fleet.present : 0)} sub={`${fleet.present.toLocaleString("en-IN")} riders present`} />
+        <Tile t={t} label="To be given" value={inr(fleet.led.givenDaily)} sub={fleet.led.givenOnce ? `per day · ${inr(fleet.led.givenOnce)} one-off` : "per day · allotted"} accent={fleet.led.givenDaily || fleet.led.givenOnce ? t.poor : null} />
+        <Tile t={t} label="Received" value={inr(fleet.led.recvDaily)} sub={fleet.led.recvOnce ? `per day · ${inr(fleet.led.recvOnce)} one-off` : "per day · credits"} accent={fleet.led.recvDaily || fleet.led.recvOnce ? t.good : null} />
+      </div>
+
+      {crumb}
+
+      {/* ---------- level 1: unit-wise ---------- */}
+      {!unitSel && (
+        <>
+          <Card t={t} title="Unit-wise costs" hint={`Financial-year ERP cost lines plus the finalised plan's diesel, normalised to ₹/working-day (${wd} days) and rolled up by unit. Click a unit to see its buses.`}>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ minWidth: 760 }}>
+                <thead><tr style={{ background: t.surface2 }}>
+                  {["Unit", "Buses", "Riders", "Spend / day", "Spend / mo", "Cost / head", "To give", "Received"].map((h, i) => (
+                    <th key={h} className={"py-2 px-3 text-xs font-semibold uppercase tracking-wider " + (i ? "text-right" : "text-left")} style={{ color: t.muted }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {unitRows.map((u) => (
+                    <tr key={u.unit} onClick={() => setUnitSel(u.unit)} title={`Open ${u.unit}`}
+                      style={{ borderTop: "1px solid " + t.border, cursor: "pointer" }}>
+                      <td className="py-2.5 px-3 font-semibold whitespace-nowrap" style={{ color: t.text }}><UnitDot t={t} unit={u.unit} />{u.unit}</td>
+                      <td className="py-2.5 px-3 text-right tabular-nums" style={{ color: t.muted }}>{u.buses}</td>
+                      <td className="py-2.5 px-3 text-right tabular-nums" style={{ color: t.muted }}>{u.present.toLocaleString("en-IN")}</td>
+                      <td className="py-2.5 px-3 text-right font-semibold">{money(u.spend)}</td>
+                      <td className="py-2.5 px-3 text-right" style={{ color: t.muted }}>{money(u.spend * wd / 12, t.muted)}</td>
+                      <td className="py-2.5 px-3 text-right">{money(u.cph)}</td>
+                      <td className="py-2.5 px-3 text-right">{u.led.givenDaily || u.led.givenOnce ? money(u.led.givenDaily + u.led.givenOnce, t.poor) : <span style={{ color: t.faint }}>—</span>}</td>
+                      <td className="py-2.5 px-3 text-right">{u.led.recvDaily || u.led.recvOnce ? money(u.led.recvDaily + u.led.recvOnce, t.good) : <span style={{ color: t.faint }}>—</span>}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: "2px solid " + t.border, background: t.surface2 }}>
+                    <td className="py-2.5 px-3 font-bold whitespace-nowrap" style={{ color: t.text }}>Fleet</td>
+                    <td className="py-2.5 px-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{rows.length}</td>
+                    <td className="py-2.5 px-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{fleet.present.toLocaleString("en-IN")}</td>
+                    <td className="py-2.5 px-3 text-right font-bold">{money(fleet.spend)}</td>
+                    <td className="py-2.5 px-3 text-right font-semibold" style={{ color: t.muted }}>{money(fleet.spend * wd / 12, t.muted)}</td>
+                    <td className="py-2.5 px-3 text-right font-bold">{money(fleet.present ? fleet.spend / fleet.present : 0)}</td>
+                    <td className="py-2.5 px-3 text-right font-semibold">{money(fleet.led.givenDaily + fleet.led.givenOnce, t.poor)}</td>
+                    <td className="py-2.5 px-3 text-right font-semibold">{money(fleet.led.recvDaily + fleet.led.recvOnce, t.good)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="text-xs mt-3" style={{ color: t.muted }}>
+              Costs are read-only from the ERP and cover the financial year (1 April → 31 March) — corrections are made in the ERP. “To give” and “Received” are entered here; they sit outside the ERP and never change a cost line.
+            </div>
+          </Card>
+          <div className="mt-4">
+            <LedgerCard t={t} title="Fleet-wide allotments &amp; receipts" scope="fleet" target="all" entries={ledger} onAdd={onAddLedger} onDelete={onDelLedger} wd={wd}
+              hint="Money going out or coming in for the fleet as a whole, not tied to one unit or bus." />
+          </div>
+        </>
+      )}
+
+      {/* ---------- level 2: bus-wise within a unit ---------- */}
+      {unitSel && !busSel && (
+        <>
+          <Card t={t} title={`${unitSel} — bus-wise costs`} hint={`Each bus's ₹/working-day, from its financial-year ERP cost lines plus the finalised plan's diesel. Click a bus for its full breakdown.`}>
+            {rows.filter((r) => r.bus.unit === unitSel).length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" style={{ minWidth: 820 }}>
+                  <thead><tr style={{ background: t.surface2 }}>
+                    {["Bus", "Riders", "Spend / day", "Spend / mo", "Cost / head", "Budget / day", "Variance", "To give", "Received"].map((h, i) => (
+                      <th key={h} className={"py-2 px-3 text-xs font-semibold uppercase tracking-wider whitespace-nowrap " + (i ? "text-right" : "text-left")} style={{ color: t.muted }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {rows.filter((r) => r.bus.unit === unitSel).sort((a, b) => b.spend - a.spend).map((r) => {
+                      const led = ledgerTotals(ledgerFor("bus", r.bus.id), wd);
+                      const varc = r.budget - r.spend;
+                      return (
+                        <tr key={r.bus.id} onClick={() => setBusSel(r.bus.id)} title={`Open ${r.bus.vehicle}`}
+                          style={{ borderTop: "1px solid " + t.border, cursor: "pointer" }}>
+                          <td className="py-2.5 px-3 font-semibold whitespace-nowrap" style={{ color: t.text }}>{r.bus.vehicle}</td>
+                          <td className="py-2.5 px-3 text-right tabular-nums" style={{ color: t.muted }}>{r.m ? r.m.present : "—"}</td>
+                          <td className="py-2.5 px-3 text-right font-semibold">{money(r.spend)}</td>
+                          <td className="py-2.5 px-3 text-right">{money(r.spend * wd / 12, t.muted)}</td>
+                          <td className="py-2.5 px-3 text-right">{r.m && r.m.present ? money(r.spend / r.m.present) : <span style={{ color: t.faint }}>—</span>}</td>
+                          <td className="py-2.5 px-3 text-right">{r.budget ? money(r.budget, t.muted) : <span style={{ color: t.faint }}>—</span>}</td>
+                          <td className="py-2.5 px-3 text-right">{r.budget ? money(varc, varc >= 0 ? t.good : t.poor) : <span style={{ color: t.faint }}>—</span>}</td>
+                          <td className="py-2.5 px-3 text-right">{led.givenDaily || led.givenOnce ? money(led.givenDaily + led.givenOnce, t.poor) : <span style={{ color: t.faint }}>—</span>}</td>
+                          <td className="py-2.5 px-3 text-right">{led.recvDaily || led.recvOnce ? money(led.recvDaily + led.recvOnce, t.good) : <span style={{ color: t.faint }}>—</span>}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-sm rounded-xl border border-dashed py-8 px-4 text-center" style={{ borderColor: t.border, color: t.muted }}>
+                No buses in {unitSel} yet.
+              </div>
+            )}
+          </Card>
+          <div className="mt-4">
+            <LedgerCard t={t} title={`${unitSel} — allotments & receipts`} scope="unit" target={unitSel} entries={ledger} onAdd={onAddLedger} onDelete={onDelLedger} wd={wd}
+              hint={`Money going out or coming in for ${unitSel} as a whole. Entries against individual buses are listed on the bus itself and still roll up here.`} />
+          </div>
+        </>
+      )}
+
+      {/* ---------- level 3: one bus ---------- */}
+      {selBus && (
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Tile t={t} label="Spend / day" value={inr(selBus.spend)} sub={`${inr(selBus.spend * wd / 12)}/mo`} />
+            <Tile t={t} label="Cost / head" value={selBus.m && selBus.m.present ? inr(selBus.spend / selBus.m.present) : "—"} sub={selBus.m ? `${selBus.m.present} present` : "no punch data"} />
+            <Tile t={t} label="Budget / day" value={selBus.budget ? inr(selBus.budget) : "—"} sub={selBus.budget ? "set on this bus" : "none set"} />
+            <Tile t={t} label="Variance" value={selBus.budget ? inr(selBus.budget - selBus.spend) : "—"}
+              sub={selBus.budget ? (selBus.budget - selBus.spend >= 0 ? "under budget" : "over budget") : "set a budget to compare"}
+              accent={selBus.budget ? (selBus.budget - selBus.spend >= 0 ? t.good : t.poor) : null} />
+          </div>
+          <CostCard t={t} bus={selBus.bus} profile={selBus.prof} wd={wd} costMeta={costMeta} costPhase={costPhase} onSyncCosts={onSyncCosts}
+            budget={busInfo && busInfo[selBus.bus.id]} onSetBudget={(patch) => { onSetBusField(selBus.bus.id, patch); toast("Budget saved"); }} />
+          <LedgerCard t={t} title={`${selBus.bus.vehicle} — allotments & receipts`} scope="bus" target={selBus.bus.id} entries={ledger} onAdd={onAddLedger} onDelete={onDelLedger} wd={wd}
+            hint="Money given out for this bus (an advance, a deposit) or received against it (a claim, a rebate). Rolls up into its unit." />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ============================ BUS-WISE (Unit → Bus → details) ============================ */
-function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, costMeta, costPhase, onSyncCosts, toast, focusBusId, onBack }) {
+function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, costMeta, costPhase, onSyncCosts, busInfo, onSetBusField, toast, focusBusId, onBack }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const allDates = useMemo(() => unionDates(records, attendance), [records, attendance]);
@@ -1176,7 +1757,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
             <div key={u} className="rounded-2xl border flex flex-col min-h-0 flex-1" style={{ background: t.surface, borderColor: t.border }}>
               <div className="p-3 shrink-0" style={{ borderBottom: "1px solid " + t.border }}>
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: u === "Gainup" ? t.gainup : t.techno }} />
+                  <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: unitColor(t, u) }} />
                   <span className="font-semibold text-sm" style={{ color: t.text }}>{u}</span>
                   <span className="ml-auto text-xs" style={{ color: t.muted }}>{ql ? `${list.length} / ${total}` : total}</span>
                 </div>
@@ -1239,12 +1820,11 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
           <Card t={t} title="Bus info">
             <div className="grid grid-cols-2 gap-4">{infoItem("Vehicle", bus.vehicle)}{infoItem("Route", bus.route)}{infoItem("Unit / Company", bus.unit)}{infoItem("Capacity", bus.capacity + " seats")}</div>
           </Card>
-          <Card t={t} title="Driver info">
-            <div className="grid grid-cols-2 gap-4">{infoItem("Driver", bus.driver || "—")}{infoItem("Phone", bus.phone || "—")}</div>
-          </Card>
+          <DriverCard t={t} bus={bus} info={busInfo && busInfo[bus.id]} onSave={(patch) => { onSetBusField(bus.id, patch); toast("Driver details saved"); }} />
         </div>
 
-        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} costMeta={costMeta} costPhase={costPhase} onSyncCosts={onSyncCosts} />
+        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} costMeta={costMeta} costPhase={costPhase} onSyncCosts={onSyncCosts}
+          budget={busInfo && busInfo[bus.id]} onSetBudget={(patch) => { onSetBusField(bus.id, patch); toast("Budget saved"); }} />
 
         <Card t={t} title={`Employees (${emps.length})`} hint="Latest punch status · click an employee for full details">
           {emps.length ? <div className="flex flex-wrap gap-1.5">{emps.slice().sort((a, b) => { const r = (st) => (st === "A" ? 0 : st === "P" ? 2 : 1); return r(day[a.id]) - r(day[b.id]); }).map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
@@ -1252,13 +1832,45 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
             : <div className="text-sm" style={{ color: t.muted }}>No employees mapped to this bus.</div>}
         </Card>
 
-        {/* Stops — populated later from the Optimiser's route plan; blank for now */}
-        <Card t={t} title="Stops" hint="The pickup/drop stops assigned to this bus. These will be filled in automatically once the route is allotted through the Optimiser.">
-          <div className="rounded-xl border border-dashed py-8 text-center text-sm" style={{ borderColor: t.border, color: t.muted }}>
-            <MapPin size={18} className="inline-block mb-1.5 opacity-60" />
-            <div>No stops allotted yet.</div>
-            <div className="text-xs mt-0.5">Assign a route in the Optimiser tab and the stops will appear here.</div>
-          </div>
+        {/* Stops — the route allotted to this bus in the finalised plan, in pickup order */}
+        <Card t={t} title={`Stops${bus.planStops && bus.planStops.length ? ` (${bus.planStops.length})` : ""}`}
+          hint={bus.planStops && bus.planStops.length
+            ? `Pickup order from the finalised plan — ${bus.planKm} km, ${bus.planRide} min for the first rider, ${bus.planRiders} riders allotted.`
+            : "The pickup/drop stops assigned to this bus. These are filled in from the finalised plan."}>
+          {bus.planStops && bus.planStops.length ? (
+            <>
+              <div className="rounded-xl overflow-hidden" style={{ border: "1px solid " + t.border }}>
+                <table className="w-full text-sm">
+                  <thead><tr style={{ background: t.surface2 }}>
+                    {["#", "Stop", "Riders", "Coordinates"].map((h, i) => (
+                      <th key={h} className={"py-2 px-3 text-xs font-semibold uppercase tracking-wider " + (i === 2 ? "text-right" : "text-left")} style={{ color: t.muted }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {bus.planStops.map((s, i) => (
+                      <tr key={i} style={{ borderTop: "1px solid " + t.border }}>
+                        <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>{i + 1}</td>
+                        <td className="py-2 px-3" style={{ color: t.text }}>{s.name}</td>
+                        <td className="py-2 px-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{s.hc}</td>
+                        <td className="py-2 px-3 tabular-nums text-xs" style={{ color: t.muted }}>{(+s.lat).toFixed(5)}, {(+s.lng).toFixed(5)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex flex-wrap items-center gap-4 mt-3 text-sm">
+                <div>Riders on the route: <b style={{ color: t.text }}>{bus.planStops.reduce((s, x) => s + (+x.hc || 0), 0)}</b></div>
+                <div style={{ color: t.muted }}>Seats: {bus.capacity}</div>
+                <div className="ml-auto text-xs" style={{ color: t.muted }}>Stops are listed in pickup order, farthest rider first.</div>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-xl border border-dashed py-8 text-center text-sm" style={{ borderColor: t.border, color: t.muted }}>
+              <MapPin size={18} className="inline-block mb-1.5 opacity-60" />
+              <div>No stops allotted yet.</div>
+              <div className="text-xs mt-0.5">This bus has no route in the finalised plan.</div>
+            </div>
+          )}
         </Card>
 
         <Card t={t} title="Metrics for this bus" hint="Your custom metrics, computed for this bus over the selected range. Create or edit them in the Metrics tab.">
@@ -1316,7 +1928,7 @@ function ComparePanel({ t, label, buses, records, employees, attendance, setting
   // "By company" = one aggregated line per company (Gainup / Technotek). "By bus" = one line per picked bus.
   let series = [];
   if (cfg.group === "company") {
-    series = (unit === "all" ? UNITS : [unit]).map((u) => ({ key: u, label: u, color: u === "Gainup" ? t.gainup : t.techno, company: u }));
+    series = (unit === "all" ? UNITS : [unit]).map((u) => ({ key: u, label: u, color: unitColor(t, u), company: u }));
   } else if (cfg.group === "bus") {
     const chosen = scopeBuses.filter((b) => cfg.buses.includes(b.id)); // only what's picked — no auto-select-all
     series = chosen.map((b, i) => ({ key: b.id, label: b.vehicle, sub: b.unit + " · " + b.route, color: PIE_PALETTE[i % PIE_PALETTE.length], busId: b.id }));
@@ -1356,7 +1968,7 @@ function ComparePanel({ t, label, buses, records, employees, attendance, setting
           <div className="flex flex-wrap items-center gap-3 mb-2">
             <span className="text-xs uppercase tracking-wider" style={{ color: t.muted }}>Show</span>
             <Segmented t={t} small value={cfg.filter} onChange={(v) => setCfg({ ...cfg, filter: v })}
-              options={[["all", "All", t.primary], ["Gainup", "Gainup", t.gainup], ["Technotek", "Technotek", t.techno]]} />
+              options={[["all", "All", t.primary], ...UNITS.map((u) => [u, u, unitColor(t, u)])]} />
             <span className="text-xs" style={{ color: t.muted }}>{cfg.buses.length} selected</span>
             <button onClick={() => setCfg({ ...cfg, buses: [...new Set([...cfg.buses, ...chipBuses.map((b) => b.id)])] })} className="text-xs font-semibold" style={{ color: t.primary }}>Select all shown</button>
             {cfg.buses.length > 0 && <button onClick={() => setCfg({ ...cfg, buses: [] })} className="text-xs" style={{ color: t.muted }}>Clear</button>}
@@ -1365,7 +1977,7 @@ function ComparePanel({ t, label, buses, records, employees, attendance, setting
             {chipBuses.length === 0 ? <span className="text-xs" style={{ color: t.muted }}>No buses in the current data.</span>
               : chipBuses.map((b) => { const on = cfg.buses.includes(b.id);
                 return <button key={b.id} onClick={() => toggleBus(b.id)} title={b.unit} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition" style={{ background: on ? t.primarySoft : "transparent", border: "1px solid " + (on ? t.primary : t.border), color: on ? t.text : t.muted }}>
-                  <span className="w-2 h-2 rounded-sm" style={{ background: b.unit === "Gainup" ? t.gainup : t.techno }} />{b.vehicle}</button>; })}
+                  <span className="w-2 h-2 rounded-sm" style={{ background: unitColor(t, b.unit) }} />{b.vehicle}</button>; })}
           </div>
         </div>
       )}
@@ -1444,7 +2056,7 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
   const busData = cfg.view === "whole" ? wholeData : perBusData;
 
   const seriesKeys = cfg.axis === "time" ? (unit === "all" ? ["Gainup", "Technotek", "Combined"] : [unit]) : ["value"];
-  const colorFor = (k) => (k === "Gainup" ? t.gainup : k === "Technotek" ? t.techno : t.primary);
+  const colorFor = (k) => (UNITS.includes(k) ? unitColor(t, k) : t.primary);
   const data = cfg.axis === "time" ? timeData : busData;
   const valLabel = formula.unit === "₹" ? "₹" : formula.unit === "%" ? "%" : "";
 
@@ -1523,14 +2135,14 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
       {AvgLine()}
       {cfg.axis === "bus"
         ? <Bar dataKey="value" name={formula.name} radius={[8, 8, 2, 2]} maxBarSize={70} animationDuration={900} animationEasing="ease-out">
-            {busData.map((d, i) => <Cell key={i} fill={`url(#${gid("b" + (d.unit === "Gainup" ? "Gainup" : "Technotek"))})`} stroke={d.unit === "Gainup" ? t.gainup : t.techno} strokeWidth={1} />)}
+            {busData.map((d, i) => <Cell key={i} fill={`url(#${gid("b" + (d.unit === "Gainup" ? "Gainup" : "Technotek"))})`} stroke={unitColor(t, d.unit)} strokeWidth={1} />)}
             <LabelList dataKey="value" position="top" formatter={fmtShort} fill={t.muted} fontSize={10} fontWeight={600} />
           </Bar>
         : seriesKeys.map((k) => <Bar key={k} dataKey={k} name={k} fill={`url(#${gid("b" + k)})`} stroke={colorFor(k)} strokeWidth={1} radius={[6, 6, 2, 2]} maxBarSize={36} animationDuration={900} animationEasing="ease-out" />)}
     </BarChart></ResponsiveContainer>
   );
   else if (cfg.type === "pie") {
-    const pieData = (cfg.axis === "bus" ? busData.map((d) => ({ name: d.name, value: Math.max(0, d.value), color: d.unit === "Gainup" ? t.gainup : t.techno }))
+    const pieData = (cfg.axis === "bus" ? busData.map((d) => ({ name: d.name, value: Math.max(0, d.value), color: unitColor(t, d.unit) }))
       : timeData.filter((d) => d.Combined != null).map((d, i) => ({ name: d.name, value: Math.max(0, d.Combined), color: PIE_PALETTE[i % PIE_PALETTE.length] })));
     const total = pieData.reduce((a, b) => a + b.value, 0);
     chart = (
@@ -1557,7 +2169,7 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
         <YAxis type="number" dataKey="value" name={formula.name} {...yTick} />
         <Tooltip content={TTs} cursor={{ stroke: t.border, strokeDasharray: "4 4" }} />
         {AvgLine()}
-        <Scatter data={busData} animationDuration={900} animationEasing="ease-out" shape={(p) => <circle cx={p.cx} cy={p.cy} r={9} fill={p.payload.unit === "Gainup" ? t.gainup : t.techno} fillOpacity={0.5} stroke={p.payload.unit === "Gainup" ? t.gainup : t.techno} strokeWidth={2} />} />
+        <Scatter data={busData} animationDuration={900} animationEasing="ease-out" shape={(p) => <circle cx={p.cx} cy={p.cy} r={9} fill={unitColor(t, p.payload.unit)} fillOpacity={0.5} stroke={unitColor(t, p.payload.unit)} strokeWidth={2} />} />
       </ScatterChart></ResponsiveContainer>
     );
     else { const pts = timeData.filter((d) => d.Combined != null).map((d, i) => ({ idx: i, name: d.name, value: d.Combined }));
@@ -1601,7 +2213,7 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
               <div className="flex flex-wrap items-center gap-3 mb-2">
                 <span className="text-xs uppercase tracking-wider" style={{ color: t.muted }}>Show</span>
                 <Segmented t={t} small value={cfg.filter} onChange={(v) => setCfg({ ...cfg, filter: v })}
-                  options={[["all", "All", t.primary], ["Gainup", "Gainup", t.gainup], ["Technotek", "Technotek", t.techno]]} />
+                  options={[["all", "All", t.primary], ...UNITS.map((u) => [u, u, unitColor(t, u)])]} />
                 <span className="text-xs" style={{ color: t.muted }}>{selBuses.length} selected</span>
                 <button onClick={() => setCfg({ ...cfg, buses: [...new Set([...cfg.buses, ...chipBuses.map((b) => b.id)])] })} className="text-xs font-semibold" style={{ color: t.primary }}>Select all shown</button>
                 {cfg.buses.length > 0 && <button onClick={() => setCfg({ ...cfg, buses: [] })} className="text-xs" style={{ color: t.muted }}>Clear</button>}
@@ -1610,7 +2222,7 @@ function EquationChart({ t, formula, unit, buses, records, employees, attendance
                 {chipBuses.length === 0 ? <span className="text-xs" style={{ color: t.muted }}>No buses in the current data.</span>
                   : chipBuses.map((b) => { const on = cfg.buses.includes(b.id);
                     return <button key={b.id} onClick={() => toggleBus(b.id)} title={b.unit} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition" style={{ background: on ? t.primarySoft : "transparent", border: "1px solid " + (on ? t.primary : t.border), color: on ? t.text : t.muted }}>
-                      <span className="w-2 h-2 rounded-sm" style={{ background: b.unit === "Gainup" ? t.gainup : t.techno }} />{b.vehicle}</button>; })}
+                      <span className="w-2 h-2 rounded-sm" style={{ background: unitColor(t, b.unit) }} />{b.vehicle}</button>; })}
               </div>
             </>
           )}
@@ -1830,8 +2442,20 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
 
       <Card t={t} title="ERP connection" hint="Live buses, employees and attendance from the ERP (VehicleEmpMapDetails). Auto-sync keeps the dashboard current; your per-bus cost cards, custom metrics and settings are always kept.">
         <div className="flex items-center justify-between py-2 gap-4" style={rowStyle}>
-          <div><div className="font-semibold" style={{ color: t.text }}>Auto-sync (daily)</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>When on, the dashboard fetches from the ERP once a day — on the first open — and serves that data until the day ends. Turn off to freeze on the last pull; the sync pill always fetches on demand.</div></div>
+          <div><div className="font-semibold" style={{ color: t.text }}>Auto-sync</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>When on, the dashboard re-fetches from the ERP on the interval below and serves the stored snapshot in between. Turn off to freeze on the last pull; the sync pill always fetches on demand.</div></div>
           <div className="shrink-0"><Switch t={t} label="Auto-sync from ERP" checked={settings.erpAuto !== false} onChange={(v) => setSettings({ ...settings, erpAuto: v })} /></div>
+        </div>
+        <div className="flex items-center justify-between py-2 gap-4" style={rowStyle}>
+          <div><div className="font-semibold" style={{ color: t.text }}>Refresh every</div><div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 520 }}>People are added to the ERP through the working day, so a once-a-day pull can sit up to 24 hours behind. The punch feed is ~26 MB, so shorter intervals cost more bandwidth.</div></div>
+          <div className="shrink-0">
+            <select value={settings.erpRefreshMin ?? 30} onChange={(e) => setSettings({ ...settings, erpRefreshMin: +e.target.value })}
+              aria-label="ERP refresh interval" className="rounded-lg px-3 py-2 text-sm outline-none"
+              style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }}>
+              {[[15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [180, "3 hours"], [0, "Once a day"]].map(([v, lab]) => (
+                <option key={v} value={v}>{lab}</option>
+              ))}
+            </select>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-3 mt-3">
           <Btn t={t} onClick={doSync} disabled={syncing}><Server size={15} /> {syncing ? "Syncing…" : "Sync now"}</Btn>
@@ -1847,7 +2471,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
         </div>
         {costMeta && (
           <div className="flex flex-wrap gap-x-6 gap-y-1 mt-3 text-xs" style={{ color: t.muted }}>
-            <span>Window <b style={{ color: t.text }}>{costMeta.from} → {costMeta.to}</b> (trailing 12 months)</span>
+            <span>Financial year <b style={{ color: t.text }}>{costMeta.fy}</b> ({costMeta.from} → {costMeta.to})</span>
             <span>Costed buses <b style={{ color: t.text }}>{costMeta.vehicles}</b></span>
             <span>Cost lines <b style={{ color: t.text }}>{costMeta.used}</b> of {costMeta.rows}</span>
             <span>Total <b style={{ color: t.text }}>{inr(costMeta.total)}</b></span>
@@ -1855,7 +2479,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
           </div>
         )}
         <div className="text-xs mt-3" style={{ color: t.muted }}>
-          A line counts once it is approved — an unapproved line carries a zero amount and is left out. Rented buses have no cost lines in this feed. <b style={{ color: t.text }}>Diesel and driver salary are in neither ERP feed</b>, so per-bus totals are standing costs only.
+          Costs cover the financial year (1 April → 31 March), the same year the ERP plans against — so early in the year the total is genuinely part-year. A line counts once it is approved; an unapproved line carries a zero amount and is left out. Rented buses have no cost lines in this feed. <b style={{ color: t.text }}>Diesel and driver salary are in neither ERP feed</b>, so per-bus totals are standing costs only.
           {costMeta && costMeta.heads && costMeta.heads.length ? ` Heads in this pull: ${costMeta.heads.join(", ")}.` : ""}
         </div>
       </Card>
@@ -1905,11 +2529,16 @@ export default function App() {
   const [costProfiles, setCostProfiles] = useState({});   // vehicle -> cost profile
   const [costMeta, setCostMeta] = useState(null);         // { from, to, vehicles, total, ... }
   const [costStatus, setCostStatus] = useState({ phase: "idle", at: null, msg: "" });
+  const [plan, setPlan] = useState(null);                 // finalised route plan (static asset)
+  const [ledger, setLedger] = useState([]);              // allotted / received entries (not in the ERP)
+  const [busInfo, setBusInfo] = useState({});             // vehicle -> { driver, phone, budgetAmount, budgetPeriod }
   const [formulas, setFormulas] = useState([]);
   const [variables, setVariables] = useState([]);
-  const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true });
+  const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true, erpRefreshMin: 30 });
   const [erpStatus, setErpStatus] = useState({ phase: "idle", at: null, msg: "", progress: null }); // idle|syncing|ok|error — live ERP connection; progress = {done,total} routes on first load
   const busesRef = useRef([]); // current fleet, read inside the stable syncErp callback
+  const staleCostShape = useRef(false); // stored profiles predate the current COST_SHAPE
+  const staleEmployees = useRef(false); // stored employees predate a field we now read (shift)
   const [loaded, setLoaded] = useState(false);
   const [toastMsg, setToastMsg] = useState("");
   const toastTimer = useRef();
@@ -1984,13 +2613,19 @@ export default function App() {
       const att = (await Store.get("attendance")) || {};
       const hasData = b && b.length && (recs.length || Object.keys(att).length);
       if (schema === SCHEMA && hasData) {
-        setBuses(b); setRecords(recs); setAttendance(att); setEmployees((await Store.get("employees")) || []); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
+        b.forEach((x) => { x.unit = canonUnit(x.unit); });   // pre-rename snapshots
+        const emps = (await Store.get("employees")) || [];
+        // employees stored before the shift field existed can't answer "which shift?" —
+        // one silent refresh fills it rather than leaving the board claiming no riders
+        if (emps.length && !emps.some((e) => e.shift && e.unit && e.lat != null)) staleEmployees.current = true;
+        setBuses(b); setRecords(recs); setAttendance(att); setEmployees(emps); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
         const st = (await Store.get("settings")) || {};
         if (!st.bands || !st.bands.length) st.bands = DEFAULT_BANDS.map((x) => ({ ...x }));
         if (st.workingDays == null) st.workingDays = 312;
         if (st.showNetValue == null) st.showNetValue = true;
         if (!st.holidays) st.holidays = [];
         if (st.erpAuto == null) st.erpAuto = true;
+        if (st.erpRefreshMin == null) st.erpRefreshMin = 30;
         setSettings(st);
       } else {
         // No stored fleet yet — never seed dummy data. Keep only the config defaults
@@ -2000,10 +2635,14 @@ export default function App() {
       }
       // Costs are stored alongside the fleet so the last pull is on screen before the
       // first fetch of the day lands; they refresh with it.
+      setBusInfo((await Store.get("busInfo")) || {});
+      setLedger(((await Store.get("costLedger")) || []).map((e) =>
+        (e.scope === "unit" ? { ...e, target: canonUnit(e.target) } : e)));
       const cp = await Store.get("costProfiles");
       if (cp && cp.profiles) {
         setCostProfiles(cp.profiles); setCostMeta(cp.meta || null);
         if (cp.at) setCostStatus({ phase: "ok", at: cp.at, msg: `${Object.keys(cp.profiles).length} buses costed` });
+        if (cp.shape !== COST_SHAPE) staleCostShape.current = true;   // refetch once the app is up
       }
       const th = await Store.get("theme"); if (th && THEMES[th]) setThemeName(th); // ignore any removed/old theme name
       setLoaded(true);
@@ -2020,11 +2659,64 @@ export default function App() {
   useEffect(() => { if (loaded) Store.set("variables", variables); }, [variables, loaded]);
   useEffect(() => { if (loaded) Store.set("settings", settings); }, [settings, loaded]);
   useEffect(() => { if (loaded) Store.set("theme", themeName); }, [themeName, loaded]);
+  useEffect(() => { if (loaded) Store.set("busInfo", busInfo); }, [busInfo, loaded]);
+  useEffect(() => { if (loaded) Store.set("costLedger", ledger); }, [ledger, loaded]);
 
-  // records the tabs actually read: base records with each bus's cost profile overlaid as daily spend/budget
+  // The finalised route plan ships with the app (public/) — one fetch, no persistence needed.
+  useEffect(() => {
+    fetch("/finalised_plan.json")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((p) => { if (p && Array.isArray(p.routes)) setPlan(p); })
+      .catch(() => {});   // no plan file → dashboard runs exactly as before
+  }, []);
+  /* Per-SERVICE roll-up, DERIVED from the synced employees rather than captured during the
+     sync: on a day that is already synced the stored snapshot is served and syncErp never
+     runs, so anything captured only at sync time would be missing and every service would
+     read "needs riders" against a feed that has them.
+
+     Each rider lands in exactly one service (serviceIdFor: unit beats shift), so the counts
+     sum to the fleet instead of Zenwear's riders also being counted inside 9 am General. */
+  const erpShiftDate = useMemo(() => Object.keys(attendance || {}).sort().pop() || "", [attendance]);
+  const erpRoll = useMemo(() => {
+    const day = (attendance || {})[erpShiftDate] || {};
+    const unitOfBus = new Map((buses || []).map((b) => [b.id, b.unit]));
+    const out = {};
+    (employees || []).forEach((e) => {
+      // the rider's own unit is authoritative; a bus's unit is only the majority of who
+      // rides it, so a Zenwear rider on a mostly-Technotek bus would land in the wrong service
+      const id = serviceIdFor(e.unit || unitOfBus.get(e.busId), e.shift);
+      if (!id) return;
+      let g = out[id];
+      if (!g) { g = out[id] = { riders: 0, buses: new Set(), present: 0, shifts: {} }; }
+      g.riders++;
+      if (e.busId) g.buses.add(e.busId);
+      if (day[e.id] === "P") g.present++;
+      if (e.shift) g.shifts[e.shift] = (g.shifts[e.shift] || 0) + 1;
+    });
+    Object.values(out).forEach((g) => { g.buses = g.buses.size; });
+    return out;
+  }, [employees, attendance, buses, erpShiftDate]);
+
+  const planByVeh = useMemo(() => {
+    const m = new Map();
+    (plan ? plan.routes : []).forEach((r) => m.set(canonVehicle(r.name), r));
+    return m;
+  }, [plan]);
+
+  // records the tabs actually read: base records with each bus's cost profile overlaid as daily
+  // spend/budget. Buses/profiles first pass through the finalised plan: route km + plan-variable
+  // costs (diesel / rental tariff) join the ERP standing costs (see withPlanCosts).
   const wd = effWorkingDays(settings);
-  const busCosts = costProfiles;   // keyed by vehicle reg, which is also the bus id
-  const effRecords = useMemo(() => mergeCostsIntoRecords(records, buses, attendance, busCosts, wd), [records, buses, attendance, busCosts, wd]);
+  const { buses: effBuses, profiles: busCosts } = useMemo(() => {
+    const planned = withPlanCosts(buses, costProfiles, planByVeh);
+    return applyBusInfo(planned.buses, planned.profiles, busInfo);
+  }, [buses, costProfiles, planByVeh, busInfo]);
+  const setBusField = useCallback((busId, patch) =>
+    setBusInfo((prev) => ({ ...prev, [busId]: { ...prev[busId], ...patch } })), []);
+  const effRecords = useMemo(() => mergeCostsIntoRecords(records, effBuses, attendance, busCosts, wd), [records, effBuses, attendance, busCosts, wd]);
+  const planSummary = useMemo(() => plan && plan.overall
+    ? { ...plan.overall, matched: buses.filter((b) => planByVeh.has(b.id)).length }
+    : null, [plan, buses, planByVeh]);
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
@@ -2039,9 +2731,9 @@ export default function App() {
       const at = Date.now();
       setCostProfiles(profiles); setCostMeta(meta);
       setCostStatus({ phase: "ok", at, msg: `${meta.vehicles} buses · ${meta.used} cost lines` });
-      Store.set("costProfiles", { profiles, meta, at });
+      Store.set("costProfiles", { profiles, meta, at, shape: COST_SHAPE });
       Store.set("lastCostSync", at);
-      if (!silent) toast(`Costing synced · ${meta.vehicles} buses · ${inr(meta.total)} over ${meta.from} → ${meta.to}`);
+      if (!silent) toast(`Costing synced · ${meta.vehicles} buses · ${inr(meta.total)} in FY ${meta.fy}`);
       return meta;
     } catch (e) {
       setCostStatus({ phase: "error", at: Date.now(), msg: e.message || String(e) });
@@ -2076,7 +2768,8 @@ export default function App() {
         });
       }
       setBuses(data.buses); setEmployees(data.employees); setAttendance(data.attendance); setRecords(data.records);
-      Store.set("lastErpSync", Date.now()); // daily-fetch marker: today's data is now on disk
+
+      Store.set("lastErpSync", Date.now()); // freshness marker the refresh interval measures against
       setErpStatus({ phase: "ok", at: Date.now(), msg: `${data.buses.length} buses · ${data.employees.length} employees`, progress: null });
       const cm = await costing;
       if (!silent) {
@@ -2090,39 +2783,48 @@ export default function App() {
     }
   }, [syncCosts]);
 
-  // Daily connection: fetch from the ERP ONCE per calendar day — on the first open of the day.
-  // The stored snapshot then serves the whole day; a rollover watcher pulls the new day's feed
-  // if the app is left open past midnight. Manual sync (pill / Try again / Settings) always fetches.
+  /* Live connection: re-fetch every `erpRefreshMin` minutes (default 30), not once a day.
+     The ERP is edited continuously — riders are onboarded into shifts and units through the
+     working day — so a once-a-day pull left the dashboard up to 24 h stale. The stored
+     snapshot still paints instantly on open; the refresh then lands quietly behind it.
+     Set the interval to 0 to keep the old once-a-day behaviour. */
   useEffect(() => {
     if (!loaded || !settings.erpAuto) return;
     let cancelled = false;
     const sameDay = (a, b) => { const x = new Date(a), y = new Date(b); return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate(); };
-    (async () => {
+    const everyMs = Math.max(0, +settings.erpRefreshMin || 0) * 60_000;
+    // is the stored pull still fresh enough to skip a fetch?
+    const fresh = (last) => {
+      if (!last) return false;
+      return everyMs ? Date.now() - last < everyMs : sameDay(last, Date.now());
+    };
+    const tick = async ({ first = false } = {}) => {
       const last = await Store.get("lastErpSync");
       if (cancelled) return;
-      if (last && sameDay(last, Date.now()) && busesRef.current.length > 0) {
-        setErpStatus({ phase: "ok", at: last, msg: "today's data · loaded " + fmtClock(last), progress: null });
-        // Punch records are today's, but costing is its own feed on its own marker — a day
-        // where only the costing pull failed still gets caught up here.
+      if (fresh(last) && busesRef.current.length > 0 && !staleEmployees.current) {
+        if (first) setErpStatus({ phase: "ok", at: last, msg: "loaded " + fmtClock(last), progress: null });
+        // costing is its own feed on its own marker — a day where only that pull failed
+        // still gets caught up here
         const lastCost = await Store.get("lastCostSync");
-        if (!cancelled && (!lastCost || !sameDay(lastCost, Date.now()))) syncCosts({ silent: true });
-        return; // already fetched today — serve the stored snapshot
+        if (!cancelled && (staleCostShape.current || !fresh(lastCost))) {
+          staleCostShape.current = false;
+          syncCosts({ silent: true });
+        }
+        return;
       }
+      staleEmployees.current = false;
       syncErp({ silent: true });
-    })();
-    const id = setInterval(async () => {
-      const last = await Store.get("lastErpSync");
-      if (!last || !sameDay(last, Date.now())) return syncErp({ silent: true });
-      const lastCost = await Store.get("lastCostSync");
-      if (!lastCost || !sameDay(lastCost, Date.now())) syncCosts({ silent: true });
-    }, 10 * 60_000);
+    };
+    tick({ first: true });
+    // check often; `fresh()` decides whether a check actually costs a fetch
+    const id = setInterval(tick, Math.min(everyMs || 10 * 60_000, 5 * 60_000));
     return () => { cancelled = true; clearInterval(id); };
-  }, [loaded, settings.erpAuto, syncErp, syncCosts]);
+  }, [loaded, settings.erpAuto, settings.erpRefreshMin, syncErp, syncCosts]);
 
   // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
   // Equations is retired; Metrics lives inside Settings now.
-  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", Route], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
-  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", compare: "Compare", optimiser: "", settings: "Settings" };
+  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", Route], ["costs", "Cost report", IndianRupee], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
+  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", costs: "Cost report", compare: "Compare", optimiser: "", settings: "Settings" };
 
   return (
     <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "'Inter Variable', Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)" }}>
@@ -2162,10 +2864,14 @@ export default function App() {
         </div>}
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (
           <>
-            {tab === "live" && <LiveView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} erpPhase={erpStatus.phase} onSync={() => syncErp()} />}
-            {tab === "bus" && <BusView t={t} unit="all" buses={buses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
-            {tab === "compare" && <CompareView t={t} unit={unit} buses={buses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
-            {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} />}
+            {tab === "live" && <LiveView t={t} unit={unit} buses={effBuses} records={effRecords} planSummary={planSummary} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} erpPhase={erpStatus.phase} onSync={() => syncErp()} />}
+            {tab === "bus" && <BusView t={t} unit="all" buses={effBuses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()} busInfo={busInfo} onSetBusField={setBusField} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
+            {tab === "costs" && <CostReportView t={t} buses={effBuses} records={effRecords} employees={employees} attendance={attendance} settings={settings}
+              busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()}
+              ledger={ledger} onAddLedger={(e) => setLedger((L) => [...L, e])} onDelLedger={(id) => setLedger((L) => L.filter((x) => x.id !== id))}
+              busInfo={busInfo} onSetBusField={setBusField} toast={toast} />}
+            {tab === "compare" && <CompareView t={t} unit={unit} buses={effBuses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
+            {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} erpEmployees={employees} erpShifts={erpRoll} erpShiftDate={erpShiftDate} />}
             {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} onSyncCosts={() => syncCosts()} costStatus={costStatus} costMeta={costMeta} toast={toast} themeName={themeName} setThemeName={setThemeName}
               formulas={formulas} variables={variables}
               onAddMetric={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}

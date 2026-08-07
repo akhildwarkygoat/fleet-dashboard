@@ -6,6 +6,10 @@
  *   /api/general/VehicleEmpMapDetails         employee punch records
  *   /api/general/VehicleEmpMapProjectDetails  vehicle costing (approved cost lines)
  *
+ * Host: http://life.gainup.in:8089 (see vite.config.js). The old 172.16.10.169 address is
+ * the same server on the office LAN — it does not resolve from outside, so the public
+ * hostname is used instead and the dashboard works on or off site.
+ *
  * In dev the browser calls them through the Vite proxy at /erp (see vite.config.js);
  * in prod route the same /erp path through the backend passthrough.
  *
@@ -51,11 +55,23 @@ function normDate(s) {
   return m ? `${m[3]}-${m[2]}-${m[1]}` : "";
 }
 
-/* The dashboard's two-unit split (Gainup / Technotek) is a BRAND split, which the
-   ERP carries in Compname ("TECHNOTEK - WOVEN - I", "GAINUP - SOCKS - I", …), not in
-   the legal-entity field Comp_New. Default anything non-Technotek to Gainup. */
-function unitOf(compname) {
-  return /technotek/i.test(compname || "") ? "Technotek" : "Gainup";
+/* The ERP's Shift field is free text and arrives with inconsistent trailing spaces, so the
+   same shift can appear as "GENERAL SHIFT - 9 " and "GENERAL SHIFT - 9". Collapse runs of
+   whitespace before ever grouping on it. */
+export const normShift = (s) => String(s || "").replace(/\s+/g, " ").trim();
+
+/* The dashboard's unit split is a BRAND/SITE split. The ERP carries it in Compname
+   ("TECHNOTEK - WOVEN - I", "GAINUP - SOCKS - I", "SUBBULAPURAM", …) and the legal
+   entity separately in Comp_New. Default anything unrecognised to Gainup.
+
+   ZENWEAR is the third entity, added 05-08-2026 when TECHNOTEK - WOVEN - II was re-tagged
+   Compname "SUBBULAPURAM" / Comp_New "ZENWEAR" — the site is Subbulapuram, the company is
+   Zenwear, and the dashboard shows the company. Matched on EITHER field and checked first,
+   so it wins over the Technotek/Gainup fallbacks whichever way the ERP tags a row. */
+function unitOf(compname, compNew) {
+  const c = compname || "", e = compNew || "";
+  if (/zenwear/i.test(e) || /zenwear|subbulapuram/i.test(c)) return "Zenwear";
+  return /technotek/i.test(c) ? "Technotek" : "Gainup";
 }
 
 /* Old registrations still baked into saved plans, mapped to the name the ERP (and so the live
@@ -68,6 +84,8 @@ const PLAN_VEHICLE_ALIASES = {
   TN57BK3434: "TN57CK3434",
 };
 export const canonVehicle = (veh) => PLAN_VEHICLE_ALIASES[veh] || veh;
+
+const numOrNull = (v) => { const n = parseFloat(v); return isFinite(n) && n !== 0 ? n : null; };
 
 const mode = (obj) => {
   const e = Object.entries(obj).sort((a, b) => b[1] - a[1])[0];
@@ -127,20 +145,25 @@ const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
 /**
  * Fold costing rows into one read-only profile per vehicle.
  *
- * Window: the 12 months ending at `asOf`, by each line's From_Date. A trailing year
- * is what makes the figure a running cost — it always holds four quarters of road tax
- * and one insurance renewal, and it rolls forward on its own. Summing a financial year
- * instead would read low for most of the year, because a period that has not started
- * yet has no row in the feed.
+ * Window: the INDIAN FINANCIAL YEAR (1 April → 31 March) that `asOf` falls in, by each
+ * line's From_Date — the same year the ERP itself plans and approves against, so a total
+ * here reconciles with the ERP's own FY figures.
+ *
+ * Note this is FY-to-date in practice: a period that has not started yet has no row in
+ * the feed, so early in the financial year the total is genuinely lower than a full
+ * year's cost. That is the ERP's position, not a gap in the reading.
  *
  * Returns { profiles: { [vehicle]: profile }, meta: {...} }; a vehicle with no
  * approved spend in the window is absent rather than present with zeros.
  */
-export function mapErpCosts(rows, { asOf = Date.now(), days = 365 } = {}) {
-  // whole calendar days at both ends: asOf mid-afternoon must not clip a line that started
-  // at midnight exactly `days` ago, and setDate() keeps month/DST boundaries honest
-  const to = new Date(asOf); to.setHours(23, 59, 59, 999);
-  const from = new Date(to); from.setDate(from.getDate() - (days - 1)); from.setHours(0, 0, 0, 0);
+export function mapErpCosts(rows, { asOf = Date.now() } = {}) {
+  // the financial year `asOf` sits in: April→March, whole calendar days at both ends so a
+  // line starting at midnight on 1 April is never clipped by the time of day
+  const a = new Date(asOf);
+  const fyStart = a.getMonth() >= 3 ? a.getFullYear() : a.getFullYear() - 1;
+  const from = new Date(fyStart, 3, 1); from.setHours(0, 0, 0, 0);
+  const to = new Date(fyStart + 1, 2, 31); to.setHours(23, 59, 59, 999);
+  const fy = `${fyStart}-${String((fyStart + 1) % 100).padStart(2, "0")}`;
   const tally = new Map();  // veh -> { head -> { total, qty, rated, lines } }
   const meta = { rows: (rows || []).length, used: 0, skippedUnapproved: 0, outsideWindow: 0, total: 0, heads: new Set() };
 
@@ -156,11 +179,21 @@ export function mapErpCosts(rows, { asOf = Date.now(), days = 365 } = {}) {
     let byHead = tally.get(veh);
     if (!byHead) { byHead = new Map(); tally.set(veh, byHead); }
     let cell = byHead.get(head);
-    if (!cell) { cell = { total: 0, qty: 0, rated: 0, lines: 0 }; byHead.set(head, cell); }
+    if (!cell) { cell = { total: 0, qty: 0, rated: 0, lines: 0, rows: [] }; byHead.set(head, cell); }
     cell.total += amount;
     cell.lines++;
     const rate = numVal(r.Rate);
     if (rate > 0) { cell.qty += amount / rate; cell.rated += amount; }   // rated = the part qty covers
+    // the individual ERP lines behind the rolled-up figure, so the card can show its working
+    const end = erpDateVal(r.To_Date), appr = erpDateVal(r.Approved_Date);
+    cell.rows.push({
+      desc: String(r.Description || head).trim(),
+      period: String(r.Period_Name || "").trim(),
+      from: isoLocal(start), to: end ? isoLocal(end) : "",
+      rate, qty: rate > 0 ? Math.round((amount / rate) * 100) / 100 : null, amount,
+      approved: appr ? isoLocal(appr) : "",
+      order: String(r.Order_No || "").trim(),
+    });
     meta.used++; meta.total += amount;
     meta.heads.add(head);
   }
@@ -184,6 +217,7 @@ export function mapErpCosts(rows, { asOf = Date.now(), days = 365 } = {}) {
         ...(spec.qty ? { quantity: useQty ? Math.round(cell.qty * 100) / 100 : 1 } : {}),
         period: "year",
         erpLines: cell.lines,
+        detail: cell.rows.sort((a, b) => (a.from < b.from ? 1 : -1)),   // newest period first
       });
     }
     lines.sort((a, b) => b.amount * (b.quantity || 1) - a.amount * (a.quantity || 1));
@@ -197,7 +231,7 @@ export function mapErpCosts(rows, { asOf = Date.now(), days = 365 } = {}) {
 
   return {
     profiles,
-    meta: { ...meta, heads: [...meta.heads].sort(), vehicles: Object.keys(profiles).length, from: isoLocal(from), to: isoLocal(to) },
+    meta: { ...meta, heads: [...meta.heads].sort(), vehicles: Object.keys(profiles).length, fy, from: isoLocal(from), to: isoLocal(to) },
   };
 }
 
@@ -230,7 +264,7 @@ export function mapErpToDashboard(rows) {
     if (!bs) { bs = { seat: {}, unit: {}, type: new Set(), mil: {} }; buses.set(veh, bs); }
     const seat = String(r.Seat || r.Seat_New || "").trim();
     if (seat && seat !== "0") bs.seat[seat] = (bs.seat[seat] || 0) + 1;
-    const u = unitOf(r.Compname);
+    const u = unitOf(r.Compname, r.Comp_New);
     bs.unit[u] = (bs.unit[u] || 0) + 1;
     if (r.Type) bs.type.add(/rent/i.test(r.Type) ? "Rental" : "Owned");
     const mil = String(r.Mileage || "").trim();   // per-bus km/L (ERP column)
@@ -251,6 +285,11 @@ export function mapErpToDashboard(rows) {
 
   const employees = [...empLatest.entries()].map(([emp, { r }]) => ({
     id: emp,
+    shift: normShift(r.Shift),        // free-text ERP group ("GENERAL SHIFT - 9", "ROTATIONAL SHIFT", …)
+    unit: unitOf(r.Compname, r.Comp_New),   // the rider's OWN unit, not their bus's majority unit
+    // home GPS + place, so a service's stop network can be derived in the browser
+    lat: numOrNull(r.Latitude), lng: numOrNull(r.Longitude),
+    locality: (r.Locality || r.Village || "").trim(),
     code: (r.tno || emp).trim(),
     name: (r.Name || "").trim() || emp,
     busId: (r.VehName || r.Veh_Mas || "").trim(),

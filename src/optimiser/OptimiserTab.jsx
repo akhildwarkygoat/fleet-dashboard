@@ -22,13 +22,18 @@ import EnlargeableMap from "./EnlargeableMap.jsx";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Card, Btn, Field, TextInput, SelectInput, Tile, Empty, StatusPill, Segmented, makeTooltip, routeColorMap, PALETTE } from "./ui.jsx";
+import { ServiceBoard, TimingsView } from "./TimingsView.jsx";
+import { stopsForRiders, coverageOf } from "./serviceStops.js";
+import { serviceNeed, serviceIdFor, erpStatsFor } from "./services.js";
 
 const inr = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
 // --- company assignment: a bus belongs to a company ---
 // Default ownership seeded from "All vehicles (JUNE).xlsx" (Technotek / Gainup sheets).
 // Buses listed on both sheets are assigned to the sheet with the higher June headcount.
-const COMPANIES = ["Technotek", "Gainup"];
+/* Units a bus can belong to. Zenwear joined 05-08-2026 when the ERP re-tagged
+   TECHNOTEK - WOVEN - II as Compname "SUBBULAPURAM" / Comp_New "ZENWEAR". */
+const COMPANIES = ["Technotek", "Gainup", "Zenwear"];
 const BUS_COMPANY_DEFAULTS = {
   "TN57BC3636": "Technotek", "TN57CL3434": "Technotek", "TN57CK3636": "Gainup", "TN57BP3434": "Technotek",
   "TN60AQ3434": "Technotek", "TN57CB3636": "Gainup", "TN57CC3636": "Gainup", "TN58BR3434": "Gainup",
@@ -52,8 +57,16 @@ const BUS_COMPANY_DEFAULTS = {
 const BUSCO_KEY = "opt-bus-company";
 const loadBusCo = () => { try { return JSON.parse(localStorage.getItem(BUSCO_KEY) || "{}"); } catch { return {}; } };
 const saveBusCo = (m) => { try { localStorage.setItem(BUSCO_KEY, JSON.stringify(m)); } catch {} };
-const companyOf = (map, bus) => map[bus] || BUS_COMPANY_DEFAULTS[bus] || "Technotek";
-const companyColor = (t, co) => (co === "Gainup" ? t.watch : t.good);
+/* Live ERP unit per vehicle, rebuilt on every sync — this is the authority. The June
+   spreadsheet below it is a frozen snapshot that predates Zenwear, so it is only a
+   fallback for a bus the ERP has not sent today. An explicit manual assignment still
+   wins, so a deliberate override is never silently undone by a re-sync. */
+let LIVE_BUS_UNIT = {};
+export const setLiveBusUnits = (erpBuses) => {
+  LIVE_BUS_UNIT = Object.fromEntries((erpBuses || []).filter((b) => b && b.vehicle && b.unit).map((b) => [b.vehicle, b.unit]));
+};
+const companyOf = (map, bus) => map[bus] || LIVE_BUS_UNIT[bus] || BUS_COMPANY_DEFAULTS[bus] || "Technotek";
+const companyColor = (t, co) => (co === "Gainup" ? t.watch : co === "Zenwear" ? t.poor : t.good);
 const loadRouteNames = () => { try { return JSON.parse(localStorage.getItem("opt-route-names") || "{}"); } catch { return {}; } };
 const inr1 = (n) => "₹" + (n || 0).toLocaleString("en-IN", { maximumFractionDigits: 1 });
 const pct = (n) => (n || 0).toFixed(0) + "%";
@@ -129,7 +142,7 @@ function SearchInput({ t, value, onChange, placeholder, width = 240 }) {
   );
 }
 
-function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
+function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverage, calibrate = true, svc }) {
   const colorMap = routeColorMap(routes);
   const [selectedId, setSelectedId] = useState(null);
   const [checked, setChecked] = useState(() => new Set()); // multi-select: ticked stops shown on the map
@@ -139,7 +152,9 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
   const [stopVeh, setStopVeh] = useState({});
   const [planDemand, setPlanDemand] = useState(null); // authoritative effective riders from the plan (2,141)
   const PER = 20;
-  const dep = store.getDepot();
+  // a service routes from ITS OWN depot — Zenwear runs out of Subbulapuram, ~59 km
+  // south of the Batlagundu factory, so distances measured from the wrong one are useless
+  const dep = depot || store.getDepot();
 
   // stop-level metrics. "People" = the ALLOCATED roster — every ERP rider on the 71 buses
   // who has a GPS location (3,021 today). The network's per-stop headcounts are derived
@@ -149,7 +164,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
   const metrics = useMemo(() => {
     let raw = 0, dSum = 0, aSum = 0, hSum = 0;
     for (const s of stops) { const hc = s.headcount || 0; raw += hc; }
-    const regToActive = raw ? Math.min(1, JUNE_ALLOTTED / raw) : 1;
+    const regToActive = calibrate && raw ? Math.min(1, JUNE_ALLOTTED / raw) : 1;
     let effective = 0;
     for (const s of stops) {
       const hc = s.headcount || 0;
@@ -170,7 +185,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
   // 3,054 registered roster. Keyed by stop id.
   const effHead = useMemo(() => {
     const raw = stops.reduce((a, s) => a + (s.headcount || 0), 0);
-    const regToActive = raw ? Math.min(1, JUNE_ALLOTTED / raw) : 1;
+    const regToActive = calibrate && raw ? Math.min(1, JUNE_ALLOTTED / raw) : 1;
     const m = new Map();
     for (const s of stops) {
       const hc = s.headcount || 0;
@@ -228,6 +243,24 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
           </button>
         </div>
       )}
+      {coverage && (
+        <div className="rounded-xl border px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm"
+          style={{ background: coverage.newStops ? t.watchSoft : t.goodSoft, borderColor: coverage.newStops ? t.watch : t.good }}>
+          <span className="font-semibold" style={{ color: t.text }}>
+            {coverage.newStops
+              ? `${coverage.newStops} of ${coverage.stops} stops are not in the routed network yet`
+              : `All ${coverage.stops} stops are already in the routed network`}
+          </span>
+          <span style={{ color: t.muted }}>{coverage.riders.toLocaleString("en-IN")} riders · {coverage.stops} stops</span>
+          {coverage.newStops > 0 && (
+            <span style={{ color: t.muted }}>{coverage.newRiders.toLocaleString("en-IN")} riders sit at a new stop</span>
+          )}
+          <span className="text-xs ml-auto" style={{ color: t.faint }}>
+            Unmerged — one stop per distinct home GPS, nothing collapsed by radius.
+            {svc && svc.depot ? ` Depot: ${svc.depot.name}.` : ""}
+          </span>
+        </div>
+      )}
       <EnlargeableMap t={t} render={(h, big) => (
         <GMap t={t} stops={mapStops} routeColors={colorMap} depot={dep} selectedId={selectedId} onSelect={setSelectedId} height={h} scrollWheelZoom={big} />
       )} />
@@ -248,7 +281,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
                   onChange={() => setChecked((prev) => { const n = new Set(prev); const all = paged.every((s) => n.has(s.id)); paged.forEach((s) => all ? n.delete(s.id) : n.add(s.id)); return n; })}
                   style={{ accentColor: t.primary, cursor: "pointer", width: 14, height: 14 }} />
               </th>
-              {["Stop", "Vehicle", "Village", "Lat", "Lng", "Riders", "Company"].map((h, i, arr) => <th key={i} className="py-2.5 px-2 text-left text-xs font-semibold uppercase tracking-wider" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, color: t.text, fontWeight: (i === 0 || i === 2) ? 800 : 600, borderTopRightRadius: i === arr.length - 1 ? 10 : 0 }}>{h}</th>)}
+              {["Stop", "Vehicle", "Village", "Lat", "Lng", "Riders", coverage ? "From depot" : "Company"].map((h, i, arr) => <th key={i} className="py-2.5 px-2 text-left text-xs font-semibold uppercase tracking-wider" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, color: t.text, fontWeight: (i === 0 || i === 2) ? 800 : 600, borderTopRightRadius: i === arr.length - 1 ? 10 : 0 }}>{h}</th>)}
             </tr></thead>
             <tbody>
               {paged.length === 0 ? <tr><td colSpan={9} className="py-3 px-2" style={{ color: t.muted }}>{stops.length ? "No stops match." : "No stops yet."}</td></tr> :
@@ -258,13 +291,25 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh }) {
                       <input type="checkbox" checked={checked.has(s.id)} onChange={() => toggleCheck(s.id)}
                         style={{ accentColor: t.primary, cursor: "pointer", width: 14, height: 14 }} />
                     </td>
-                    <td className="py-2 px-2">{s.name}</td>
+                    <td className="py-2 px-2">
+                      {s.name}
+                      {s.isNew && <span className="text-[9px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 ml-2 align-middle"
+                        style={{ background: t.watchSoft, color: t.watch }}
+                        title="No stop within 200 m in the routed network — a distance-matrix build must add this node">New</span>}
+                      {s.isNew === false && s.nearestExistingM != null && s.nearestExistingM > 0 && (
+                        <span className="text-[10px] ml-2" style={{ color: t.faint }} title="Distance to the matching stop in the routed network">
+                          {s.nearestExistingM} m
+                        </span>
+                      )}
+                    </td>
                     <td className="py-2 px-2">{vehFor(s) ? <span className="inline-block rounded-md px-2 py-1 text-xs font-semibold tabular-nums" style={{ background: t.primarySoft, color: t.primary, border: "1px solid " + t.border }}>{vehFor(s)}</span> : <span className="text-xs" style={{ color: t.muted }}>—</span>}</td>
                     <td className="py-2 px-2">{s.village || "—"}</td>
                     <td className="py-2 px-2 tabular-nums text-xs" style={{ color: t.faint }}>{s.lat != null ? (+s.lat).toFixed(5) : "—"}</td>
                     <td className="py-2 px-2 tabular-nums text-xs" style={{ color: t.faint }}>{s.lng != null ? (+s.lng).toFixed(5) : "—"}</td>
                     <td className="py-2 px-2 tabular-nums">{s.headcount}</td>
-                    <td className="py-2 px-2">{s.company || "Gainup"}</td>
+                    <td className="py-2 px-2">{s.depotKm != null
+                      ? <span className="tabular-nums text-xs" style={{ color: t.muted }}>{s.depotKm} km</span>
+                      : (s.company || "Gainup")}</td>
                   </tr>
                 ))}
             </tbody>
@@ -481,7 +526,7 @@ function OptimiseView({ t, stops, zone, fleet, depot, toast }) {
   const from = range.from || allDates[Math.max(0, allDates.length - 30)] || "";
   const to = range.to || allDates[allDates.length - 1] || "";
   const win = (series || []).filter((s) => s.date >= from && s.date <= to);
-  const COMPANIES = ["Gainup", "Technotek"];
+  const COMPANIES = ["Gainup", "Technotek", "Zenwear"];
   const costData = win.map((s) => ({ date: s.date.slice(5), Unoptimised: s.baseline ? s.baseline.cph[costMode] : null, Optimised: optRef ? optRef.cph[costMode] : null }));
   const saveData = win.map((s) => ({ date: s.date.slice(5), Saved: s.baseline && optRef ? Math.max(0, s.baseline.cph.combined - optRef.cph.combined) : null }));
   let rideData = [], rideSeries = [];
@@ -490,7 +535,7 @@ function OptimiseView({ t, stops, zone, fleet, depot, toast }) {
     rideSeries = [{ key: "Ride", color: t.primary, name: "Time to last stop" }];
   } else if (rideMode === "company") {
     rideData = win.map((s) => { const row = { date: s.date.slice(5) }; COMPANIES.forEach((c) => (row[c] = s.optimised ? (s.optimised.rideByCompany[c] || null) : null)); return row; });
-    rideSeries = COMPANIES.map((c) => ({ key: c, color: c === "Gainup" ? t.gainup : t.techno, name: c }));
+    rideSeries = COMPANIES.map((c) => ({ key: c, color: c === "Gainup" ? t.gainup : c === "Zenwear" ? t.zenwear : t.techno, name: c }));
   } else {
     const busNames = optRef ? optRef.byBus.map((b) => b.name) : [];
     rideData = win.map((s) => { const row = { date: s.date.slice(5) }; const mp = {}; (s.optimised ? s.optimised.byBus : []).forEach((b) => (mp[b.name] = b.ride)); busNames.forEach((n) => (row[n] = mp[n] != null ? mp[n] : null)); return row; });
@@ -1671,8 +1716,14 @@ function SimulatorView({ t }) {
   );
 }
 
-export default function OptimiserTab({ t, toast, erpBuses }) {
+export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShifts, erpShiftDate }) {
   const [sub, setSub] = useState("stops");
+  // Which service is being planned (or Overall). Asked on every entry to the tab (state
+  // only, deliberately not persisted) — the board IS the switcher, so no header toggles.
+  const [svc, setSvc] = useState(null);
+  // the Fleet-plan/Companies views read units through companyOf, which needs today's ERP fleet
+  useEffect(() => { setLiveBusUnits(erpBuses); }, [erpBuses]);
+  const pickSvc = (s) => { setSvc(s); setSub(s.overall ? "timings" : "stops"); };
   const [version, setVersion] = useState(0);
   const refresh = () => setVersion((v) => v + 1);
   // keep the stop network in sync with the live-ERP merged stops (public/merged_stops.json,
@@ -1688,6 +1739,18 @@ export default function OptimiserTab({ t, toast, erpBuses }) {
   const fleet = useMemo(() => store.getFleet(), [version]);
   const depot = useMemo(() => store.getDepot(), [version]);
   const routes = useMemo(() => store.getRoutes(), [version]);
+  /* The 9 am network is the curated one the optimiser plans on (data/bus_stops.csv, road-
+     validated, 200 m merged). The newer services have no curated network yet, so theirs is
+     derived live from rider home GPS and left UNMERGED — one stop per distinct coordinate.
+     Each is still checked against the curated set so "which stops are missing?" stays
+     answerable before paying for a matrix. */
+  const svcStops = useMemo(() => {
+    if (!svc || svc.overall || svc.id === "s9") return null;
+    const mine = (erpEmployees || []).filter((e) => serviceIdFor(e.unit, e.shift) === svc.id);
+    if (!mine.length) return null;
+    return stopsForRiders(mine, stops, { depot: svc.depot });
+  }, [svc, erpEmployees, stops]);
+  const svcCoverage = useMemo(() => (svcStops ? coverageOf(svcStops) : null), [svcStops]);
   // saved plan variants ("result options") — picker follows public/plan_options.json
   const [planOpts, setPlanOpts] = useState(null);
   const [planId, setPlanId] = useState(getActivePlanId());
@@ -1701,10 +1764,31 @@ export default function OptimiserTab({ t, toast, erpBuses }) {
     else { setActivePlan(opts[0]); setPlanId(opts[0].id); }
   }); }, []);
   const pickPlan = (o) => { setActivePlan(o); setPlanId(o.id); };
+  if (!svc) return <ServiceBoard t={t} onPick={pickSvc} shifts={erpShifts} shiftDate={erpShiftDate} />;
+  const svcNeed = svc.overall ? null : serviceNeed(svc, erpShifts);
+  // Only a service with NO riders is un-openable. "Needs a plan" must not block entry —
+  // reviewing the stop network is precisely how you get to a plan.
+  const hasRiders = svc.overall || !!erpStatsFor(svc, erpShifts);
+  if (!hasRiders) {
+    return (
+      <div className="max-w-xl mx-auto py-10 flex flex-col items-center gap-4 text-center">
+        <Empty t={t} title={`${svc.name} isn't ready to plan yet`}
+          sub={`It needs ${svcNeed}. Once that lands the service opens like any other — the board reads the ERP live, so nothing here has to be edited.`} />
+        <Btn t={t} variant="ghost" onClick={() => setSvc(null)}>Pick a different service</Btn>
+      </div>
+    );
+  }
   return (
     <div>
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Segmented t={t} value={sub} onChange={setSub} options={[["stops", "Stops"], ["plan", "Fleet plan"], ["new", "Planner"]]} />
+        <button type="button" onClick={() => setSvc(null)} title="Change what's being planned"
+          className="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition"
+          style={{ background: t.surface, border: "1px solid " + t.border, color: t.text, cursor: "pointer" }}>
+          <span className="w-2.5 h-2.5 rounded-full" style={{ background: svc.color }} />
+          {svc.name}
+          <span className="text-xs font-normal" style={{ color: t.muted }}>Change ▾</span>
+        </button>
+        <Segmented t={t} value={sub} onChange={setSub} options={[["stops", "Stops"], ["plan", "Fleet plan"], ["new", "Planner"], ["timings", "Timings"]]} />
         {(sub === "plan" || sub === "new") && planOpts && planOpts.length > 1 && (
           <div className="inline-flex items-center gap-1 rounded-xl p-1" style={{ background: t.surface2, border: "1px solid " + t.border }}>
             <span className="text-[10px] font-bold uppercase tracking-wider px-2" style={{ color: t.faint }}>Plan</span>
@@ -1725,9 +1809,20 @@ export default function OptimiserTab({ t, toast, erpBuses }) {
           </div>
         )}
       </div>
-      {sub === "stops" && <StopsView key={planId || "d"} t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} />}
+      {svcNeed && (
+        <div className="rounded-xl border px-4 py-2.5 mb-4 text-sm flex flex-wrap items-center gap-2"
+          style={{ background: t.primarySoft, borderColor: t.primary, color: t.text }}>
+          <span className="font-semibold">{svc.name}</span>
+          <span style={{ color: t.muted }}>still needs {svcNeed}.</span>
+        </div>
+      )}
+      {sub === "stops" && (svcStops
+        ? <StopsView key={svc.id} t={t} toast={toast} stops={svcStops} viewStops={svcStops} routes={routes} refresh={refresh}
+            depot={svc.depot} coverage={svcCoverage} calibrate={false} svc={svc} />
+        : <StopsView key={planId || "d"} t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} depot={svc && svc.depot} />)}
       {sub === "plan" && <FleetPlanView key={planId || "d"} t={t} />}
       {sub === "new" && <NewPlanView key={planId || "d"} t={t} toast={toast} erpBuses={erpBuses} />}
+      {sub === "timings" && <TimingsView t={t} shifts={erpShifts} />}
     </div>
   );
 }
