@@ -63,7 +63,7 @@ export function nearest(p, others, grid, within = COVER_M) {
 
 /**
  * Cluster riders' homes into stops.
- * @param riders  [{ id, lat, lng, locality, name }]
+ * @param riders  [{ id, lat, lng, locality, name, busId }]
  * @param existing curated stops to check coverage against (may be empty)
  * @returns stops in the same shape StopsView renders, each with `isNew` + `riders`
  */
@@ -96,6 +96,13 @@ export function stopsForRiders(riders, existing = [], { mergeM = MERGE_M, coverM
     members.forEach((j) => { const v = (pts[j].locality || "").trim(); if (v) tally[v] = (tally[v] || 0) + 1; });
     const named = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
 
+    // Which vehicle(s) this stop is registered against, straight from each rider's ERP bus
+    // assignment. Without this a derived stop has no vehicle anywhere — not on the map
+    // tooltip, not in the table — and cannot be tied back to a real run.
+    const busTally = {};
+    members.forEach((j) => { const b = (pts[j].busId || "").trim(); if (b) busTally[b] = (busTally[b] || 0) + 1; });
+    const busList = Object.entries(busTally).sort((a, b) => b[1] - a[1]);
+
     stops.push({
       id: "svc:" + lat.toFixed(5) + "," + lng.toFixed(5),
       name: (match && match.stop.name) || (named && named[0]) || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
@@ -106,6 +113,8 @@ export function stopsForRiders(riders, existing = [], { mergeM = MERGE_M, coverM
       route: "Imported",
       riders: members.map((j) => pts[j].name || pts[j].id),
       merged: members.length > 1,          // more than one rider at this exact coordinate
+      buses: busList,                      // [[registration, riders], …] busiest first
+      busName: busList.length ? (busList.length === 1 ? busList[0][0] : `${busList[0][0]} +${busList.length - 1}`) : null,
       isNew: !match,                       // nothing in the curated network within coverM
       nearestExistingM: match ? Math.round(match.m) : null,
       depotKm: depot ? Math.round(metresBetween(here, depot) / 100) / 10 : null,

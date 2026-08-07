@@ -210,6 +210,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
   }, []);
   const vehFor = (s) => stopVeh["n:" + (s.name || "").toLowerCase().trim()]
     || (s.lat != null && s.lng != null ? stopVeh["c:" + (+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4)] : "")
+    || s.busName            // derived services have no plan yet; use the ERP's own assignment
     || "";
 
   // search filter + pagination
@@ -302,7 +303,11 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
                         </span>
                       )}
                     </td>
-                    <td className="py-2 px-2">{vehFor(s) ? <span className="inline-block rounded-md px-2 py-1 text-xs font-semibold tabular-nums" style={{ background: t.primarySoft, color: t.primary, border: "1px solid " + t.border }}>{vehFor(s)}</span> : <span className="text-xs" style={{ color: t.muted }}>—</span>}</td>
+                    <td className="py-2 px-2">{vehFor(s)
+                      ? <span className="inline-block rounded-md px-2 py-1 text-xs font-semibold tabular-nums"
+                          title={s.buses && s.buses.length ? s.buses.map(([b, n]) => `${b}: ${n} rider${n === 1 ? "" : "s"}`).join("\n") : undefined}
+                          style={{ background: t.primarySoft, color: t.primary, border: "1px solid " + t.border }}>{vehFor(s)}</span>
+                      : <span className="text-xs" style={{ color: t.muted }}>—</span>}</td>
                     <td className="py-2 px-2">{s.village || "—"}</td>
                     <td className="py-2 px-2 tabular-nums text-xs" style={{ color: t.faint }}>{s.lat != null ? (+s.lat).toFixed(5) : "—"}</td>
                     <td className="py-2 px-2 tabular-nums text-xs" style={{ color: t.faint }}>{s.lng != null ? (+s.lng).toFixed(5) : "—"}</td>
