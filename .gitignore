@@ -23,6 +23,7 @@ data/erp_live.json
 data/erp_project_live.json
 # Generated workbooks — these carry employee names + home GPS, same rule as above.
 Stops by service.xlsx
+Riders missing coordinates.xlsx
 ERP vehicle costing.xlsx
 ERP vehicle project costing.xlsx
 data/erp_raw.json
