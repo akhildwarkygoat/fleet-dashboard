@@ -49,9 +49,9 @@ export function busForEngine(bus) {
 
 /** Build the road-distance metric for depot + the given stops. Returns the metric plus an
  *  index map (stopId -> node index). Depot is node 0; stops are 1..N in the passed order. */
-async function buildMetric(depot, stops) {
+async function buildMetric(depot, stops, matrixUrl) {
   const pts = [{ lat: depot.lat, lng: depot.lng }, ...stops.map((s) => ({ lat: s.lat, lng: s.lng }))];
-  const M = await matrixFor(pts); // {km:[[]], min:[[]], estimated?}
+  const M = await matrixFor(pts, matrixUrl); // {km:[[]], min:[[]], estimated?}
   const idxOf = new Map();
   stops.forEach((s, i) => idxOf.set(s.id, i + 1));
   const metric = { km: (i, j) => M.km[i][j], min: (i, j) => M.min[i][j] };
@@ -59,17 +59,17 @@ async function buildMetric(depot, stops) {
 }
 
 /** React hook: load the metric once for a stable set of stops + depot. */
-export function usePlanMetric(depot, stops) {
+export function usePlanMetric(depot, stops, matrixUrl) {
   const [state, setState] = useState({ metric: null, idxOf: new Map(), estimated: false, ready: false });
-  // key on the stop id set + depot so we only rebuild when the universe of stops changes
+  // key on the stop id set + depot + matrix so we only rebuild when the universe changes
   const key = useMemo(
-    () => (depot ? depot.lat + "," + depot.lng + "|" : "") + (stops || []).map((s) => s.id).join(","),
-    [depot, stops]
+    () => (matrixUrl || "") + "|" + (depot ? depot.lat + "," + depot.lng + "|" : "") + (stops || []).map((s) => s.id).join(","),
+    [depot, stops, matrixUrl]
   );
   useEffect(() => {
     let live = true;
     if (!depot || !(stops || []).length) { setState({ metric: null, idxOf: new Map(), estimated: false, ready: true }); return; }
-    buildMetric(depot, stops).then((r) => { if (live) setState({ ...r, ready: true }); });
+    buildMetric(depot, stops, matrixUrl).then((r) => { if (live) setState({ ...r, ready: true }); });
     return () => { live = false; };
   }, [key]); // eslint-disable-line
   return state;

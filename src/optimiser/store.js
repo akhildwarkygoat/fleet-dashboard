@@ -424,14 +424,23 @@ export function clearDraftPlan(key) { backend.write("opt-draft-" + key, null); }
  * meta = { riders, buses, stops } for the gallery cards. Stored together under one key. */
 const K_PLAN_DRAFTS = "opt-plan-drafts";
 function readPlanDrafts() { return backend.read(K_PLAN_DRAFTS, {}) || {}; }
-export function listPlanDrafts() { return Object.values(readPlanDrafts()).sort((a, b) => (b.ts || 0) - (a.ts || 0)); }
+/* Drafts belong to ONE service. A 7 am draft assigns 7 am stop ids to 7 am buses, so
+   offering it while planning Zenwear can only produce a plan that references nothing.
+   Drafts saved before services existed carry no `svc` and are treated as 9 am General,
+   which is the only service that could have produced them. */
+export function listPlanDrafts(svcId = null) {
+  const all = Object.values(readPlanDrafts()).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  if (!svcId) return all;
+  return all.filter((d) => (d.svc || "s9") === svcId);
+}
 export function getPlanDraft(id) { return readPlanDrafts()[id] || null; }
-export function savePlanDraft({ id, name, assignments, meta }) {
+export function savePlanDraft({ id, name, assignments, meta, svc }) {
   const drafts = readPlanDrafts();
   const obj = {};
   for (const [busId, ids] of (assignments instanceof Map ? assignments : Object.entries(assignments || {}))) obj[busId] = ids;
   const did = id || uid();
   drafts[did] = { id: did, name: (name || "Untitled plan").trim() || "Untitled plan",
+    svc: svc || (drafts[did] && drafts[did].svc) || "s9",
     assignments: obj, meta: meta || {}, ts: Date.now(), created: (drafts[did] && drafts[did].created) || Date.now() };
   backend.write(K_PLAN_DRAFTS, drafts);
   return did;

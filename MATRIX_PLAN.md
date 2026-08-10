@@ -33,7 +33,16 @@ Route **geometry** (the drawn polylines) comes from **OSRM, free**, via
 | Batlagundu matrix | **767 nodes** — 680 real Google, **87 OSRM-approximated** |
 | Checkpoint | 2,346 of 3,003 triangle blocks paid for; **657 remain** |
 | Zenwear | no matrix at all — different depot, 59 km south |
-| Stops are | **unmerged**: one node per distinct home coordinate |
+| Stops are | **merged at 200 m, road-validated** (10-08-2026) — see below |
+
+**Merge status (10-08-2026).** Job B's 177 new stops were deduped against the existing 761
+nodes at 200 m when `data/new_stops_jobB.csv` was built (closest survivor sits at 200.7 m),
+but they were never deduped **against each other** — 65 pairs sat within 200 m. Job B ran
+for a while on that unmerged set. `merge_new_stops.py` now does it properly: 177 → 137 stops,
+938 → 898 nodes, every merge confirmed against OSRM **road** distance so that Y-junction and
+wrong-side-of-the-road pairs stay separate. Audit in `data/merge_jobB_audit.json`.
+`remap_checkpoint.py` carried the already-paid cells onto the new numbering, so nothing bought
+before the merge was lost.
 
 Depots, from `src/optimiser/services.js`:
 

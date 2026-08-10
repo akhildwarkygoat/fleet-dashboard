@@ -1756,6 +1756,17 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
     return stopsForRiders(mine, stops, { depot: svc.depot });
   }, [svc, erpEmployees, stops]);
   const svcCoverage = useMemo(() => (svcStops ? coverageOf(svcStops) : null), [svcStops]);
+  /* The buses THIS service actually runs — the vehicles its own riders are assigned to in the
+     ERP. Without this the Planner offered all 110 vehicles whichever service was open, so a
+     155-rider service could be "planned" onto Zenwear's vans. A bus serving more than one
+     service appears in each, which is correct: the vehicle really does do both runs. */
+  const svcErpBuses = useMemo(() => {
+    if (!svc || svc.overall || !erpBuses) return erpBuses;
+    const mine = (erpEmployees || []).filter((e) => serviceIdFor(e.unit, e.shift) === svc.id);
+    const ids = new Set(mine.map((e) => e.busId).filter(Boolean));
+    if (!ids.size) return erpBuses;
+    return erpBuses.filter((b) => ids.has(b.id || b.vehicle));
+  }, [svc, erpBuses, erpEmployees]);
   // saved plan variants ("result options") — picker follows public/plan_options.json
   const [planOpts, setPlanOpts] = useState(null);
   const [planId, setPlanId] = useState(getActivePlanId());
@@ -1826,7 +1837,8 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
             depot={svc.depot} coverage={svcCoverage} calibrate={false} svc={svc} />
         : <StopsView key={planId || "d"} t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} depot={svc && svc.depot} />)}
       {sub === "plan" && <FleetPlanView key={planId || "d"} t={t} />}
-      {sub === "new" && <NewPlanView key={planId || "d"} t={t} toast={toast} erpBuses={erpBuses} />}
+      {sub === "new" && <NewPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} toast={toast}
+        erpBuses={svcErpBuses} svc={svc && !svc.overall ? svc : null} svcStops={svcStops} />}
       {sub === "timings" && <TimingsView t={t} shifts={erpShifts} />}
     </div>
   );

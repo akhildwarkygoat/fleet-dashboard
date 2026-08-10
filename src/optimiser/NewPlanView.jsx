@@ -18,17 +18,33 @@ import { downloadPlanJson } from "./planExport.js";
 const EMPTY = new Map();
 const mapFrom = (assignments) => { const m = new Map(); for (const k of Object.keys(assignments || {})) m.set(k, assignments[k]); return m; };
 
-export default function NewPlanView({ t, toast, erpBuses }) {
-  const depot = useMemo(() => store.getDepot(), []);
-  const storeStops = useMemo(() => store.getStops().filter((s) => s.lat != null && s.lng != null), []);
+/* `svc` scopes the whole board to one service. Without it the Planner always used the
+   global depot, the curated 9 am stop set, the 9 am plan and one shared draft list — so
+   "planning Zenwear" actually routed Batlagundu's stops from Batlagundu's depot. `svcStops`
+   is the service's own derived network (null for 9 am, which plans on the curated store). */
+export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
+  const depot = useMemo(() => (svc && svc.depot) || store.getDepot(), [svc]);
+  const matrixUrl = (svc && svc.matrixUrl) || undefined;
+  const svcId = (svc && svc.id) || "s9";
+  const storeStops = useMemo(
+    () => (svcStops && svcStops.length ? svcStops : store.getStops()).filter((s) => s.lat != null && s.lng != null),
+    [svcStops]
+  );
 
-  // canonical 69-bus fleet from the solver plan (names/caps match the dashboard)
+  // This service's optimised plan. `activePlanUrl()` is the 9 am plan-variant picker, so it
+  // is only the right source when no service-specific plan exists.
+  const planSrc = svc && svc.id !== "s9" ? (svc.planUrl || null) : activePlanUrl();
+  // "Balanced" is the name of a 9 am plan VARIANT. Reusing it on another service's board
+  // labels that service's own optimiser output with a plan it has nothing to do with.
+  const planLabel = svc && svc.id !== "s9" ? `${svc.name} optimised` : getActivePlanLabel();
   const [solver, setSolver] = useState(null);
   const [solverLoaded, setSolverLoaded] = useState(false);
   useEffect(() => {
-    fetch(activePlanUrl() + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null))
+    setSolver(null); setSolverLoaded(false);
+    if (!planSrc) { setSolverLoaded(true); return; }
+    fetch(planSrc + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null))
       .then((d) => setSolver(d)).catch(() => {}).finally(() => setSolverLoaded(true));
-  }, []);
+  }, [planSrc]);
   // Fleet authority: today's ERP (capacities + mileage) first, so the Planner reflects the
   // live fleet immediately; only fall back to the solved plan / store when the ERP is absent.
   const fleet = useMemo(() => {
@@ -39,8 +55,21 @@ export default function NewPlanView({ t, toast, erpBuses }) {
   const [prevRoutes, setPrevRoutes] = useState(null);
   useEffect(() => {
     fetch("/current_routes.json?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null))
-      .then((d) => setPrevRoutes(d && Array.isArray(d.buses) ? d : null)).catch(() => {});
-  }, []);
+      .then((d) => {
+        if (!d || !Array.isArray(d.buses)) { setPrevRoutes(null); return; }
+        // current_routes.json is the WHOLE fleet's previous allocation. Showing all 71 buses
+        // and 3,097 riders while planning a 155-rider service is not a usable starting point,
+        // so keep only the buses this service actually runs.
+        const own = new Set((erpBuses || []).map((b) => b.id || b.vehicle));
+        const buses = own.size ? d.buses.filter((b) => own.has(b.name)) : d.buses;
+        if (!buses.length) { setPrevRoutes(null); return; }
+        // The card reads meta.riders / meta.vehicles, so filtering the buses alone still
+        // advertised the whole fleet's 3,097 riders on a service that has 786.
+        const meta = { ...(d.meta || {}), vehicles: buses.length,
+          riders: buses.reduce((s, b) => s + (+b.riders || 0), 0) };
+        setPrevRoutes({ ...d, buses, meta });
+      }).catch(() => {});
+  }, [erpBuses]);
   // set on import: stops carried over from the plan file that aren't in the store, plus the
   // plan's own per-stop rider counts — so the editor presents the plan exactly as solved
   const [importedPlan, setImportedPlan] = useState(null);   // { extras: stop[], demand: Map } | null
@@ -60,7 +89,7 @@ export default function NewPlanView({ t, toast, erpBuses }) {
   }, [baseDemand, importedPlan]);
   const totalRiders = useMemo(() => allStops.reduce((n, s) => n + demandOf(s), 0), [allStops, demandOf]);
   const busColor = useMemo(() => { const m = {}; fleet.forEach((b, i) => (m[b.id] = PALETTE[i % PALETTE.length])); return m; }, [fleet]);
-  const { metric, idxOf, ready, estimated } = usePlanMetric(depot, allStops);
+  const { metric, idxOf, ready, estimated } = usePlanMetric(depot, allStops, matrixUrl);
 
   // hub state: which view, the open draft, the editable name, and the editor seed
   const [view, setView] = useState("gallery");           // "gallery" | "editor"
@@ -68,7 +97,7 @@ export default function NewPlanView({ t, toast, erpBuses }) {
   // ridden in reverse: last stop → … → first stop → factory (pickup). Display/editing only —
   // the cost model already counts both directions (chain km = 2 × one-way).
   const [period, setPeriod] = useState("evening");       // "evening" | "morning"
-  const [drafts, setDrafts] = useState(() => store.listPlanDrafts());
+  const [drafts, setDrafts] = useState(() => store.listPlanDrafts(svcId));
   const [current, setCurrent] = useState(null);           // { id, name } of the open saved draft, or null (unsaved)
   const [draftName, setDraftName] = useState("Untitled plan");
   const [seed, setSeed] = useState(EMPTY);
@@ -85,13 +114,13 @@ export default function NewPlanView({ t, toast, erpBuses }) {
   const newBlank = () => { setImportedPlan(null); setSeed(new Map(EMPTY)); setCurrent(null); setDraftName("Untitled plan"); setView("editor"); };
   const importPlan = () => {
     if (!solver) { toast && toast("No optimised plan to import"); return; }
-    const label = getActivePlanLabel();
+    const label = planLabel;
     const { seed, extras, demand } = seedFromSolver(solver, fleet, storeStops);
     setImportedPlan({ extras, demand });
     setSeed(seed); setCurrent(null); setDraftName(`Imported ${label} plan`); setView("editor");
     toast && toast(`Imported the ${label} optimised plan` + (extras.length ? ` (${extras.length} stops carried from the plan file)` : ""));
   };
-  const deleteDraft = (d) => { store.deletePlanDraft(d.id); setDrafts(store.listPlanDrafts()); toast && toast("Plan deleted"); };
+  const deleteDraft = (d) => { store.deletePlanDraft(d.id); setDrafts(store.listPlanDrafts(svcId)); toast && toast("Plan deleted"); };
   // Prev-route seed: current_routes.json stores buses[].stops[] (ERP's actual allocation).
   // Reshape to the solver_result form so the same faithful-import path handles it.
   const importPrevRoutes = () => {
@@ -129,12 +158,12 @@ export default function NewPlanView({ t, toast, erpBuses }) {
 
   // ---- editor actions ----
   const save = () => {
-    const id = store.savePlanDraft({ id: current && current.id, name: draftName, assignments: editor.assign, meta: meta() });
+    const id = store.savePlanDraft({ id: current && current.id, name: draftName, assignments: editor.assign, meta: meta(), svc: svcId });
     const name = (draftName || "").trim() || "Untitled plan";
-    setCurrent({ id, name }); setDraftName(name); setDrafts(store.listPlanDrafts());
+    setCurrent({ id, name }); setDraftName(name); setDrafts(store.listPlanDrafts(svcId));
     toast && toast("Plan saved");
   };
-  const backToGallery = () => { setDrafts(store.listPlanDrafts()); setView("gallery"); };
+  const backToGallery = () => { setDrafts(store.listPlanDrafts(svcId)); setView("gallery"); };
   const reset = () => { setImportedPlan(null); setSeed(new Map(EMPTY)); };
   // Clear wipes the whole board and re-seeds the editor, so it can't be undone — warn first.
   const clearWithConfirm = () => {
@@ -147,14 +176,14 @@ export default function NewPlanView({ t, toast, erpBuses }) {
     if (!solver) { toast && toast("No optimised plan to import"); return; }
     const { seed, extras, demand } = seedFromSolver(solver, fleet, storeStops);
     setImportedPlan({ extras, demand });
-    setSeed(seed); toast && toast(`Imported the ${getActivePlanLabel()} optimised plan into this editor`);
+    setSeed(seed); toast && toast(`Imported the ${planLabel} plan into this editor`);
   };
   const exportJson = () => { if (editor.live) { downloadPlanJson(editor.live, fleet, depot, totalRiders, allStops); toast && toast("Exported plan JSON"); } };
 
   if (!ready || !solverLoaded) return <Empty t={t} title="Loading road network…" sub="Building the distance matrix for live routing." />;
 
   if (view === "gallery") {
-    return <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={getActivePlanLabel()}
+    return <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={planLabel}
       stopsById={stopsById} depot={depot} busColor={busColor}
       onNewBlank={newBlank} onImport={importPlan} onOpen={openDraft} onDelete={deleteDraft} onImportFile={importFromFile}
       onImportPrev={importPrevRoutes} prevPlan={prevRoutes} />;

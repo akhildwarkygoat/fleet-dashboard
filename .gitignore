@@ -16,11 +16,18 @@ venv/
 Thumbs.db
 # local tooling
 .claude/
+# Google Maps API key — never committed, never printed
+.maps_key
 
 # ERP-derived data — contains employee PII (names + home GPS + attendance).
 # NEVER commit to a public repo. Regenerate locally with the build_*.py scripts.
 data/erp_live.json
 data/erp_project_live.json
+# Any ad-hoc ERP pull, however it is named. The rule above only caught two exact
+# filenames, so a dump saved as *.fresh.json slipped straight past it — 30 MB of
+# names, home GPS and attendance, one `git add .` from being public.
+data/erp_*.json
+data/*.fresh.json
 # Generated workbooks — these carry employee names + home GPS, same rule as above.
 Stops by service.xlsx
 Riders missing coordinates.xlsx
@@ -37,3 +44,20 @@ public/merge_audit.json
 
 # local scratch (contains API key — never commit)
 GMPAS
+
+# Matrix-build working files. The finished matrices ARE committed (the app serves them);
+# these are the scaffolding: multi-MB checkpoints, pre-run backups and the wreck of the
+# run whose checkpoint was truncated. All regenerable, none worth versioning.
+data/*.partial.json
+data/*.partial.*.json
+data/*.BACKUP-*.json
+data/*.PRE-JOBB.json
+data/*.TRUNCATED.json
+data/osrm_pair_cache.json
+jobB_run*.log
+
+# Per-service stop lists — same class as data/bus_stops.csv above: locality names plus
+# riders' home coordinates. Rebuild with seed_matrix_append.py / merge_new_stops.py.
+data/bus_stops_*.csv
+data/new_stops_*.csv
+data/merge_jobB_audit.json

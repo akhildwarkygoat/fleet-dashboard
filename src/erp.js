@@ -245,6 +245,7 @@ export function mapErpToDashboard(rows) {
   const buses = new Map();      // veh -> { seat:{}, unit:{}, type:Set }
   const empLatest = new Map();  // Empl_no -> { date, r }  (keep the most recent mapping)
   const attendance = {};        // date -> { Empl_no: "P"|"A" }
+  const empAtt = new Map();     // Empl_no -> { absent, days }  (absentee rate across the feed)
 
   for (const r of rows || []) {
     const veh = (r.VehName || r.Veh_Mas || "").trim();
@@ -253,7 +254,15 @@ export function mapErpToDashboard(rows) {
     if (!veh || !emp || !d) continue;
 
     // attendance (live punch feed)
-    (attendance[d] = attendance[d] || {})[emp] = /present/i.test(r.Att_Type || "") ? "P" : "A";
+    const present = /present/i.test(r.Att_Type || "");
+    (attendance[d] = attendance[d] || {})[emp] = present ? "P" : "A";
+    // …and the same punches rolled up per rider, so a derived stop can carry a REAL
+    // absentee rate. Without it every derived stop assumed nobody is ever away, and the
+    // engine's per-stop `ceil(head x (1 - absentee + buffer))` rounded up at each one.
+    const ea = empAtt.get(emp) || { absent: 0, days: 0 };
+    if (!present) ea.absent++;
+    ea.days++;
+    empAtt.set(emp, ea);
 
     // employee — keep the latest-dated row (its bus/department/role win)
     const prev = empLatest.get(emp);
@@ -293,6 +302,8 @@ export function mapErpToDashboard(rows) {
     code: (r.tno || emp).trim(),
     name: (r.Name || "").trim() || emp,
     busId: (r.VehName || r.Veh_Mas || "").trim(),
+    // share of this rider's punches that were absences — feeds stop-level absentee
+    absentee: (() => { const a = empAtt.get(emp); return a && a.days ? a.absent / a.days : 0; })(),
     department: (r.DeptName || "").trim(),
     designation: (r.Catagory || "").trim(),
     travelMin: null,                   // -> RUN_OPTIMISER in the UI

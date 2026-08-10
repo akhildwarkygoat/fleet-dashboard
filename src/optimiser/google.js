@@ -77,37 +77,83 @@ const _routeCache = new Map();
    Distance Matrix requests. We fall through to the live API only when a point
    isn't in the cache (e.g. a stop the user just added by hand). Fetched from
    public/ (served at site root) the first time the optimiser runs, then memoised. */
-let _cached; // undefined = not tried yet, null = unavailable
-async function getCachedMatrix() {
-  if (_cached !== undefined) return _cached;
+/* Keyed by URL, because a service can have its OWN matrix: Zenwear runs from Subbulapuram,
+   59 km south, and is a separate 236-node file. A single cached matrix meant every service
+   was measured against Batlagundu's, so Zenwear's stops fell out of the index and the whole
+   solve silently dropped to ruler estimates. */
+const _matrices = new Map();   // url -> {km,min,index} | null
+export const DEFAULT_MATRIX_URL = "/road_matrix.json";
+
+async function getCachedMatrix(url = DEFAULT_MATRIX_URL) {
+  if (_matrices.has(url)) return _matrices.get(url);
+  let val = null;
   try {
-    const res = await fetch("/road_matrix.json");
+    const res = await fetch(url);
     if (!res.ok) throw new Error("HTTP " + res.status);
     const d = await res.json();
     const index = new Map();
     d.nodes.forEach((nd, i) => index.set(nd.lat.toFixed(5) + "," + nd.lng.toFixed(5), i));
-    _cached = { km: d.km, min: d.min, index };
-  } catch { _cached = null; }
-  return _cached;
+    // Coarse ~1.1 km buckets, so a point that isn't an exact node can still find its
+    // nearest one without scanning all 898 nodes per lookup.
+    const grid = new Map();
+    d.nodes.forEach((nd, i) => {
+      const k = Math.round(nd.lat * 100) + ":" + Math.round(nd.lng * 100);
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push(i);
+    });
+    val = { km: d.km, min: d.min, index, grid, nodes: d.nodes };
+  } catch { val = null; }
+  _matrices.set(url, val);
+  return val;
 }
 /** Sub-matrix for `points` from the cache, in the requested order — or null if the
  *  cache is missing or any point isn't in it (so the caller hits Google instead). */
-async function cachedMatrix(points) {
-  const c = await getCachedMatrix();
-  if (!c) return null;
-  const idx = new Array(points.length);
-  for (let p = 0; p < points.length; p++) {
-    const i = c.index.get(points[p].lat.toFixed(5) + "," + points[p].lng.toFixed(5));
-    if (i === undefined) return null; // unknown point -> can't serve this solve from cache
-    idx[p] = i;
+/** Nearest matrix node to `p` within `withinM` metres, or -1. Exact-coordinate lookup alone
+ *  was not enough: a service's stops are CENTROIDS of the riders standing at them, so they
+ *  never equal a node to 5 decimals and every derived service silently fell back to
+ *  straight-line estimates — ignoring the road matrix entirely. */
+function nearestNode(c, p, withinM = 250) {
+  const exact = c.index.get(p.lat.toFixed(5) + "," + p.lng.toFixed(5));
+  if (exact !== undefined) return exact;
+  if (!c.grid) return -1;
+  const la = Math.round(p.lat * 100), ln = Math.round(p.lng * 100);
+  let best = -1, bestM = withinM;
+  for (let dla = -1; dla <= 1; dla++) for (let dln = -1; dln <= 1; dln++) {
+    const cell = c.grid.get((la + dla) + ":" + (ln + dln));
+    if (!cell) continue;
+    for (const i of cell) {
+      const m = havKm(p, c.nodes[i]) * 1000;
+      if (m <= bestM) { bestM = m; best = i; }
+    }
   }
+  return best;
+}
+
+async function cachedMatrix(points, url) {
+  const c = await getCachedMatrix(url);
+  if (!c) return null;
+  /* Per-point, not all-or-nothing. Rejecting the whole matrix because a handful of stops
+     are off-network threw away real road data for the other 438 — one uncovered stop made
+     an entire service plan on straight lines. Unmatched points get -1 and only THEIR legs
+     fall back to the ruler estimate below. */
+  const idx = new Array(points.length);
+  let unmatched = 0;
+  for (let p = 0; p < points.length; p++) {
+    const i = nearestNode(c, points[p]);
+    idx[p] = i;
+    if (i < 0) unmatched++;
+  }
+  if (unmatched === points.length) return null;   // nothing on this matrix at all
   const n = points.length;
   const km = Array.from({ length: n }, () => Array(n).fill(0));
   const min = Array.from({ length: n }, () => Array(n).fill(0));
   let filled = 0;
   for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
     if (a === b) continue;
-    const kv = c.km[idx[a]][idx[b]], mv = c.min[idx[a]][idx[b]];
+    // idx -1 = this point isn't on the matrix at all, so it has no row/column to read.
+    const off = idx[a] < 0 || idx[b] < 0;
+    const kv = off ? null : c.km[idx[a]][idx[b]];
+    const mv = off ? null : c.min[idx[a]][idx[b]];
     // null (a stop recovered after the matrix was built) or -1 (unreachable) means no
     // cached road value for this leg. NOTE: `null >= 0` is true in JS, so these must be
     // tested explicitly or nulls leak through as distances and poison every KPI.
@@ -125,8 +171,8 @@ async function cachedMatrix(points) {
 /** Public: km/min sub-matrix for arbitrary points from the OFFLINE cache (zero
  *  Google calls). Falls back to haversine x 1.30 @ 26 km/h for any point not in
  *  the cache, so it always returns a usable matrix (used by the route mini-map). */
-export async function matrixFor(points) {
-  const fromCache = await cachedMatrix(points);
+export async function matrixFor(points, url = DEFAULT_MATRIX_URL) {
+  const fromCache = await cachedMatrix(points, url);
   if (fromCache) return fromCache;
   const hav = havKm;
   const n = points.length;

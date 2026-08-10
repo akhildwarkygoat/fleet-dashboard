@@ -109,7 +109,12 @@ export function stopsForRiders(riders, existing = [], { mergeM = MERGE_M, coverM
       lat, lng,
       village: (named && named[0]) || "",
       headcount: members.length,
-      absentee: 0,
+      // Real absentee, averaged over the riders standing here. Hardcoding 0 made the
+      // engine's `ceil(head x (1 - absentee + 3% buffer))` round UP at every stop, so a
+      // 1-rider stop planned as 2 and a 236-stop network inflated 559 riders to 795 —
+      // enough to make a service with spare seats look infeasible. Riders without an
+      // attendance history contribute 0, which is the old behaviour for that rider only.
+      absentee: members.reduce((s, j) => s + (+pts[j].absentee || 0), 0) / members.length,
       route: "Imported",
       riders: members.map((j) => pts[j].name || pts[j].id),
       merged: members.length > 1,          // more than one rider at this exact coordinate
