@@ -1,22 +1,23 @@
 {
- "generated": "2026-07-25",
+ "generated": "2026-08-10",
+ "note": "Describes public/solver_result.json \u2014 figures are read from that file, not written by hand. The previous version claimed 77 buses and Rs61.1/head against a file holding 75 and Rs56.7.",
  "options": [
   {
    "id": "balanced",
    "label": "Balanced",
    "file": "/solver_result.json",
-   "desc": "Full 77-bus ERP fleet on the 766-stop network (739 occupied). All 3,021 GPS-located riders seated, every bus dispatched (no idle fleet). The single operating plan.",
+   "desc": "9 am General. 75 buses on the 739-stop network, 3,021 riders seated at 115% utilisation. Costed with standing charges included.",
    "metrics": {
-    "cost_head": 61.1,
-    "avg": 61,
-    "buses": 77
+    "cost_head": 56.7,
+    "avg": 61.0,
+    "buses": 75
    },
    "full": {
-    "cost_head": 61.1,
-    "avg": 61,
-    "max": 156,
-    "buses": 77,
-    "util": 117
+    "cost_head": 56.7,
+    "avg": 61.0,
+    "max": 139.65,
+    "buses": 75,
+    "util": 115.0
    }
   }
  ]

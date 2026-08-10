@@ -20,7 +20,7 @@
  *   node build_service_plans.mjs --service zen
  * ==========================================================================*/
 import fs from "node:fs";
-import { optimise, validatePlan, haversineKm } from "./src/optimiser/engine.js";
+import { optimise, validatePlan, haversineKm, scorePlan } from "./src/optimiser/engine.js";
 import { stopsForRiders } from "./src/optimiser/serviceStops.js";
 import { SERVICES, FACTORY_DEPOT, ZENWEAR_DEPOT } from "./src/optimiser/services.js";
 
@@ -71,6 +71,8 @@ const latestPerEmp = new Map();
    "2-Absent" (the same test erp.js uses). One day's punch says nothing about how often
    a seat actually goes empty; ~11 days does. */
 const att = new Map();
+/* vehicle -> riders per service, so a shared bus's cost can be split by actual use */
+const busUse = new Map();
 for (const r of rows) {
   const e = norm(r.Empl_no);
   if (!e) continue;
@@ -86,6 +88,14 @@ const absenteeOf = (emp) => {
   const a = att.get(emp);
   return a && a.days ? a.absent / a.days : 0;
 };
+for (const { r } of latestPerEmp.values()) {
+  const v = norm(r.VehName) || norm(r.Veh_Mas);
+  const s = serviceOf(r);
+  if (!v || !s) continue;
+  if (!busUse.has(v)) busUse.set(v, new Map());
+  const m = busUse.get(v);
+  m.set(s, (m.get(s) || 0) + 1);
+}
 const mine = [...latestPerEmp.values()].map((x) => x.r).filter((r) => serviceOf(r) === SVC_ID);
 log(`${latestPerEmp.size} employees in feed · ${mine.length} belong to ${svc.name}`);
 
@@ -107,8 +117,14 @@ if (!riders.length) { console.error(`[${SVC_ID}] no GPS riders — cannot plan`)
 
 // ---------------------------------------------------------------- stops
 const depot = svc.id === "zen" ? ZENWEAR_DEPOT : FACTORY_DEPOT;
+/* --allocated: plan a seat for every rider ON THE BOOKS, not the attendance-adjusted figure.
+   effectiveDemand() is ceil(head x (1 - absentee + buffer)); zeroing both terms makes it
+   exactly the registered headcount, so a bus is sized for everyone allotted to it rather
+   than for who typically turns up. */
+const ALLOCATED = process.argv.includes("--allocated");
 const MERGE_M = +arg("--merge-m", "0");
 const stops = stopsForRiders(riders, [], { depot, mergeM: MERGE_M });
+if (ALLOCATED) stops.forEach((s) => { s.absentee = 0; });
 log(`${stops.length} stops derived (${MERGE_M ? `merged at ${MERGE_M} m` : "unmerged: one per distinct home GPS"})`);
 
 // ---------------------------------------------------------------- fleet
@@ -130,12 +146,41 @@ const capCount = {};
 [...busSeen.values()].forEach((b) => b.seats.forEach((s) => { capCount[s] = (capCount[s] || 0) + 1; }));
 const modalCap = +(Object.entries(capCount).sort((a, b) => b[1] - a[1])[0] || [40])[0];
 const OWN = { loanMonth: 35000, driverDay: 800, maintDay: 280, dieselPerKm: 22 };
+
+/* --share-costs: a bus that also runs another service should not be charged to this one
+   twice. 8 of 7 am Morning's 9 buses also run the 9 am or Rotational service, and 7 am is
+   only 15% of their riders — charging it their whole daily cost overstates it ~6.6x and
+   makes a shared fleet look far more expensive per head than it is.
+
+   Only the STANDING costs are shared (one loan, one driver, one vehicle, several runs a
+   day). Diesel is not: each service's run burns its own fuel over its own kilometres, so
+   dieselPerKm and the rental slab are left alone. */
+/* --no-standing: an owned bus's loan, driver salary and maintenance are paid whether or not
+   it turns a wheel today, so they are sunk and say nothing about which plan is better. This
+   charges owned buses their RUNNING cost only (diesel x km). Rental slabs are untouched —
+   hiring a van is a real daily outlay that stops the moment you stop hiring it. */
+const NO_STANDING = process.argv.includes("--no-standing");
+const SHARE = process.argv.includes("--share-costs");
+const shareOf = (vehName) => {
+  const tally = busUse.get(vehName);
+  if (!tally) return 1;
+  const total = [...tally.values()].reduce((a, b) => a + b, 0);
+  return total ? (tally.get(SVC_ID) || 0) / total : 1;
+};
 const fleet = [...busSeen.values()].map((b, i) => {
   const cap = b.seats.length ? Math.max(...b.seats) : modalCap;
-  return b.rent
-    ? { id: "b" + i, name: b.name, type: "rent", capacity: cap, slabFixed: 1700, slabKm: 80, perKmBeyond: 18.7 }
-    : { id: "b" + i, name: b.name, type: "own", capacity: cap, ...OWN };
+  if (b.rent) return { id: "b" + i, name: b.name, type: "rent", capacity: cap, slabFixed: 1700, slabKm: 80, perKmBeyond: 18.7 };
+  const f = (SHARE ? shareOf(b.name) : 1) * (NO_STANDING ? 0 : 1);
+  return { id: "b" + i, name: b.name, type: "own", capacity: cap, ...OWN,
+    loanMonth: OWN.loanMonth * f, driverDay: OWN.driverDay * f, maintDay: OWN.maintDay * f };
 });
+if (NO_STANDING) log(`standing costs EXCLUDED — owned buses charged diesel only (₹${OWN.dieselPerKm}/km); rentals unchanged`);
+if (SHARE) {
+  const shares = [...busSeen.keys()].map(shareOf);
+  const mean = shares.reduce((a, b) => a + b, 0) / (shares.length || 1);
+  log(`cost sharing ON — this service is ${(mean * 100).toFixed(0)}% of its buses' use on average; ` +
+      `standing costs scaled to that, diesel left whole`);
+}
 const seats = fleet.reduce((s, b) => s + b.capacity, 0);
 const heads = stops.reduce((s, x) => s + x.headcount, 0);
 log(`${fleet.length} buses from the ERP · ${seats} seats for ${heads} riders`);
@@ -166,14 +211,140 @@ if (fs.existsSync(matrixFile)) {
 }
 
 // ---------------------------------------------------------------- solve
+/* Cost and ride time pull against each other: fewer buses spread the fixed cost over more
+   heads but lengthen every route. engine.optimise() resolves that with one fixed penalty
+   setting, which hides the trade-off. Sweeping the penalties walks the frontier, so a plan
+   can be chosen against a real target instead of whatever the defaults happen to prefer. */
+const MAX_AVG_RIDE = arg("--max-avg-ride") ? +arg("--max-avg-ride") : null;
+const MAX_RIDE = arg("--max-ride") ? +arg("--max-ride") : null;
+const TARGET_CPH = arg("--target-cost-head") ? +arg("--target-cost-head") : null;
+const PICK_OPT = arg("--pick") ? +arg("--pick") : null;
+
+const rideStats = (r) => {
+  const rs = r.plan.routes;
+  const heads = rs.reduce((s, x) => s + x.heads, 0) || 1;
+  const own = rs.filter((x) => x.bus.type === "own");
+  const rent = rs.filter((x) => x.bus.type === "rent");
+  const sum = (list, f) => list.reduce((s, x) => s + f(x), 0);
+  return {
+    buses: rs.length,
+    own: own.length, ownSeats: sum(own, (x) => x.bus.capacity), ownCost: Math.round(sum(own, (x) => x.cost)),
+    rent: rent.length, rentSeats: sum(rent, (x) => x.bus.capacity), rentCost: Math.round(sum(rent, (x) => x.cost)),
+    cph: r.kpis.costPerHeadDay,
+    cost: Math.round(sum(rs, (x) => x.cost)),
+    avgRide: sum(rs, (x) => x.toLastMin * x.heads) / heads,
+    maxRide: rs.reduce((m, x) => Math.max(m, x.toLastMin), 0),
+    util: r.kpis.utilisation,
+  };
+};
+
 log("optimising …");
 const t0 = Date.now();
-const live = optimise(stops, fleet, depot, metric ? { metric } : {});
+const base = { ...(metric ? { metric } : {}), ...(ALLOCATED ? { absenteeBuffer: 0 } : {}) };
+if (ALLOCATED) log(`planning for ALLOCATED headcount — every registered rider gets a seat`);
+let live = optimise(stops, fleet, depot, base);
 if (!live.ok) { console.error(`[${SVC_ID}] optimiser failed: ${live.reason}`); process.exit(1); }
+
+if (MAX_AVG_RIDE || MAX_RIDE || TARGET_CPH || PICK_OPT) {
+  const settings = [];
+  for (const rp of [0, 0.1, 0.3, 1, 3]) for (const red of [0, 1, 5, 15, 60]) settings.push({ rp, red });
+  const seen = new Map();
+  for (const { rp, red } of settings) {
+    const r = optimise(stops, fleet, depot, { ...base, ridePenaltyPerMin: rp, redPenaltyPerMin: red });
+    if (!r.ok) continue;
+    const st = rideStats(r);
+    const k = st.buses + ":" + Math.round(st.cph);
+    if (!seen.has(k)) seen.set(k, { st, r });
+  }
+  const all = [...seen.values()].sort((a, b) => a.st.cph - b.st.cph);
+  log(`OPTIONS for ${svc.name} — ${all.length} distinct plans:`);
+  log(`   ${"#".padStart(3)}  buses   owned (seats)   rental (seats)   ₹/head    ₹/day   avg ride  max ride  util   fits?`);
+  all.forEach(({ st }, i) => {
+    const ok = (!MAX_AVG_RIDE || st.avgRide <= MAX_AVG_RIDE) && (!MAX_RIDE || st.maxRide <= MAX_RIDE);
+    log(`   ${String(i + 1).padStart(3)}  ${String(st.buses).padStart(5)}   ` +
+        `${String(st.own).padStart(5)} (${String(st.ownSeats).padStart(4)})   ` +
+        `${String(st.rent).padStart(6)} (${String(st.rentSeats).padStart(4)})   ` +
+        `₹${st.cph.toFixed(1).padStart(6)}  ${String(st.cost).padStart(7)}   ` +
+        `${st.avgRide.toFixed(1).padStart(6)}    ${String(Math.round(st.maxRide)).padStart(6)}  ` +
+        `${st.util.toFixed(0).padStart(4)}%   ${ok ? "✓" : "—"}`);
+  });
+  const PICK = PICK_OPT;
+  if (PICK && all[PICK - 1]) {
+    live = all[PICK - 1].r;
+    const st = all[PICK - 1].st;
+    log(`picked option ${PICK}: ${st.buses} buses · ₹${st.cph.toFixed(1)}/head · avg ${st.avgRide.toFixed(1)} min · max ${Math.round(st.maxRide)} min`);
+  } else {
+  const feasible = all.filter((x) =>
+    (!MAX_AVG_RIDE || x.st.avgRide <= MAX_AVG_RIDE) && (!MAX_RIDE || x.st.maxRide <= MAX_RIDE));
+  if (!feasible.length) {
+    log(`NO plan satisfies the ride limits — keeping the default plan.`);
+  } else {
+    live = feasible[0].r;                       // cheapest that respects the ride ceiling
+    const st = feasible[0].st;
+    log(`chose ${st.buses} buses · ₹${st.cph.toFixed(1)}/head · avg ${st.avgRide.toFixed(1)} min · max ${Math.round(st.maxRide)} min`);
+    if (TARGET_CPH && st.cph > TARGET_CPH) {
+      log(`TARGET MISSED: ₹${st.cph.toFixed(1)}/head vs target ₹${TARGET_CPH} — ` +
+          `cheapest ride-feasible plan on this fleet.`);
+    }
+  }
+  }
+}
+
+/* --trim-worst: the optimiser picks a whole plan by total cost, so one route can end up far
+   longer than the rest without that showing in the average. This shaves the WORST route
+   specifically — moving its stops onto buses with slack, keeping every capacity limit — and
+   accepts a move only when the longest ride in the whole plan actually drops. Cost is allowed
+   to drift slightly; the point is the outlier, not the total. */
+if (process.argv.includes("--trim-worst")) {
+  const maxOf = (sc) => Math.max(...sc.plan.routes.map((r) => r.toLastMin));
+  const clone = (a) => a.map((x) => ({ busId: x.busId, stops: [...x.stops] }));
+  let asg = live.plan.routes.map((r) => ({ busId: r.bus.id, stops: [...r.stops] }));
+  let cur = scorePlan(asg, fleet, depot, base);
+  const before = maxOf(cur), beforeCost = cur.kpis.costPerHeadDay;
+  log(`trimming the worst route (currently ${Math.round(before)} min) …`);
+  const cap = (b) => b.capacity + (base.capacityBuffer != null ? base.capacityBuffer : 5);
+  // MUST be haversine: validatePlan's closest-first check uses haversineKm (engine.js:432).
+  // Sorting by road km instead reorders stops the checker then flags as out of order.
+  const depotKm = (s) => haversineKm(depot, s);
+  for (let round = 0; round < 40; round++) {
+    const routes = cur.plan.routes;
+    const worst = routes.reduce((m, r) => (r.toLastMin > m.toLastMin ? r : m), routes[0]);
+    let moved = false;
+    for (const stop of [...worst.stops]) {
+      for (const target of routes) {
+        if (target.bus.id === worst.bus.id) continue;
+        if (target.heads + stop._dem > cap(target.bus)) continue;
+        for (let pos = 0; pos < 1; pos++) {
+          const trial = clone(asg);
+          const wa = trial.find((a) => a.busId === worst.bus.id);
+          const ta = trial.find((a) => a.busId === target.bus.id);
+          const i = wa.stops.findIndex((s) => s.id === stop.id);
+          if (i < 0) continue;
+          wa.stops.splice(i, 1);
+          ta.stops.push(stop);
+          // The engine asserts every route runs closest-first; dropping a stop in at an
+          // arbitrary index breaks that invariant and fails validatePlan. Re-sort instead.
+          ta.stops.sort((x, y) => depotKm(x) - depotKm(y));
+          if (!wa.stops.length) continue;              // don't empty a bus off the plan
+          const sc = scorePlan(trial, fleet, depot, base);
+          if (maxOf(sc) < maxOf(cur) - 0.01) { asg = trial; cur = sc; moved = true; break; }
+        }
+        if (moved) break;
+      }
+      if (moved) break;
+    }
+    if (!moved) break;
+  }
+  const after = maxOf(cur);
+  log(`worst route ${Math.round(before)} → ${Math.round(after)} min` +
+      (after < before ? ` (−${Math.round(before - after)} min)` : ` (no improvement found)`) +
+      ` · ₹${beforeCost.toFixed(1)} → ₹${cur.kpis.costPerHeadDay.toFixed(1)}/head`);
+  if (after < before) live = cur;
+}
 log(`solved in ${((Date.now() - t0) / 1000).toFixed(1)}s — ${live.kpis.buses} buses, ` +
     `₹${Math.round(live.kpis.costPerHeadDay)}/head/day, max ride ${Math.round(live.kpis.maxRide)} min`);
 
-const checks = validatePlan(live, stops, fleet, depot, metric ? { metric } : {});
+const checks = validatePlan(live, stops, fleet, depot, base);
 checks.filter((c) => !c.ok).forEach((c) => log(`  ⚠ FAILED: ${c.label} — ${c.detail}`));
 const failed = checks.filter((c) => !c.ok).length;
 log(`integrity: ${checks.length - failed}/${checks.length} checks pass`);
@@ -214,8 +385,24 @@ const payload = {
   service: { id: svc.id, name: svc.name, depot: { name: depot.name, lat: depot.lat, lng: depot.lng } },
   generated: new Date().toISOString().slice(0, 10),
   matrix: { file: matrixFile, stops_matched: matched, stops_total: stops.length },
+  /* How this plan's ₹/head was charged. Recorded because it is NOT comparable across
+     plans that used a different basis: finalised_plan.json bills its buses in full, so
+     its ₹58/head and a shared-cost ₹83/head are measuring different things. */
+  costing: NO_STANDING
+    ? { basis: "running-only", standing: false, shared: SHARE,
+        note: "owned buses charged diesel only — loan, driver and maintenance treated as sunk. NOT comparable to a plan that includes them." }
+    : SHARE
+      ? { basis: "shared", standing: true, shared: true,
+          note: "standing costs split by each bus's rider share across services; diesel charged whole" }
+      : { basis: "full", standing: true, shared: false,
+          note: "every bus charged 100% to this service, even when it also runs another" },
   integrity: { checks: checks.length, failed },
-  params: { demand: live.kpis.heads, stops: routes.reduce((s, r) => s + r.stops, 0), totalRiders: riders.length },
+  /* `depot` is [lat, lng] — the Fleet-plan map reads params.depot[0]/[1] to centre itself, so
+     a plan without it renders "Map unavailable". max_ride/soft_ride feed the KPI explainers. */
+  params: { demand: live.kpis.heads, stops: routes.reduce((s, r) => s + r.stops, 0),
+            totalRiders: riders.length, depot: [depot.lat, depot.lng],
+            max_ride: Math.round(live.params ? live.params.hardCapMin : 600),
+            soft_ride: Math.round(live.params ? live.params.softCapMin : 45) },
   overall: agg(routes),
   owned: agg(routes.filter((r) => r.type === "own")),
   rental: agg(routes.filter((r) => r.type === "rent")),

@@ -12,7 +12,20 @@ home GPS. We do NOT know the travel order (the ERP has no sequence), so per vehi
 Owned vs rental from the Type field. Employees without GPS can't be placed (reported per bus).
 """
 import json, math, ssl, time, argparse, urllib.request, urllib.error
+import re
 from collections import defaultdict, Counter
+
+def _erp_day_key(d):
+    """Sort key for the ERP's DD-MM-YYYY date strings.
+
+    These are STRINGS, so sorted()[-1] compares character by character and ranks
+    "31-07-2026" above "10-08-2026" — every consumer then silently analysed a day
+    ten days stale. Parse the parts and compare them as a date.
+    """
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})", (d or "").strip())
+    return (int(m.group(3)), int(m.group(2)), int(m.group(1))) if m else (0, 0, 0)
+
+
 
 DEPOT = (10.207550, 77.806206)
 MERGE_M = 200.0  # overridden by --merge-m (0 = un-merged: every distinct home GPS is its own stop)
@@ -103,7 +116,7 @@ def main():
     global MERGE_M
     MERGE_M = args.merge_m
     rows = json.load(open("data/erp_live.json"))
-    latest = sorted({norm(r.get("date")) for r in rows if norm(r.get("date"))})[-1]
+    latest = max({norm(r.get("date")) for r in rows if norm(r.get("date"))}, key=_erp_day_key)
 
     veh = defaultdict(lambda: {"emps": {}, "type": "", "seat": Counter(), "unit": Counter()})
     for r in rows:

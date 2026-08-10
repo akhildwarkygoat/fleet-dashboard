@@ -14,7 +14,20 @@ matrix into build_matrices() later for road-accurate numbers).
 Usage:  python optimize.py [stops.csv] [--riders 1777] [--seconds 30] [--max-ride 150]
 """
 import csv, math, argparse, json, os
+import re
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
+def _erp_day_key(d):
+    """Sort key for the ERP's DD-MM-YYYY date strings.
+
+    These are STRINGS, so sorted()[-1] compares character by character and ranks
+    "31-07-2026" above "10-08-2026" — every consumer then silently analysed a day
+    ten days stale. Parse the parts and compare them as a date.
+    """
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})", (d or "").strip())
+    return (int(m.group(3)), int(m.group(2)), int(m.group(1))) if m else (0, 0, 0)
+
+
 
 # ----------------------------------------------------------------- parameters
 DEPOT       = (10.207550, 77.806206)   # factory
@@ -100,7 +113,7 @@ def _fleet_from_erp(path="data/erp_live.json"):
     from collections import Counter as _C, defaultdict as _dd
     rows = _json.load(open(path))
     def _n(s): return (s or "").strip()
-    latest = sorted({_n(r.get("date")) for r in rows if _n(r.get("date"))})[-1]
+    latest = max({_n(r.get("date")) for r in rows if _n(r.get("date"))}, key=_erp_day_key)
     veh = _dd(lambda: {"seat": _C(), "type": _C(), "mil": _C()})
     for r in rows:
         if _n(r.get("date")) != latest:

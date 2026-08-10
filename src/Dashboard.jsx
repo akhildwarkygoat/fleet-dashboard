@@ -5,7 +5,7 @@ import {
   Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff, Route, RefreshCw, IndianRupee
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
-import { serviceIdFor } from "./optimiser/services.js";
+import { serviceIdFor, SERVICES } from "./optimiser/services.js";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
 import { fetchErpRaw, fetchErpCostRaw, mapErpToDashboard, mapErpCosts, canonVehicle, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 import {
@@ -985,11 +985,24 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
 
       {planSummary && (
         <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm" style={{ background: t.surface, borderColor: t.border }}>
-          <span className="font-semibold flex items-center gap-2" style={{ color: t.text }}><Route size={15} style={{ color: t.primary }} /> Finalised plan</span>
+          <span className="font-semibold flex items-center gap-2" style={{ color: t.text }}>
+            <Route size={15} style={{ color: t.primary }} />
+            Finalised plans · {planSummary.services.length} of {planSummary.services.length + planSummary.missing.length} services
+          </span>
           <span className="tabular-nums" style={{ color: t.muted }}><b style={{ color: t.text }}>{planSummary.buses}</b> routes ({planSummary.matched} on today's fleet)</span>
           <span className="tabular-nums" style={{ color: t.muted }}><b style={{ color: t.text }}>{planSummary.km.toLocaleString("en-IN")}</b> km/day</span>
-          <span className="tabular-nums" style={{ color: t.muted }}>plan cost <b style={{ color: t.text }}>{inr(planSummary.cost)}</b>/day · {inr(planSummary.cost_head)}/head</span>
-          <span className="text-xs" style={{ color: t.faint }}>Live spend below swaps the plan's assumed fixed ₹1,934/bus for each bus's real ERP standing costs; km &amp; diesel are the plan's.</span>
+          <span className="tabular-nums" style={{ color: t.muted }}>plan cost <b style={{ color: t.text }}>{inr(planSummary.cost)}</b>/day{planSummary.mixedBasis ? "" : ` · ${inr(planSummary.cost_head)}/head`}</span>
+          <span className="text-xs w-full" style={{ color: t.faint }}>
+            {planSummary.services.join(" · ")}
+            {planSummary.missing.length ? ` — not included: ${planSummary.missing.join(", ")} (no plan yet)` : ""}
+          </span>
+          {planSummary.mixedBasis && (
+            <span className="text-xs w-full" style={{ color: t.watch }}>
+              ₹/head is hidden: these plans use different cost bases (some charge loan, driver and
+              maintenance, some treat them as sunk), so a combined per-head figure would be meaningless.
+            </span>
+          )}
+          <span className="text-xs w-full" style={{ color: t.faint }}>Live spend below swaps the plan's assumed fixed ₹1,934/bus for each bus's real ERP standing costs; km &amp; diesel are the plan's.</span>
         </div>
       )}
 
@@ -2662,12 +2675,26 @@ export default function App() {
   useEffect(() => { if (loaded) Store.set("busInfo", busInfo); }, [busInfo, loaded]);
   useEffect(() => { if (loaded) Store.set("costLedger", ledger); }, [ledger, loaded]);
 
-  // The finalised route plan ships with the app (public/) — one fetch, no persistence needed.
+  /* Every service's finalised plan, not just 9 am's. The strip below used to read
+     finalised_plan.json alone while sitting under a fleet-wide bus count, so a fleet running
+     four services advertised one service's routes and cost as if they were the whole day.
+     `plan` stays 9 am only — it feeds the per-bus cost overlay, and a bus shared between
+     services would otherwise have one service's route silently overwrite another's. */
   useEffect(() => {
     fetch("/finalised_plan.json")
       .then((r) => (r.ok ? r.json() : null))
       .then((p) => { if (p && Array.isArray(p.routes)) setPlan(p); })
       .catch(() => {});   // no plan file → dashboard runs exactly as before
+  }, []);
+  const [servicePlans, setServicePlans] = useState([]);
+  useEffect(() => {
+    const withPlans = SERVICES.filter((s) => s.planUrl);
+    Promise.all(withPlans.map((s) =>
+      fetch(s.planUrl + "?ts=" + Date.now())
+        .then((r) => (r.ok ? r.json() : null))
+        .then((p) => (p && Array.isArray(p.routes) ? { svc: s, plan: p } : null))
+        .catch(() => null)
+    )).then((rs) => setServicePlans(rs.filter(Boolean)));
   }, []);
   /* Per-SERVICE roll-up, DERIVED from the synced employees rather than captured during the
      sync: on a day that is already synced the stored snapshot is served and syncErp never
@@ -2714,9 +2741,24 @@ export default function App() {
   const setBusField = useCallback((busId, patch) =>
     setBusInfo((prev) => ({ ...prev, [busId]: { ...prev[busId], ...patch } })), []);
   const effRecords = useMemo(() => mergeCostsIntoRecords(records, effBuses, attendance, busCosts, wd), [records, effBuses, attendance, busCosts, wd]);
-  const planSummary = useMemo(() => plan && plan.overall
-    ? { ...plan.overall, matched: buses.filter((b) => planByVeh.has(b.id)).length }
-    : null, [plan, buses, planByVeh]);
+  const planSummary = useMemo(() => {
+    if (!servicePlans.length) return null;
+    const named = new Set();
+    servicePlans.forEach(({ plan: p }) => (p.routes || []).forEach((r) => named.add(canonVehicle(r.name))));
+    // Plans built on different cost bases must not be added into one ₹/head. finalised_plan
+    // charges loan+driver+maintenance in full; the headless plans can exclude them.
+    const bases = new Set(servicePlans.map(({ plan: p }) => (p.costing && p.costing.basis) || "full"));
+    const sum = (f) => servicePlans.reduce((n, { plan: p }) => n + (+f(p.overall) || 0), 0);
+    const riders = sum((o) => o.riders);
+    return {
+      buses: sum((o) => o.buses), km: sum((o) => o.km), cost: sum((o) => o.cost), riders,
+      cost_head: riders ? sum((o) => o.cost) / riders : 0,
+      matched: buses.filter((b) => named.has(b.id)).length,
+      services: servicePlans.map(({ svc }) => svc.name),
+      missing: SERVICES.filter((s) => !servicePlans.some((x) => x.svc.id === s.id)).map((s) => s.name),
+      mixedBasis: bases.size > 1,
+    };
+  }, [servicePlans, buses]);
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.

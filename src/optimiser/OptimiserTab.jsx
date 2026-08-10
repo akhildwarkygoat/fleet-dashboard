@@ -24,7 +24,7 @@ import "leaflet/dist/leaflet.css";
 import { Card, Btn, Field, TextInput, SelectInput, Tile, Empty, StatusPill, Segmented, makeTooltip, routeColorMap, PALETTE } from "./ui.jsx";
 import { ServiceBoard, TimingsView } from "./TimingsView.jsx";
 import { stopsForRiders, coverageOf } from "./serviceStops.js";
-import { serviceNeed, serviceIdFor, erpStatsFor } from "./services.js";
+import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js";
 
 const inr = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
@@ -1096,7 +1096,10 @@ function attachEffDemand(seq, target) {
   return seq.map((s, i) => ({ ...s, eff: eff[i] }));
 }
 
-function FleetPlanView({ t }) {
+/* `svc` decides WHICH plan is drawn. Without it this read activePlanUrl() — the 9 am
+   plan-variant picker — for every service, so Rotational, Zenwear and 7 am Morning all
+   showed 9 am's 75 buses, 3,021 riders and ₹56.7/head as if they were their own. */
+function FleetPlanView({ t, svc }) {
   const [data, setData] = useState(null);
   const view = "overall"; // Combined data only (owned/rental split shown within the KPIs)
   const [names, setNames] = useState(() => { try { return JSON.parse(localStorage.getItem("opt-route-names") || "{}"); } catch { return {}; } }); // custom route names, keyed by bus
@@ -1111,22 +1114,73 @@ function FleetPlanView({ t }) {
   const [routeQuery, setRouteQuery] = useState(""); // routes table search box
   const [stopsPanelOpen, setStopsPanelOpen] = useState(true); // master-map stop-order panel: expanded/minimized
   const [err, setErr] = useState(false);
+  const isOverall = !svc || !!svc.overall;
+  const planSrc = isOverall ? null : (svc.id !== "s9" ? (svc.planUrl || null) : activePlanUrl());
+  /* Overall means EVERY service that has a plan, merged — not 9 am's plan standing in for the
+     fleet. Built from SERVICES at load time, so the day Rotational gets a planUrl it appears
+     here with no further change. */
+  const [mixedBasis, setMixedBasis] = useState(false);
+  const [drawn, setDrawn] = useState([]);
   const load = () => {
     setErr(false); setData(null);
-    fetch(activePlanUrl() + "?ts=" + Date.now())
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => {
-        if (d && d.routes) for (const r of d.routes) r.seq = attachEffDemand(r.seq, r.riders);
-        setData(d);
-      }).catch(() => setErr(true));
+    if (!isOverall) {
+      if (!planSrc) { setErr(true); return; }      // no plan for this service yet
+      fetch(planSrc + "?ts=" + Date.now())
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((d) => {
+          if (d && d.routes) for (const r of d.routes) r.seq = attachEffDemand(r.seq, r.riders);
+          setDrawn([svc.name]); setMixedBasis(false); setData(d);
+        }).catch(() => setErr(true));
+      return;
+    }
+    const withPlans = SERVICES.filter((x) => x.planUrl);
+    Promise.all(withPlans.map((x) =>
+      fetch((x.id === "s9" ? activePlanUrl() : x.planUrl) + "?ts=" + Date.now())
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => (d && Array.isArray(d.routes) ? { x, d } : null)).catch(() => null)
+    )).then((parts) => {
+      const ok = parts.filter(Boolean);
+      if (!ok.length) { setErr(true); return; }
+      const routes = [];
+      ok.forEach(({ x, d }) => d.routes.forEach((r) => {
+        r.seq = attachEffDemand(r.seq, r.riders);
+        routes.push({ ...r, service: x.name, serviceColor: x.color });
+      }));
+      const sum = (f) => routes.reduce((n, r) => n + (+f(r) || 0), 0);
+      const rd = sum((r) => r.riders) || 1;
+      const roll = (list) => {
+        const rid = list.reduce((n, r) => n + (+r.riders || 0), 0) || 0;
+        const seats = list.reduce((n, r) => n + (+r.cap || 0), 0);
+        const cost = list.reduce((n, r) => n + (+r.cost || 0), 0);
+        const km = list.reduce((n, r) => n + (+r.km || 0), 0);
+        const w = rid || 1;
+        return { buses: list.length, riders: rid, seats, cost: Math.round(cost), km: Math.round(km * 10) / 10,
+          util: seats ? +((rid / seats) * 100).toFixed(1) : 0, cost_head: +(cost / w).toFixed(1),
+          avg_ride: +(list.reduce((n, r) => n + (+r.ride || 0) * (+r.riders || 0), 0) / w).toFixed(1),
+          avg_stops: +(list.reduce((n, r) => n + (+r.stops || 0), 0) / (list.length || 1)).toFixed(1),
+          max_ride: list.reduce((m, r) => Math.max(m, +r.ride || 0), 0) };
+      };
+      const base = ok[0].d;
+      const bases = new Set(ok.map(({ d }) => (d.costing && d.costing.basis) || "full"));
+      setMixedBasis(bases.size > 1);
+      setDrawn(ok.map(({ x }) => x.name));
+      setData({
+        ...base, routes,
+        params: { ...(base.params || {}), stops: sum((r) => r.stops) },
+        overall: roll(routes), owned: roll(routes.filter((r) => r.type === "own")),
+        rental: roll(routes.filter((r) => r.type === "rent")),
+      });
+    }).catch(() => setErr(true));
   };
-  useEffect(load, []);
+  useEffect(load, [planSrc, isOverall]);
   const inr0 = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
   if (err) return (
-    <Empty t={t} title="No solver plan yet"
-      sub="Run  python optimize.py  in the fleet-dashboard folder to generate the global fleet plan, then reload.">
-      <Btn t={t} onClick={load}><RotateCcw size={15} /> Reload</Btn>
+    <Empty t={t} title={svc && !svc.overall && !svc.planUrl ? `${svc.name} — to be planned` : "No solver plan yet"}
+      sub={svc && !svc.overall && !svc.planUrl
+        ? "This service has no finalised plan yet, so there are no routes, costs or ride times to show. Build one from the Planner tab, or run the optimiser for it."
+        : "Run  python optimize.py  in the fleet-dashboard folder to generate the global fleet plan, then reload."}>
+      {(!svc || svc.overall || svc.planUrl) && <Btn t={t} onClick={load}><RotateCcw size={15} /> Reload</Btn>}
     </Empty>);
   if (!data) return <Card t={t}><div className="py-6 text-center" style={{ color: t.muted }}>Loading solver plan…</div></Card>;
 
@@ -1205,6 +1259,27 @@ function FleetPlanView({ t }) {
 
   return (
     <div className="space-y-4">
+      {/* Say WHAT is on screen. "Overall" silently meant 9 am General before, so a fleet-wide
+          reading of these KPIs was wrong by three services. */}
+      {isOverall && drawn.length > 0 && (
+        <div className="rounded-xl border px-3 py-2 text-xs flex flex-wrap items-center gap-x-3 gap-y-1"
+          style={{ background: t.surface2, borderColor: t.border, color: t.muted }}>
+          <span style={{ color: t.text, fontWeight: 600 }}>
+            {drawn.length} of {SERVICES.length} services planned
+          </span>
+          <span>{drawn.join(" · ")}</span>
+          {SERVICES.filter((x) => !x.planUrl).length > 0 && (
+            <span style={{ color: t.faint }}>
+              not shown: {SERVICES.filter((x) => !x.planUrl).map((x) => x.name).join(", ")} — no plan yet
+            </span>
+          )}
+          {mixedBasis && (
+            <span style={{ color: t.watch }}>
+              ₹/head spans different cost bases (some plans charge loan, driver and maintenance, some treat them as sunk)
+            </span>
+          )}
+        </div>
+      )}
       {selActive && (
         <div className="flex flex-wrap items-center gap-2 text-xs rounded-xl px-3 py-2" style={{ background: t.primarySoft, color: t.primary, fontWeight: 600 }}>
           Metrics below reflect <b>{selRoutes.size}</b> selected bus{selRoutes.size === 1 ? "" : "es"} · {m.riders} riders · {m.seats} seats.
@@ -1825,7 +1900,19 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
           </div>
         )}
       </div>
-      {svcNeed && (
+      {/* A `notice` explains WHY a service is still unplanned, which "needs X" alone doesn't.
+          It replaces the generic line rather than sitting beside it, so the board carries one
+          message per service instead of two saying nearly the same thing. */}
+      {svc && !svc.overall && svc.notice ? (
+        <div className="rounded-xl border px-4 py-3 mb-4 text-sm"
+          style={{ background: t.watchSoft, borderColor: t.watch, color: t.text }}>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: t.watch }} />
+            <span className="font-semibold">{svc.name} — optimiser in progress</span>
+          </div>
+          <div style={{ color: t.muted }}>{svc.notice}</div>
+        </div>
+      ) : svcNeed && (
         <div className="rounded-xl border px-4 py-2.5 mb-4 text-sm flex flex-wrap items-center gap-2"
           style={{ background: t.primarySoft, borderColor: t.primary, color: t.text }}>
           <span className="font-semibold">{svc.name}</span>
@@ -1836,7 +1923,7 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
         ? <StopsView key={svc.id} t={t} toast={toast} stops={svcStops} viewStops={svcStops} routes={routes} refresh={refresh}
             depot={svc.depot} coverage={svcCoverage} calibrate={false} svc={svc} />
         : <StopsView key={planId || "d"} t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} depot={svc && svc.depot} />)}
-      {sub === "plan" && <FleetPlanView key={planId || "d"} t={t} />}
+      {sub === "plan" && <FleetPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} svc={svc} />}
       {sub === "new" && <NewPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} toast={toast}
         erpBuses={svcErpBuses} svc={svc && !svc.overall ? svc : null} svcStops={svcStops} />}
       {sub === "timings" && <TimingsView t={t} shifts={erpShifts} />}

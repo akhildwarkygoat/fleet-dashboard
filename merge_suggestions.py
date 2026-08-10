@@ -11,8 +11,18 @@ writes stop_merge_suggestions.xlsx.
 It does NOT touch the dashboard, current_routes.json, or any app data — it only reads
 the ERP dump and writes a brand-new spreadsheet for review/approval.
 """
-import json, math, argparse
+import json, math, argparse, re
 from collections import Counter, defaultdict
+
+def _erp_day_key(d):
+    """Sort key for the ERP's DD-MM-YYYY date strings.
+
+    They are STRINGS, so sorted()[-1] compares character by character and ranks
+    "31-07-2026" above "10-08-2026" — this file then analysed a day ten days stale.
+    """
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})", (d or "").strip())
+    return (int(m.group(3)), int(m.group(2)), int(m.group(1))) if m else (0, 0, 0)
+
 
 THRESHOLDS = [200.0, 300.0]
 SRC = "data/erp_live.json"
@@ -48,7 +58,7 @@ def gps(r):
 
 
 rows = json.load(open(SRC))
-latest = sorted({norm(r.get("date")) for r in rows if norm(r.get("date"))})[-1]
+latest = max({norm(r.get("date")) for r in rows if norm(r.get("date"))}, key=_erp_day_key)
 
 # per bus -> {gps: {hc, loc Counter}} : distinct-GPS stops exactly as the ERP has them
 buses = defaultdict(lambda: defaultdict(lambda: {"hc": 0, "loc": Counter()}))

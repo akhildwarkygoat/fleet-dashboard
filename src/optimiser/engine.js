@@ -189,6 +189,34 @@ function sweepClusters(depot, stops, capLimit) {
   return clusters;
 }
 
+/* ---- Clusters sized to the ACTUAL FLEET rather than to one uniform cap.
+   Every other strategy here asks "no cluster bigger than N" and sweeps N. That works for a
+   fleet of near-identical buses and cannot work for a mixed one. Zenwear runs 6x54, 2x41,
+   2x36 and 9x20: size every cluster for the 54s and you get ~10 clusters but only 6 buses
+   that big; size them for the 20s and you get ~27 clusters against 19 buses. Neither is
+   feasible, though 6 big clusters plus 9 small ones fits comfortably.
+   Filling cluster i to the capacity of bus i produces exactly that mix. Both orderings are
+   offered because which end of the fleet should absorb the dense stops depends on where the
+   riders are, and the caller scores both and keeps the cheaper. ---- */
+function fleetClusters(depot, stops, fleet, p, order = "desc") {
+  if (!fleet.length) return [];
+  const caps = fleet.map((b) => b.capacity + (p.capacityBuffer || 0))
+    .filter((c) => c > 0)
+    .sort((a, b) => (order === "desc" ? b - a : a - b));
+  if (!caps.length) return [];
+  const sorted = [...stops].sort((a, b) => bearing(depot, a) - bearing(depot, b));
+  const clusters = [];
+  let ci = 0, cur = [], curDem = 0;
+  for (const s of sorted) {
+    const cap = caps[Math.min(ci, caps.length - 1)];
+    // start a new cluster once this one is full — and step to the NEXT bus's capacity
+    if (cur.length && curDem + s._dem > cap) { clusters.push(cur); cur = []; curDem = 0; ci++; }
+    cur.push(s); curDem += s._dem;
+  }
+  if (cur.length) clusters.push(cur);
+  return clusters;
+}
+
 /* ---- Clarke-Wright SAVINGS clustering — groups genuinely-nearby stops using the ROAD MATRIX.
    savings(i,j) = roadKm(depot,i) + roadKm(depot,j) − roadKm(i,j): how much road distance is
    saved by serving i and j on one bus instead of two. Merge highest-savings pairs first,
@@ -334,6 +362,9 @@ export function optimise(rawStops, fleet, depot, params = {}) {
     if (!a || a.error) { debug.push({ tag, cap, clusters: clusters.length, fail: a ? a.error : "null", detail: a ? a.detail : "" }); return; }
     candidates.push({ plan: a, kpis: kpisOf(a, p) });
   };
+  // fleet-shaped clusterings: no cap to sweep, the fleet itself sets the sizes
+  tryClusters(fleetClusters(depot, stops, fleet, p, "desc"), "fleet-desc", 0);
+  tryClusters(fleetClusters(depot, stops, fleet, p, "asc"), "fleet-asc", 0);
   for (const cap of caps) {
     tryClusters(savingsClusters(depot, stops, cap, p), "savings", cap); // road-matrix proximity (preferred)
     tryClusters(sweepClusters(depot, stops, cap), "global", cap);       // bearing sweep (fallback)

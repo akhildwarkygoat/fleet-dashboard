@@ -90,8 +90,9 @@ export const ZENWEAR_MATRIX = "/road_matrix_zenwear.json";
 export const SERVICES = [
   { id: "s9",    name: "9 am General", color: "#2186eb", gate: 9 * 60, erpShift: "GENERAL SHIFT - 9", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/finalised_plan.json" },   // Batlagundu only — Zenwear's 9 am riders belong to Zenwear
   { id: "s7",    name: "7 am Morning", color: "#d97706", gate: 7 * 60, erpShift: "MORNING SHIFT - 7", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_s7.json" },
-  { id: "rot",   name: "Rotational",   color: "#0d9488", gate: null,   erpShift: "ROTATIONAL SHIFT", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, slots: ROTATION_SLOTS },
-  { id: "zen",   name: "Zenwear",      color: "#be1250", gate: 9 * 60, erpShift: null, erpUnit: "Zenwear", depot: ZENWEAR_DEPOT, matrixUrl: ZENWEAR_MATRIX, branch: true },
+  { id: "rot",   name: "Rotational",   color: "#0d9488", gate: null,   erpShift: "ROTATIONAL SHIFT", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, slots: ROTATION_SLOTS,
+    notice: "Optimiser for the Rotational shift is being worked on. It runs three round-the-clock slots, so only about a third of its 786 riders travel at once — but the ERP doesn't yet record which employee is in which group, so a plan can't be split across the slots. Planning all 786 together needs roughly three times the fleet." },
+  { id: "zen",   name: "Zenwear",      color: "#be1250", gate: 9 * 60, erpShift: null, erpUnit: "Zenwear", depot: ZENWEAR_DEPOT, matrixUrl: ZENWEAR_MATRIX, branch: true, planUrl: "/plan_zen.json" },
 ];
 
 /* The seventh choice on the board: not a service but the union of them —

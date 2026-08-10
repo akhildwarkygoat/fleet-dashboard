@@ -86,7 +86,12 @@ export function ServiceBoard({ t, onPick, shifts, shiftDate }) {
                 ) : (
                   <div className="text-sm" style={{ color: t.faint }}>Needs {need}</div>
                 )}
-                {stats && need && <div className="text-xs" style={{ color: t.faint }}>Needs {need}</div>}
+                {stats && need && (s.notice
+                  ? <div className="text-xs font-medium flex items-center gap-1.5" style={{ color: t.watch }}>
+                      <span className="w-1.5 h-1.5 rounded-full animate-pulse shrink-0" style={{ background: t.watch }} />
+                      Optimiser in progress
+                    </div>
+                  : <div className="text-xs" style={{ color: t.faint }}>Needs {need}</div>)}
               </button>
             );
           })}
