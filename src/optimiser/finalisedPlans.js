@@ -53,10 +53,16 @@ export function clearFinalised(svcId) {
 export function resolveFinalised(svc) {
   const ref = getFinalised()[svc.id];
   if (ref && ref.kind === "draft") {
-    // a draft that has since been deleted must not blank the service — fall back and say so
+    /* The scored BODY captured at finalise time is what makes a draft usable outside the
+       Planner. Returning only an id sent every reader to the optimised file, so the board
+       showed the draft's name against the optimised plan's numbers. A ref with no body predates
+       that fix and is reported as needing re-finalising rather than silently mis-costed. */
     const d = store.getPlanDraft(ref.id);
-    if (d) return { kind: "draft", draftId: ref.id, name: ref.name || d.name, isDefault: false };
-    return { kind: "plan", file: svc.planUrl, name: "Optimised", isDefault: true, lostDraft: ref.name };
+    if (d && ref.body && Array.isArray(ref.body.routes)) {
+      return { kind: "draft", draftId: ref.id, name: ref.name || d.name, body: ref.body, isDefault: false };
+    }
+    return { kind: "plan", file: svc.planUrl, name: "Optimised", isDefault: true,
+             lostDraft: ref.name, needsRefinalise: !!d };
   }
   if (ref && ref.kind === "plan" && ref.file) {
     return { kind: "plan", file: ref.file, name: ref.name || "Finalised", isDefault: false };

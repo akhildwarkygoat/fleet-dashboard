@@ -1140,10 +1140,14 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
                       : { background: t.goodSoft, color: t.good }}>
                     {fin.isDefault ? "Optimised · default" : fin.name}
                   </span>
+                  {/* Two different reasons a choice stopped resolving, and they need different
+                      instructions: the plan is gone, or it predates storing its scored body. */}
                   {fin.lostDraft && (
                     <span className="ml-1.5 text-[11px]" style={{ color: t.watch }}
-                      title="The finalised plan was deleted, so this fell back to the optimised one">
-                      “{fin.lostDraft}” was deleted
+                      title={fin.needsRefinalise
+                        ? `“${fin.lostDraft}” was finalised before its costs were captured — open it and press Finalise again`
+                        : "The finalised plan was deleted, so this fell back to the optimised one"}>
+                      {fin.needsRefinalise ? `re-finalise “${fin.lostDraft}”` : `“${fin.lostDraft}” was deleted`}
                     </span>
                   )}
                 </td>
@@ -1262,7 +1266,12 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
     const withPlans = SERVICES.filter((x) => resolveFinalised(x).file || x.planUrl);
     Promise.all(withPlans.map((x) => {
       const fin = resolveFinalised(x);
-      const url = fin.file || (x.id === "s9" ? activePlanUrl() : x.planUrl);
+      // a finalised draft carries its own scored body — there is no file to fetch
+      if (fin.body && Array.isArray(fin.body.routes)) return Promise.resolve({ x, d: fin.body, fin });
+      /* The default for 9 am is its planUrl, not activePlanUrl(). The variant picker points at
+         solver_result (75 buses) while the Live strip reads finalised_plan (70) — the two
+         disagreed by 5 buses on every fleet total. One source for the default. */
+      const url = fin.file || x.planUrl;
       return fetch(url + "?ts=" + Date.now())
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => (d && Array.isArray(d.routes) ? { x, d, fin } : null)).catch(() => null);

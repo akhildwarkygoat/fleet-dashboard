@@ -7,14 +7,15 @@
  * ==========================================================================*/
 import React, { useEffect, useMemo, useState } from "react";
 import * as store from "./store.js";
-import { usePlanMetric, usePlanEditor, seedFromSolver, fleetFromSolver, fleetFromErp } from "./planEditor.js";
+import { usePlanMetric, usePlanEditor, seedFromSolver, fleetFromSolver, fleetFromErp, busForEngine } from "./planEditor.js";
 import { Btn, Empty, PALETTE } from "./ui.jsx";
 import NewPlanBoard from "./NewPlanBoard.jsx";
 import PlanGallery from "./PlanGallery.jsx";
 import { activePlanUrl, getActivePlanLabel } from "./planOptions.js";
 import { resolveFinalised, setFinalised, clearFinalised } from "./finalisedPlans.js";
 import { Save, Sparkles, RotateCcw, Download, Undo2, Redo2, Wand2, ArrowLeft, Sunset, Sunrise } from "lucide-react";
-import { downloadPlanJson } from "./planExport.js";
+import { downloadPlanJson, toSolverResult } from "./planExport.js";
+import { scorePlan } from "./engine.js";
 
 const EMPTY = new Map();
 const mapFrom = (assignments) => { const m = new Map(); for (const k of Object.keys(assignments || {})) m.set(k, assignments[k]); return m; };
@@ -102,14 +103,38 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   /* Which plan this service actually runs. Absent -> the optimiser's output stands in,
      flagged isDefault so "nobody decided" never reads as "somebody chose this". */
   const [finalised, setFinal] = useState(() => (svc ? resolveFinalised(svc) : null));
+  /* Score a saved draft into the same solver_result shape a plan file has. Finalising stores
+     that BODY, not just a pointer: a draft is a Map of bus -> stop ids, which means nothing
+     without this service's fleet, depot, stops and road matrix. Without the body every reader
+     fell back to the optimised file — the board showed the draft's NAME beside the optimised
+     plan's numbers (Zenwear read 12 buses / Rs40.6 for an 18-bus / Rs80.8 plan). */
+  const scoreDraft = (d) => {
+    const asg = Object.entries(d.assignments || {}).map(([busId, ids]) => ({
+      busId,
+      stops: (ids || []).map((id) => stopsById.get(id)).filter(Boolean)
+        .map((st) => ({ ...st, _idx: idxOf.get(st.id), _dem: demandOf(st) })),
+    })).filter((a) => a.stops.length);
+    if (!asg.length) return null;
+    const live = scorePlan(asg, fleet.map(busForEngine), depot, metric ? { metric } : {});
+    if (!live || !live.ok) return null;
+    return toSolverResult(live, fleet, depot, totalRiders, allStops);
+  };
+
   const finalise = (ref) => {
     if (!svc) return;
     const cur = resolveFinalised(svc);
     const same = ref.kind === "draft" ? cur.draftId === ref.id : cur.kind === "plan" && !cur.isDefault;
     if (same) { clearFinalised(svc.id); setFinal(resolveFinalised(svc)); toast && toast(`${svc.name} back to the optimised plan`); return; }
-    setFinalised(svc.id, ref);
+    let body = null;
+    if (ref.kind === "draft") {
+      const d = store.getPlanDraft(ref.id);
+      body = d ? scoreDraft(d) : null;
+      if (!body) { toast && toast("Couldn't score that plan — open it once, then finalise"); return; }
+    }
+    setFinalised(svc.id, { ...ref, body });
     setFinal(resolveFinalised(svc));
-    toast && toast(`Finalised "${ref.name}" for ${svc.name}`);
+    toast && toast(`Finalised "${ref.name}" for ${svc.name}` +
+      (body ? ` · ${body.overall.buses} buses · ₹${body.overall.cost_head}/head` : ""));
   };
   const [current, setCurrent] = useState(null);           // { id, name } of the open saved draft, or null (unsaved)
   const [draftName, setDraftName] = useState("Untitled plan");
