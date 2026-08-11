@@ -177,6 +177,8 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   const glassTrack = glassDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.08)";
   const glassDivider = glassDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.1)";
   const PANEL_W = 300; // right bus panel width
+  const PANEL_H = 460; // bus panel height — capped so it stops being a full-height wall of
+                       // cards over the map; the grid inside already scrolls
 
   return (
     <div className={full ? "fixed inset-0 z-[1500] overflow-hidden" : "relative rounded-2xl overflow-hidden"}
@@ -206,8 +208,8 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
 
       {/* KPI glass strip — floats over the top of the map (clear of the zoom controls / bus panel) */}
       {showKpis && (
-      <div className="absolute z-[600] rounded-2xl px-3 py-2.5" style={{ top: PAD, left: 64, right: showBuses ? PANEL_W + PAD * 2 : PAD, ...glass }}>
-        <div className="flex items-center gap-1.5 text-[11px] font-medium mb-2" style={{ color: activeBus ? t.primary : t.muted }}>
+      <div className="absolute z-[600] rounded-2xl px-3 py-2" style={{ top: PAD, left: 64, right: showBuses ? PANEL_W + PAD * 2 : PAD, ...glass }}>
+        <div className="flex items-center gap-1.5 text-[11px] font-medium mb-1.5" style={{ color: activeBus ? t.primary : t.muted }}>
           <MousePointerClick size={13} />
           {activeBus
             ? (morning
@@ -259,14 +261,14 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
         {/* Was a fixed 4 columns for exactly 4 tiles. With the full KPI set — and a count that
             changes as you toggle them — it wraps instead, so the panel grows a row rather than
             squeezing eleven tiles into four slots. */}
-        <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))" }}>
+        <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(86px, 1fr))" }}>
           {shownTiles.map((c, i) => (
-            <div key={i} className="rounded-xl px-2.5 py-1.5 relative overflow-hidden" style={{ background: glassInner, border: "1px solid " + glassInnerBorder }}>
+            <div key={i} className="rounded-xl px-2 py-1 relative overflow-hidden" style={{ background: glassInner, border: "1px solid " + glassInnerBorder }}>
               {/* rail only when the accent came from a threshold — see Tile in Dashboard.jsx */}
               {c.accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: c.accent }} />}
-              <div className={"text-[9px] uppercase tracking-wider truncate" + (c.accent ? " pl-1.5" : "")} style={{ color: t.muted }}>{c.label}</div>
-              <div className={"text-lg font-bold tabular-nums leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: t.text }}>{c.value}</div>
-              <div className={"text-[9px] truncate" + (c.accent ? " pl-1.5" : "")} style={{ color: c.dc || t.muted }}>{c.sub}</div>
+              <div className={"text-[9px] uppercase tracking-wider truncate leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: t.muted }}>{c.label}</div>
+              <div className={"text-base font-bold tabular-nums leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: t.text }}>{c.value}</div>
+              <div className={"text-[9px] truncate leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: c.dc || t.muted }}>{c.sub}</div>
             </div>
           ))}
         </div>
@@ -281,7 +283,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
 
       {/* Bus glass panel — floats on the right of the map */}
       {showBuses && (
-      <div className="absolute z-[600] rounded-2xl flex flex-col overflow-hidden" style={{ top: PAD, right: PAD, bottom: PAD, width: PANEL_W, ...glass }}>
+      <div className="absolute z-[600] rounded-2xl flex flex-col overflow-hidden" style={{ top: PAD, right: PAD, width: PANEL_W, maxHeight: `calc(100% - ${PAD * 2}px)`, height: PANEL_H, ...glass }}>
         <div className="flex items-center justify-between px-3 pt-3 pb-2">
           <span className="text-xs font-bold uppercase tracking-wider" style={{ color: t.text }}>Your buses</span>
           <div className="flex items-center gap-2">
