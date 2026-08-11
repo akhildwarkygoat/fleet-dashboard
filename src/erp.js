@@ -246,6 +246,12 @@ export function mapErpToDashboard(rows) {
   const empLatest = new Map();  // Empl_no -> { date, r }  (keep the most recent mapping)
   const attendance = {};        // date -> { Empl_no: "P"|"A" }
   const empAtt = new Map();     // Empl_no -> { absent, days }  (absentee rate across the feed)
+  /* Empl_no -> the rider's most recent NON-BLANK Pun_Shift (1/2/3 = 06:00/14:00/22:00).
+     Rotational's three slots are separate services now, and this is what sorts riders between
+     them. Deliberately not "the latest row's value": mid-day the second and third shifts have
+     not punched yet, so today's rows are blank for most of them and reading those would empty
+     two of the three services until evening. */
+  const empSlot = new Map();
 
   for (const r of rows || []) {
     const veh = (r.VehName || r.Veh_Mas || "").trim();
@@ -259,6 +265,11 @@ export function mapErpToDashboard(rows) {
     // …and the same punches rolled up per rider, so a derived stop can carry a REAL
     // absentee rate. Without it every derived stop assumed nobody is ever away, and the
     // engine's per-stop `ceil(head x (1 - absentee + buffer))` rounded up at each one.
+    const slot = (r.Pun_Shift || "").trim();
+    if (slot) {
+      const prev = empSlot.get(emp);
+      if (!prev || d >= prev.d) empSlot.set(emp, { d, slot });
+    }
     const ea = empAtt.get(emp) || { absent: 0, days: 0 };
     if (!present) ea.absent++;
     ea.days++;
@@ -304,6 +315,8 @@ export function mapErpToDashboard(rows) {
     busId: (r.VehName || r.Veh_Mas || "").trim(),
     // share of this rider's punches that were absences — feeds stop-level absentee
     absentee: (() => { const a = empAtt.get(emp); return a && a.days ? a.absent / a.days : 0; })(),
+    // Rotational slot from the punch feed: "1" Day · "2" Half night · "3" Full night
+    slot: (empSlot.get(emp) || {}).slot || "",
     department: (r.DeptName || "").trim(),
     designation: (r.Catagory || "").trim(),
     travelMin: null,                   // -> RUN_OPTIMISER in the UI

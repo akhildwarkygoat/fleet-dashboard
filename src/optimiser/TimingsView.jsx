@@ -367,7 +367,10 @@ export function TimingsView({ t, shifts }) {
           </table>
         </div>
         <div className="text-xs mt-3" style={{ color: t.faint }}>
-          Week beginning {weekStart(new Date()).toISOString().slice(0, 10)}. The cycle is fixed; only which group starts where is unconfirmed — once the ERP carries the employee→group split, each slot fills with real riders and lands on the clock above.
+          Week beginning {weekStart(new Date()).toISOString().slice(0, 10)}. Each rider's slot is
+          read from the ERP punch feed (Pun_Shift), so the three slots are now separate services
+          with their own riders, gate times and plans — no group phase has to be assumed. The
+          cycle above only projects forward past the days the feed carries.
         </div>
       </Card>
 

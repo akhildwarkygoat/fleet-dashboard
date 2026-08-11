@@ -2711,7 +2711,7 @@ export default function App() {
     (employees || []).forEach((e) => {
       // the rider's own unit is authoritative; a bus's unit is only the majority of who
       // rides it, so a Zenwear rider on a mostly-Technotek bus would land in the wrong service
-      const id = serviceIdFor(e.unit || unitOfBus.get(e.busId), e.shift);
+      const id = serviceIdFor(e.unit || unitOfBus.get(e.busId), e.shift, e.slot);
       if (!id) return;
       let g = out[id];
       if (!g) { g = out[id] = { riders: 0, buses: new Set(), present: 0, shifts: {} }; }

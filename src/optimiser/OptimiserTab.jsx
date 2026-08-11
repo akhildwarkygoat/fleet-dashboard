@@ -1839,7 +1839,7 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
      answerable before paying for a matrix. */
   const svcStops = useMemo(() => {
     if (!svc || svc.overall || svc.id === "s9") return null;
-    const mine = (erpEmployees || []).filter((e) => serviceIdFor(e.unit, e.shift) === svc.id);
+    const mine = (erpEmployees || []).filter((e) => serviceIdFor(e.unit, e.shift, e.slot) === svc.id);
     if (!mine.length) return null;
     return stopsForRiders(mine, stops, { depot: svc.depot });
   }, [svc, erpEmployees, stops]);
@@ -1850,7 +1850,7 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
      service appears in each, which is correct: the vehicle really does do both runs. */
   const svcErpBuses = useMemo(() => {
     if (!svc || svc.overall || !erpBuses) return erpBuses;
-    const mine = (erpEmployees || []).filter((e) => serviceIdFor(e.unit, e.shift) === svc.id);
+    const mine = (erpEmployees || []).filter((e) => serviceIdFor(e.unit, e.shift, e.slot) === svc.id);
     const ids = new Set(mine.map((e) => e.busId).filter(Boolean));
     if (!ids.size) return erpBuses;
     return erpBuses.filter((b) => ids.has(b.id || b.vehicle));

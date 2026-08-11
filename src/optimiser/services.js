@@ -27,10 +27,17 @@ export const FACTORY_DEPOT = { name: "Batlagundu factory", lat: 10.207550, lng: 
 export const ZENWEAR_DEPOT = { name: "Zenwear — Subbulapuram", lat: 9.6732711, lng: 77.8072837 };
 
 /* ---- Rotational ----
- * Rotational is one ERP shift covering three round-the-clock slots. The groups
- * move on every Monday, one step along Day → Full night → Half night → Day.
- * Which employee sits in which group is not in the ERP yet; when it arrives,
- * feed it to rotationalSlotOn() and the assignment becomes automatic.
+ * Three round-the-clock slots. Every rider steps one place along
+ *     Day → Full night → Half night → Day
+ * on Monday, and stays there for the week.
+ *
+ * Verified against the punch feed rather than assumed: over the days the ERP carries, the
+ * three commonest week-to-week moves are exactly Half→Day (282), Day→Full (228) and
+ * Full→Half (166), with only 4% moving against the cycle.
+ *
+ * Which slot a given rider is on is now READ from the feed (`Pun_Shift`, 1/2/3), so nothing
+ * here has to be guessed for any date the feed covers. These helpers project the cycle
+ * FORWARD past that horizon — "where is this rider three weeks from now".
  */
 export const ROTATION_SLOTS = [
   { id: "day",   name: "Day",        from: 6 * 60,  to: 14 * 60, color: "#0d9488" },
@@ -52,9 +59,8 @@ export function rotationIndex(date, anchor = ROTATION_ANCHOR) {
   const n = ROTATION_SLOTS.length;
   return ((weeks % n) + n) % n;
 }
-/* Anchor week: the week group A is on Day. Set this to a real Monday once the
-   ERP tells us which group was where — until then the cycle is right and only
-   its phase is unconfirmed. */
+/* Anchor week: the Monday the cycle is measured from. Both 03-08 and 10-08 are Mondays in
+   the feed and the observed transitions line up with them, so the phase is no longer a guess. */
 export const ROTATION_ANCHOR = new Date(2026, 7, 3);   // Mon 03-08-2026
 
 /* Which slot a rotation group is on in a given week.
@@ -63,6 +69,18 @@ export function rotationalSlotOn(group, date) {
   const i = (rotationIndex(date) + (group || 0)) % ROTATION_SLOTS.length;
   return ROTATION_SLOTS[i];
 }
+/* Where a rider currently on `slotId` will be in the week containing `date`, stepping one
+   place every Monday. `from` defaults to now, so slotAfter("day") answers "and next week?".
+   This is the dynamic part: it needs no group number and no stored phase — just the slot the
+   feed says the rider is on today and how many Mondays separate the two dates. */
+export function slotOn(slotId, date, from = new Date()) {
+  const i = ROTATION_SLOTS.findIndex((s) => s.id === slotId);
+  if (i < 0) return null;
+  const n = ROTATION_SLOTS.length;
+  const weeks = Math.round((weekStart(date) - weekStart(from)) / (7 * 86400e3));
+  return ROTATION_SLOTS[(((i + weeks) % n) + n) % n];
+}
+
 /* The next slot a group moves to — "Day → Full night" reads straight off this. */
 export const nextSlot = (slotId) => {
   const i = ROTATION_SLOTS.findIndex((s) => s.id === slotId);
@@ -74,11 +92,17 @@ export const nextSlot = (slotId) => {
    one — both read "GENERAL SHIFT - 9". Services with their own `erpUnit` therefore claim
    their riders first, and the shift-based services take everyone left over. Shift still
    sub-divides WITHIN a unit, which is why Gainup's people split across all three shifts. */
-export function serviceIdFor(unit, shift) {
+export function serviceIdFor(unit, shift, slot) {
   const byUnit = SERVICES.find((s) => s.erpUnit && s.erpUnit === unit);
   if (byUnit) return byUnit.id;
-  const byShift = SERVICES.find((s) => s.erpShift && s.erpShift === shift);
-  return byShift ? byShift.id : null;
+  const byShift = SERVICES.filter((s) => s.erpShift && s.erpShift === shift);
+  if (!byShift.length) return null;
+  if (byShift.length === 1) return byShift[0].id;
+  /* Several services share one ERP shift string — Rotational's three slots all read
+     "ROTATIONAL SHIFT". The rider's punch slot (Pun_Shift: 1/2/3) picks which. A rider with
+     no slot on record belongs to none of them rather than being dumped into the first. */
+  const bySlot = byShift.find((s) => s.erpSlot && s.erpSlot === String(slot || "").trim());
+  return bySlot ? bySlot.id : null;
 }
 
 /* `matrixUrl` = the road matrix this service is measured on. Zenwear's depot is 59 km
@@ -90,8 +114,14 @@ export const ZENWEAR_MATRIX = "/road_matrix_zenwear.json";
 export const SERVICES = [
   { id: "s9",    name: "9 am General", color: "#2186eb", gate: 9 * 60, erpShift: "GENERAL SHIFT - 9", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/finalised_plan.json" },   // Batlagundu only — Zenwear's 9 am riders belong to Zenwear
   { id: "s7",    name: "7 am Morning", color: "#d97706", gate: 7 * 60, erpShift: "MORNING SHIFT - 7", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_s7.json" },
-  { id: "rot",   name: "Rotational",   color: "#0d9488", gate: null,   erpShift: "ROTATIONAL SHIFT", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, slots: ROTATION_SLOTS,
-    notice: "Optimiser for the Rotational shift is being worked on. It runs three round-the-clock slots, so only about a third of its 786 riders travel at once — but the ERP doesn't yet record which employee is in which group, so a plan can't be split across the slots. Planning all 786 together needs roughly three times the fleet." },
+  /* Rotational is THREE services, not one. It always ran three round-the-clock slots, but the
+     ERP could not say who rode when, so it had to be planned as a single 786-rider block that
+     needed ~3x the fleet and never solved. The feed now carries `Pun_Shift` per rider per day
+     (1/2/3 = 06:00/14:00/22:00), so each slot is its own service with its own ~200 riders,
+     gate time and plan. `erpSlot` is what splits them; `slot` ties back to ROTATION_SLOTS. */
+  { id: "rot-day",  name: "Rotational · Day",        color: "#0d9488", gate: 6 * 60,  erpShift: "ROTATIONAL SHIFT", erpSlot: "1", slot: "day",  depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-day.json" },
+  { id: "rot-half", name: "Rotational · Half night", color: "#7c5cd6", gate: 14 * 60, erpShift: "ROTATIONAL SHIFT", erpSlot: "2", slot: "half", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-half.json" },
+  { id: "rot-full", name: "Rotational · Full night", color: "#4338ca", gate: 22 * 60, erpShift: "ROTATIONAL SHIFT", erpSlot: "3", slot: "full", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-full.json" },
   { id: "zen",   name: "Zenwear",      color: "#be1250", gate: 9 * 60, erpShift: null, erpUnit: "Zenwear", depot: ZENWEAR_DEPOT, matrixUrl: ZENWEAR_MATRIX, branch: true, planUrl: "/plan_zen.json" },
 ];
 

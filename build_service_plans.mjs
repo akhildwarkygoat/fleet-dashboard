@@ -53,14 +53,18 @@ function unitOf(row) {
   if (c.includes("TECHNOTEK")) return "Technotek";
   return "Gainup";
 }
-/* Unit beats shift — mirrors serviceIdFor() so the split matches the dashboard exactly. */
-function serviceOf(row) {
+/* Unit beats shift — mirrors serviceIdFor() so the split matches the dashboard exactly.
+   `slot` is the rider's Pun_Shift, which is what separates Rotational's three services. */
+function serviceOf(row, slot) {
   const u = unitOf(row);
   const byUnit = SERVICES.find((s) => s.erpUnit && s.erpUnit === u);
   if (byUnit) return byUnit.id;
   const sh = norm(row.Shift);
-  const byShift = SERVICES.find((s) => s.erpShift && s.erpShift === sh);
-  return byShift ? byShift.id : null;
+  const byShift = SERVICES.filter((s) => s.erpShift && s.erpShift === sh);
+  if (!byShift.length) return null;
+  if (byShift.length === 1) return byShift[0].id;
+  const bySlot = byShift.find((s) => s.erpSlot && s.erpSlot === norm(slot));
+  return bySlot ? bySlot.id : null;
 }
 
 // ---------------------------------------------------------------- riders
@@ -84,19 +88,30 @@ for (const r of rows) {
   a.days++;
   att.set(e, a);
 }
+/* Rotational slot per rider: the most recent non-blank Pun_Shift. Reading the latest row
+   instead would empty two of the three slots mid-day, before they have clocked in. */
+const empSlot = new Map();
+for (const r of rows) {
+  const e = norm(r.Empl_no), sl = norm(r.Pun_Shift), t = parseErpDate(r.date);
+  if (!e || !sl) continue;
+  const prev = empSlot.get(e);
+  if (!prev || t >= prev.t) empSlot.set(e, { t, sl });
+}
+const slotOfEmp = (e) => (empSlot.get(e) || {}).sl || "";
+
 const absenteeOf = (emp) => {
   const a = att.get(emp);
   return a && a.days ? a.absent / a.days : 0;
 };
 for (const { r } of latestPerEmp.values()) {
   const v = norm(r.VehName) || norm(r.Veh_Mas);
-  const s = serviceOf(r);
+  const s = serviceOf(r, slotOfEmp(norm(r.Empl_no)));
   if (!v || !s) continue;
   if (!busUse.has(v)) busUse.set(v, new Map());
   const m = busUse.get(v);
   m.set(s, (m.get(s) || 0) + 1);
 }
-const mine = [...latestPerEmp.values()].map((x) => x.r).filter((r) => serviceOf(r) === SVC_ID);
+const mine = [...latestPerEmp.values()].map((x) => x.r).filter((r) => serviceOf(r, slotOfEmp(norm(r.Empl_no))) === SVC_ID);
 log(`${latestPerEmp.size} employees in feed · ${mine.length} belong to ${svc.name}`);
 
 const riders = [];
