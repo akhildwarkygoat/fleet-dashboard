@@ -11,6 +11,7 @@ import { PALETTE } from "./ui.jsx";
 import GMap from "./GMap.jsx";
 import { routeGeometry } from "./roadGeom.js";
 import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarChart3, Bus } from "lucide-react";
+import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
 
 const UNADDED = "#f87171"; // light red — stop not yet on any bus
 const ADDED = "#4ade80";   // light green — stop assigned to a bus
@@ -99,17 +100,42 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   const rideHeads = usedRows.reduce((n, r) => n + r.heads, 0) || 1;
   const avgRide = usedRows.reduce((n, r) => n + r.ride * r.heads, 0) / rideHeads;
 
+  /* The Planner now carries the SAME metric set as the Fleet-plan board, filtered by the
+     shared preference. It previously showed four of the ten, so figures you were steering by
+     while building a plan disappeared the moment you opened the finished one. Keys match
+     kpiPrefs.KPI_DEFS; the maths mirrors the Fleet-plan definitions exactly (ride and
+     distance are people-weighted, distance is halved to one-way). */
+  const [hiddenKpis] = useState(getHiddenKpis);
+  const ownRows = usedRows.filter((r) => r.bus.type === "own");
+  const rentRows = usedRows.filter((r) => r.bus.type === "rent");
+  const seatSum = (list) => list.reduce((n, r) => n + (+r.cap || 0), 0);
+  const totKm = usedRows.reduce((n, r) => n + (+r.km || 0), 0);
+  const maxRide = usedRows.reduce((mx, r) => Math.max(mx, r.ride), 0);
+  const distPP = usedRows.reduce((n, r) => n + (r.km / 2) * r.heads, 0) / rideHeads;
+  const avgStops = usedRows.length ? usedRows.reduce((n, r) => n + r.stopIds.length, 0) / usedRows.length : 0;
+  const dash = "—";
+
   const tiles = row ? [
-    { label: `Riders · ${busName}`, value: `${row.heads} / ${row.cap}`, sub: row.overCap ? "over capacity" : row.overSeats ? "over seats" : "seats filled", accent: row.overCap ? t.poor : row.overSeats ? t.watch : null, dc: row.overCap ? t.poor : row.overSeats ? t.watch : t.muted },
-    { label: "Utilisation", value: `${Math.round(row.fill * 100)}%`, sub: `${row.stops.length} stops`, accent: row.fill >= 0.85 ? t.good : t.watch },
-    { label: "Cost / head / day", value: row.heads ? `₹${(row.cost / row.heads).toFixed(1)}` : "—", sub: `₹${Math.round(row.cost)} / day` },
-    { label: morning ? "Ride (first stop → factory)" : "Ride (to last stop)", value: `${Math.round(row.ride)} min`, sub: row.km ? `${row.km.toFixed(1)} km/day` : "", accent: row.ride < 100 ? t.good : t.poor },
+    { key: "people", label: `Riders · ${busName}`, value: `${row.heads} / ${row.cap}`, sub: row.overCap ? "over capacity" : row.overSeats ? "over seats" : "seats filled", accent: row.overCap ? t.poor : row.overSeats ? t.watch : null, dc: row.overCap ? t.poor : row.overSeats ? t.watch : t.muted },
+    { key: "util", label: "Utilisation", value: `${Math.round(row.fill * 100)}%`, sub: `${row.stops.length} stops`, accent: row.fill >= 0.85 ? t.good : t.watch },
+    { key: "cost", label: "Cost / head / day", value: row.heads ? `₹${(row.cost / row.heads).toFixed(1)}` : dash, sub: `₹${Math.round(row.cost)} / day` },
+    { key: "ride", label: morning ? "Ride (first stop → factory)" : "Ride (to last stop)", value: `${Math.round(row.ride)} min`, sub: row.km ? `${row.km.toFixed(1)} km/day` : "", accent: row.ride < 100 ? t.good : t.poor },
+    { key: "totdist", label: "Total dist", value: row.km ? `${row.km.toFixed(1)} km` : dash, sub: "this bus" },
+    { key: "avgstops", label: "Stops", value: row.stopIds.length, sub: "on this bus" },
   ] : [
-    { label: "People", value: `${assignedHeads} / ${totalRiders}`, sub: `${progress.toFixed(0)}% assigned`, dc: progress >= 99.5 ? t.good : t.muted },
-    { label: "Avg util", value: k ? `${k.utilisation.toFixed(0)}%` : "—", sub: `${busesUsed} bus${busesUsed === 1 ? "" : "es"} used`, accent: k && k.utilisation >= 85 ? t.good : t.watch },
-    { label: "Cost / head / day", value: k && k.heads ? `₹${k.costPerHeadDay.toFixed(1)}` : "—", sub: k ? `₹${Math.round(k.totalCost).toLocaleString("en-IN")} / day` : "" },
-    { label: "Avg ride", value: usedRows.length ? `${Math.round(avgRide)} min` : "—", sub: `${unassignedCount} stops left`, accent: usedRows.length && avgRide <= 60 ? t.good : t.poor },
+    { key: "people", label: "People", value: `${assignedHeads} / ${totalRiders}`, sub: `${progress.toFixed(0)}% assigned`, dc: progress >= 99.5 ? t.good : t.muted },
+    { key: "cost", label: "Cost / head / day", value: k && k.heads ? `₹${k.costPerHeadDay.toFixed(1)}` : dash, sub: k ? `₹${Math.round(k.totalCost).toLocaleString("en-IN")} / day` : "" },
+    { key: "util", label: "Avg util", value: k ? `${k.utilisation.toFixed(0)}%` : dash, sub: `${busesUsed} bus${busesUsed === 1 ? "" : "es"} used`, accent: k && k.utilisation >= 85 ? t.good : t.watch },
+    { key: "avgride", label: "Avg ride", value: usedRows.length ? `${Math.round(avgRide)} min` : dash, sub: `${unassignedCount} stops left`, accent: usedRows.length && avgRide <= 60 ? t.good : t.poor },
+    { key: "ride", label: "Max ride", value: usedRows.length ? `${Math.round(maxRide)} min` : dash, sub: "longest trip", accent: usedRows.length && maxRide <= 110 ? t.good : t.poor },
+    { key: "totdist", label: "Total dist", value: usedRows.length ? `${Math.round(totKm).toLocaleString("en-IN")} km` : dash, sub: "whole plan" },
+    { key: "avgdist", label: "Dist / person", value: usedRows.length ? `${distPP.toFixed(1)} km` : dash, sub: "one-way" },
+    { key: "owned", label: "Owned", value: ownRows.length, sub: `${seatSum(ownRows).toLocaleString("en-IN")} seats` },
+    { key: "rental", label: "Rental", value: rentRows.length, sub: `${seatSum(rentRows).toLocaleString("en-IN")} seats` },
+    { key: "seats", label: "Seats", value: seatSum(usedRows).toLocaleString("en-IN"), sub: `${assignedHeads} riders` },
+    { key: "avgstops", label: "Stops / bus", value: usedRows.length ? avgStops.toFixed(1) : dash, sub: "average" },
   ];
+  const shownTiles = visibleKpis(tiles, hiddenKpis);
 
   const busList = useMemo(() => {
     const q = busQuery.trim().toLowerCase();
@@ -190,8 +216,11 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
           {activeBus && <button type="button" onClick={() => setActiveBus(null)} className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-semibold" style={{ border: "1px solid " + t.border, background: glassBtn, color: t.text, cursor: "pointer" }}><X size={11} /> Done</button>}
           <button type="button" onClick={() => setShowKpis(false)} title="Hide stats" className={activeBus ? "" : "ml-auto"} style={{ color: t.muted, cursor: "pointer" }}><EyeOff size={13} /></button>
         </div>
-        <div className="grid grid-cols-4 gap-2">
-          {tiles.map((c, i) => (
+        {/* Was a fixed 4 columns for exactly 4 tiles. With the full KPI set — and a count that
+            changes as you toggle them — it wraps instead, so the panel grows a row rather than
+            squeezing eleven tiles into four slots. */}
+        <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(112px, 1fr))" }}>
+          {shownTiles.map((c, i) => (
             <div key={i} className="rounded-xl px-2.5 py-1.5 relative overflow-hidden" style={{ background: glassInner, border: "1px solid " + glassInnerBorder }}>
               {/* rail only when the accent came from a threshold — see Tile in Dashboard.jsx */}
               {c.accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: c.accent }} />}
