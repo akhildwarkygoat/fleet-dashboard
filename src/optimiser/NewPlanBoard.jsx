@@ -177,8 +177,9 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   const glassTrack = glassDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.08)";
   const glassDivider = glassDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.1)";
   const PANEL_W = 300; // right bus panel width
-  const PANEL_H = 460; // bus panel height — capped so it stops being a full-height wall of
-                       // cards over the map; the grid inside already scrolls
+  const PANEL_H = 680; // bus panel height — grows downwards from the top inset. Still capped
+                       // (see maxHeight) so it never runs past the map on a short window;
+                       // the card grid inside scrolls once the list outgrows it
 
   return (
     <div className={full ? "fixed inset-0 z-[1500] overflow-hidden" : "relative rounded-2xl overflow-hidden"}
