@@ -64,11 +64,43 @@ export function fleetCost(entries, opts = {}) {
     }
   }
 
-  /* Pass 2 — cost each run twice: alone, and with the vehicle's standing cost split
-     equally across the runs it makes. */
+  /* Pass 2 — each vehicle's standing cost comes FROM THE PLANS, not from a constant.
+     A plan already states what each route costs, and the running part of that is diesel over
+     its own kilometres, so the remainder is what that plan charged the vehicle for standing:
+
+         standing_i = cost_i - dieselPerKm x km_i
+
+     Deriving it this way is the difference between matching the finalised plans and
+     contradicting them. A flat loan/26 + driver + maint came to Rs2,426/bus/day, while the real
+     plans imply Rs1,223-1,848 — the fleet's loans are pooled and largely paid off, and every bus
+     has its own profile. Inventing the figure overstated every owned bus by roughly Rs800/day
+     and inflated every Rs/head above what the plans say.
+
+     One value per VEHICLE, taken as the MAXIMUM across its runs: a plan that charged the bus in
+     full reveals its standing cost, whereas a plan costed without standing charges (the
+     --no-standing runs) reveals nothing and would drag a shared bus's cost to zero.
+     `opts.standingOf(name)` overrides it once real per-bus ERP costs are wired through. */
+  const impliedStanding = (bus) => {
+    if (bus.type === "rent") return 0;
+    if (typeof opts.standingOf === "function") {
+      const v = opts.standingOf(bus.name);
+      if (isFinite(v) && v >= 0) return v;
+    }
+    let best = 0, sawCost = false;
+    for (const run of bus.runs) {
+      const c = run.route.cost;
+      if (c == null || !isFinite(+c)) continue;
+      sawCost = true;
+      best = Math.max(best, num(c) - diesel * num(run.route.km));
+    }
+    // no plan states a cost at all -> fall back to the notional figure rather than free
+    return sawCost ? Math.max(0, best) : standing;
+  };
+  for (const bus of perBus.values()) bus.standing = impliedStanding(bus);
+
   const runCost = (bus, r, shared) => {
     if (bus.type === "rent") return rentTariff(num(r.km));      // a hire is a hire, per run
-    const share = shared ? standing / bus.runs.length : standing;
+    const share = shared ? bus.standing / bus.runs.length : bus.standing;
     return share + diesel * num(r.km);
   };
 
@@ -118,7 +150,7 @@ export function fleetCost(entries, opts = {}) {
       /* The fleet's real cost: each owned vehicle's standing cost ONCE, plus every run's
          own diesel and every hire. Computed independently of the per-service split so the
          invariant below is a genuine check rather than a restatement. */
-      adjusted: ownedBuses.length * standing
+      adjusted: ownedBuses.reduce((n, b) => n + b.standing, 0)
         + vehicles.reduce((n, b) => n + b.runs.reduce((m, r) =>
             m + (b.type === "rent" ? rentTariff(num(r.route.km)) : diesel * num(r.route.km)), 0), 0),
       standaloneHead: riders ? sum((s) => s.standalone) / riders : 0,

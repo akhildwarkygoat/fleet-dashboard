@@ -78,5 +78,42 @@ const STAND = standingPerDay();
   ok(isFinite(fc2.fleet.adjustedHead), "zero riders: ₹/head is finite, not NaN");
 }
 
+/* ---- standing cost is DERIVED from the plan, not invented ---- */
+{
+  // a plan stating cost 3000 on 50 km implies standing = 3000 - 22*50 = 1900
+  const r = { name: "BUS9", km: 50, riders: 40, type: "own", cap: 54, cost: 3000 };
+  const fc = fleetCost([{ svc: svc("a"), plan: { routes: [r] } }]);
+  ok(near(fc.fleet.standalone, 3000), "standalone reproduces the plan's own cost",
+     `got ${fc.fleet.standalone.toFixed(2)}`);
+  ok(near(fc.perBus.get("BUS9").standing, 1900), "standing read back as 1900");
+  ok(!near(fc.fleet.standalone, STAND + 22 * 50), "did NOT use the notional constant");
+}
+
+/* ---- a bus shared between a full-cost plan and a no-standing plan ---- */
+{
+  // service b costed WITHOUT standing charges (cost == diesel only) reveals nothing about
+  // the vehicle; service a's full costing does. The higher figure must win, or the shared
+  // bus would come out free.
+  const fc = fleetCost([
+    { svc: svc("a"), plan: { routes: [{ name: "BUS9", km: 50, riders: 40, type: "own", cap: 54, cost: 3000 }] } },
+    { svc: svc("b"), plan: { routes: [{ name: "BUS9", km: 40, riders: 20, type: "own", cap: 54, cost: 22 * 40 }] } },
+  ]);
+  ok(near(fc.perBus.get("BUS9").standing, 1900), "the full-cost plan sets the standing figure");
+  // adjusted: standing once (1900) + diesel over both runs
+  ok(near(fc.fleet.adjusted, 1900 + 22 * 90), "adjusted charges the standing once");
+  const summed = fc.services.reduce((n, s) => n + s.adjusted, 0);
+  ok(near(summed, fc.fleet.adjusted), "INVARIANT holds with derived standing");
+}
+
+/* ---- an explicit override wins over anything inferred ---- */
+{
+  const fc = fleetCost(
+    [{ svc: svc("a"), plan: { routes: [{ name: "BUS9", km: 50, riders: 40, type: "own", cap: 54, cost: 3000 }] } }],
+    { standingOf: (n) => (n === "BUS9" ? 500 : null) }
+  );
+  ok(near(fc.perBus.get("BUS9").standing, 500), "standingOf override applied");
+  ok(near(fc.fleet.standalone, 500 + 22 * 50), "override flows into the totals");
+}
+
 console.log(`fleetCost tests: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

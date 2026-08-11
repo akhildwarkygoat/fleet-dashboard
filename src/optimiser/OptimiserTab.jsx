@@ -5,7 +5,7 @@
  * ALL stops onto the cheapest feasible fleet plan and proves it (cost + time).
  * ==========================================================================*/
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Upload, MapPin, Trash2, Plus, RotateCcw, Bus, Route as RouteIcon, Sparkles, AlertTriangle, X, ChevronRight, ArrowUp, Maximize2, Eye, EyeOff, Info, ListFilter, Search } from "lucide-react";
+import { Upload, Download, MapPin, Trash2, Plus, RotateCcw, Bus, Route as RouteIcon, Sparkles, AlertTriangle, X, ChevronRight, ArrowUp, Maximize2, Eye, EyeOff, Info, ListFilter, Search } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, Cell, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ReferenceLine,
@@ -28,7 +28,7 @@ import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js"
 import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
 import { fleetCost, runCostIndex } from "./fleetCost.js";
 import { canonVehicle } from "../erp.js";
-import { resolveFinalised } from "./finalisedPlans.js";
+import { resolveFinalised, clearFinalised, downloadFinalised, importFinalised } from "./finalisedPlans.js";
 
 const inr = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
@@ -1066,6 +1066,124 @@ function KpiCell({ t, c }) {
     </div>
   );
 }
+/* Six services, what each is actually running, and what that does to the fleet. The board
+   exists because a service quietly defaulting to the optimiser's output looks identical to
+   one somebody chose — and the difference is the whole point of finalising. */
+function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
+  const [tick, setTick] = useState(0);
+  const fileRef = useRef(null);
+  /* Not memoised on purpose: resolveFinalised reads localStorage, so the rows must be rebuilt
+     on every render. `tick` exists only to force that render after Revert or Import — do not
+     wrap this in useMemo without adding tick to its deps, or a reverted service keeps showing
+     the plan it no longer runs. */
+  const rows = SERVICES.map((svc) => {
+    const fin = resolveFinalised(svc);
+    const cost = (fc && fc.services.find((x) => x.id === svc.id)) || null;
+    return { svc, fin, cost };
+  });
+  const chosen = rows.filter((r) => !r.fin.isDefault).length;
+  const inr1 = (n) => "₹" + (Math.round((n || 0) * 10) / 10).toLocaleString("en-IN");
+
+  const doImport = (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const res = importFinalised(JSON.parse(rd.result));
+        setTick((x) => x + 1);
+        toast && toast(`Imported ${res.services} choice${res.services === 1 ? "" : "s"}` +
+                       (res.restored ? ` · ${res.restored} draft${res.restored === 1 ? "" : "s"} restored` : ""));
+      } catch (err) { toast && toast(err.message || "Could not read that file"); }
+    };
+    rd.readAsText(f);
+    e.target.value = "";
+  };
+
+  return (
+    <Card t={t} title="Finalised plans"
+      hint="Which plan each service actually runs. A service nobody has decided falls back to the optimiser's output, marked default. Changing any one of these moves every adjusted figure above, because a bus's standing cost is split across the runs it makes.">
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <span className="text-sm" style={{ color: t.muted }}>
+          <b style={{ color: t.text }}>{chosen}</b> of {SERVICES.length} chosen · {SERVICES.length - chosen} still on the optimised default
+        </span>
+        <span className="ml-auto flex items-center gap-2">
+          <Btn t={t} variant="ghost" onClick={() => { downloadFinalised(); toast && toast("Exported finalised_plans.json"); }}>
+            <Download size={14} /> Export
+          </Btn>
+          <Btn t={t} variant="ghost" onClick={() => fileRef.current && fileRef.current.click()}>
+            <Upload size={14} /> Import
+          </Btn>
+          <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={doImport} />
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
+          <thead><tr style={{ color: t.muted }}>
+            {["Service", "Running", "Buses", "Riders", "₹/head alone", "₹/head adjusted", ""].map((h, i) => (
+              <th key={i} className="py-2 px-2 text-left text-xs font-semibold uppercase tracking-wider"
+                style={{ borderBottom: "1px solid " + t.border }}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {rows.map(({ svc, fin, cost }) => (
+              <tr key={svc.id} style={{ borderBottom: "1px solid " + t.border }}>
+                <td className="py-2 px-2" style={{ color: t.text }}>
+                  <span className="inline-flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: svc.color }} />{svc.name}
+                  </span>
+                </td>
+                <td className="py-2 px-2">
+                  <span className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                    style={fin.isDefault
+                      ? { background: t.surface2, color: t.muted }
+                      : { background: t.goodSoft, color: t.good }}>
+                    {fin.isDefault ? "Optimised · default" : fin.name}
+                  </span>
+                  {fin.lostDraft && (
+                    <span className="ml-1.5 text-[11px]" style={{ color: t.watch }}
+                      title="The finalised plan was deleted, so this fell back to the optimised one">
+                      “{fin.lostDraft}” was deleted
+                    </span>
+                  )}
+                </td>
+                <td className="py-2 px-2 tabular-nums" style={{ color: t.text }}>{cost ? cost.buses : "—"}</td>
+                <td className="py-2 px-2 tabular-nums" style={{ color: t.text }}>{cost ? cost.riders.toLocaleString("en-IN") : "—"}</td>
+                <td className="py-2 px-2 tabular-nums" style={{ color: t.muted }}>{cost ? inr1(cost.standaloneHead) : "—"}</td>
+                <td className="py-2 px-2 tabular-nums font-semibold" style={{ color: t.text }}>{cost ? inr1(cost.adjustedHead) : "—"}</td>
+                <td className="py-2 px-2 text-right whitespace-nowrap">
+                  {/* Undoing a choice has to be reachable from here: the alternative is hunting
+                      for the finalised plan in that service's gallery and clicking it off. */}
+                  {!fin.isDefault && (
+                    <button type="button" onClick={() => { clearFinalised(svc.id); setTick((x) => x + 1); toast && toast(`${svc.name} back to the optimised plan`); }}
+                      title="Go back to the optimised plan"
+                      className="rounded-lg px-2 py-0.5 text-xs font-semibold mr-1.5"
+                      style={{ border: "1px solid " + t.border, background: t.surface, color: t.muted, cursor: "pointer" }}>
+                      Revert
+                    </button>
+                  )}
+                  <button type="button" onClick={() => onOpen && onOpen(svc)}
+                    className="rounded-lg px-2 py-0.5 text-xs font-semibold"
+                    style={{ border: "1px solid " + t.border, background: t.surface, color: t.text, cursor: "pointer" }}>
+                    Choose…
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {fc && (
+        <div className="text-xs mt-3" style={{ color: t.muted }}>
+          Fleet <b style={{ color: t.text }}>{"₹" + Math.round(fc.fleet.adjusted).toLocaleString("en-IN")}/day</b> adjusted,
+          against {"₹" + Math.round(fc.fleet.standalone).toLocaleString("en-IN")} if every service were charged its buses in
+          full — a difference of <b style={{ color: t.watch }}>{"₹" + Math.round(fc.fleet.doubleCounted).toLocaleString("en-IN")}/day</b>.
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function KpiGroup({ t, groups }) {
   return (
     <div className="flex flex-col sm:flex-row gap-3">
@@ -1103,7 +1221,7 @@ function attachEffDemand(seq, target) {
 /* `svc` decides WHICH plan is drawn. Without it this read activePlanUrl() — the 9 am
    plan-variant picker — for every service, so Rotational, Zenwear and 7 am Morning all
    showed 9 am's 75 buses, 3,021 riders and ₹56.7/head as if they were their own. */
-function FleetPlanView({ t, svc }) {
+function FleetPlanView({ t, svc, toast, onOpenService }) {
   const [data, setData] = useState(null);
   const view = "overall"; // Combined data only (owned/rental split shown within the KPIs)
   const [names, setNames] = useState(() => { try { return JSON.parse(localStorage.getItem("opt-route-names") || "{}"); } catch { return {}; } }); // custom route names, keyed by bus
@@ -1163,7 +1281,11 @@ function FleetPlanView({ t, svc }) {
         const hit = idx.get(x.id + "|" + canonVehicle(String(r.name || "").trim()));
         routes.push({ ...r, service: x.name, serviceColor: x.color,
                       cost: hit ? hit.adjusted : r.cost,
-                      sharedRuns: hit ? hit.runs : 1 });
+                      sharedRuns: hit ? hit.runs : 1,
+                      /* React key. In Overall the same bus appears once per service it runs, so
+                         `name` is no longer unique and keying on it made React drop or duplicate
+                         rows for exactly the shared vehicles. */
+                      uid: x.id + "|" + r.name });
       }));
       setFleetFc(fc);
       const sum = (f) => routes.reduce((n, r) => n + (+f(r) || 0), 0);
@@ -1358,13 +1480,16 @@ function FleetPlanView({ t, svc }) {
               Every KPI is hidden — turn some back on from the Planner tab.
             </div>;
       })()}
+      {isOverall && (
+        <FinalisationBoard t={t} fc={fleetFc} drawn={drawn} toast={toast} onOpen={onOpenService} />
+      )}
       {/* Master map — rendered bare (no card wrapper), matching the Stops-page map */}
       <div>
         {selRows.length > 0 && (
           <div className="flex items-center justify-between gap-3 mb-3">
             <div className="flex flex-wrap gap-2">
               {selRows.map((r) => (
-                <span key={r.name} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-semibold" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}>
+                <span key={r.uid || r.name} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-semibold" style={{ background: t.surface2, border: "1px solid " + t.border, color: t.text }}>
                   <span className="inline-block rounded-full" style={{ width: 10, height: 10, background: masterColors[r.name] }} />
                   {names[r.name] || r.name}
                   <button onClick={() => toggleSel(r.name)} title="Remove from map" style={{ color: t.muted }}><X size={12} /></button>
@@ -1403,7 +1528,7 @@ function FleetPlanView({ t, svc }) {
               {stopsPanelOpen && (
               <div className="overflow-y-auto">
                 {selRows.map((r) => (
-                  <div key={r.name}>
+                  <div key={r.uid || r.name}>
                     {selRows.length > 1 && (
                       <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide flex items-center gap-1.5" style={{ background: t.dark ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.35)", color: t.text }}>
                         <span className="inline-block rounded-full flex-shrink-0" style={{ width: 8, height: 8, background: masterColors[r.name] }} />{names[r.name] || r.name}
@@ -1583,7 +1708,7 @@ function FleetPlanView({ t, svc }) {
             <tbody>
               {pagedRows.map((r) => {
                 return (
-                <React.Fragment key={r.name}>
+                <React.Fragment key={r.uid || r.name}>
                 <tr style={{ borderBottom: "1px solid " + t.border, background: selRoutes.has(r.name) ? t.primarySoft : "transparent" }}>
                   <td className="py-2 px-2">
                     <span className="inline-flex items-center gap-1.5">
@@ -1591,7 +1716,18 @@ function FleetPlanView({ t, svc }) {
                       {selRoutes.has(r.name) && <span className="inline-block rounded-full" style={{ width: 9, height: 9, background: masterColors[r.name] }} />}
                     </span>
                   </td>
-                  <td className="py-2 px-2" style={{ color: t.text }}>{names[r.name] ? <span><b>{names[r.name]}</b> <span style={{ color: t.muted, fontSize: "0.72rem" }}>({r.name})</span></span> : r.name}</td>
+                  <td className="py-2 px-2" style={{ color: t.text }}>
+                    {names[r.name] ? <span><b>{names[r.name]}</b> <span style={{ color: t.muted, fontSize: "0.72rem" }}>({r.name})</span></span> : r.name}
+                    {/* A bus on several services carries a fraction of its standing cost here,
+                        so say so — otherwise its ₹/head looks inexplicably low next to its peers. */}
+                    {r.sharedRuns > 1 && (
+                      <span className="ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap"
+                        title={`This bus runs ${r.sharedRuns} services — it carries 1/${r.sharedRuns} of its loan, driver and maintenance here`}
+                        style={{ background: t.watchSoft, color: t.watch }}>
+                        {r.sharedRuns} runs · 1/{r.sharedRuns} standing
+                      </span>
+                    )}
+                  </td>
                   <td className="py-2 px-2">
                     <span className="rounded-full px-2 py-0.5 text-xs font-semibold" style={{ color: r.type === "own" ? t.primary : t.techno, background: r.type === "own" ? t.primarySoft : t.surface2 }}>{r.type}</span>
                   </td>
@@ -1963,7 +2099,8 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
         ? <StopsView key={svc.id} t={t} toast={toast} stops={svcStops} viewStops={svcStops} routes={routes} refresh={refresh}
             depot={svc.depot} coverage={svcCoverage} calibrate={false} svc={svc} />
         : <StopsView key={planId || "d"} t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} depot={svc && svc.depot} />)}
-      {sub === "plan" && <FleetPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} svc={svc} />}
+      {sub === "plan" && <FleetPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} svc={svc}
+        toast={toast} onOpenService={(s) => { pickSvc(s); setSub("new"); }} />}
       {sub === "new" && <NewPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} toast={toast}
         erpBuses={svcErpBuses} svc={svc && !svc.overall ? svc : null} svcStops={svcStops} />}
       {sub === "timings" && <TimingsView t={t} shifts={erpShifts} />}
