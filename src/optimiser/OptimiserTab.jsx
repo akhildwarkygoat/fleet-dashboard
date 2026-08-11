@@ -26,6 +26,9 @@ import { ServiceBoard, TimingsView } from "./TimingsView.jsx";
 import { stopsForRiders, coverageOf } from "./serviceStops.js";
 import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js";
 import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
+import { fleetCost, runCostIndex } from "./fleetCost.js";
+import { canonVehicle } from "../erp.js";
+import { resolveFinalised } from "./finalisedPlans.js";
 
 const inr = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
@@ -1123,6 +1126,7 @@ function FleetPlanView({ t, svc }) {
      here with no further change. */
   const [mixedBasis, setMixedBasis] = useState(false);
   const [drawn, setDrawn] = useState([]);
+  const [fleetFc, setFleetFc] = useState(null);
   const load = () => {
     setErr(false); setData(null);
     if (!isOverall) {
@@ -1135,19 +1139,33 @@ function FleetPlanView({ t, svc }) {
         }).catch(() => setErr(true));
       return;
     }
-    const withPlans = SERVICES.filter((x) => x.planUrl);
-    Promise.all(withPlans.map((x) =>
-      fetch((x.id === "s9" ? activePlanUrl() : x.planUrl) + "?ts=" + Date.now())
+    /* Each service contributes its FINALISED plan, not its optimised one — and where nobody
+       has chosen, the optimised plan stands in (resolveFinalised flags that as a default). */
+    const withPlans = SERVICES.filter((x) => resolveFinalised(x).file || x.planUrl);
+    Promise.all(withPlans.map((x) => {
+      const fin = resolveFinalised(x);
+      const url = fin.file || (x.id === "s9" ? activePlanUrl() : x.planUrl);
+      return fetch(url + "?ts=" + Date.now())
         .then((r) => (r.ok ? r.json() : null))
-        .then((d) => (d && Array.isArray(d.routes) ? { x, d } : null)).catch(() => null)
-    )).then((parts) => {
+        .then((d) => (d && Array.isArray(d.routes) ? { x, d, fin } : null)).catch(() => null);
+    })).then((parts) => {
       const ok = parts.filter(Boolean);
       if (!ok.length) { setErr(true); return; }
+      /* Re-cost on the SHARED basis. A bus running five services was charged its whole
+         standing cost to each, so the services summed to ~37% more than the fleet. Rewriting
+         each route's `cost` here means every downstream aggregate — KPI tiles, routes table,
+         ₹/head — is adjusted without any of them knowing about it. */
+      const fc = fleetCost(ok.map(({ x, d }) => ({ svc: x, plan: d })));
+      const idx = runCostIndex(fc);
       const routes = [];
       ok.forEach(({ x, d }) => d.routes.forEach((r) => {
         r.seq = attachEffDemand(r.seq, r.riders);
-        routes.push({ ...r, service: x.name, serviceColor: x.color });
+        const hit = idx.get(x.id + "|" + canonVehicle(String(r.name || "").trim()));
+        routes.push({ ...r, service: x.name, serviceColor: x.color,
+                      cost: hit ? hit.adjusted : r.cost,
+                      sharedRuns: hit ? hit.runs : 1 });
       }));
+      setFleetFc(fc);
       const sum = (f) => routes.reduce((n, r) => n + (+f(r) || 0), 0);
       const rd = sum((r) => r.riders) || 1;
       const roll = (list) => {
@@ -1168,7 +1186,12 @@ function FleetPlanView({ t, svc }) {
       setDrawn(ok.map(({ x }) => x.name));
       setData({
         ...base, routes,
-        params: { ...(base.params || {}), stops: sum((r) => r.stops) },
+        /* The map centres on params.depot[0]/[1]. Older plan files predate that field, and
+           taking params wholesale from the first plan inherits its absence — which renders
+           "Map unavailable" for the merged view. Fall back to the service's own depot. */
+        params: { ...(base.params || {}), stops: sum((r) => r.stops),
+                  depot: (base.params && base.params.depot)
+                    || (ok[0].x.depot ? [ok[0].x.depot.lat, ok[0].x.depot.lng] : undefined) },
         overall: roll(routes), owned: roll(routes.filter((r) => r.type === "own")),
         rental: roll(routes.filter((r) => r.type === "rent")),
       });
@@ -1275,9 +1298,13 @@ function FleetPlanView({ t, svc }) {
               not shown: {SERVICES.filter((x) => !x.planUrl).map((x) => x.name).join(", ")} — no plan yet
             </span>
           )}
-          {mixedBasis && (
-            <span style={{ color: t.watch }}>
-              ₹/head spans different cost bases (some plans charge loan, driver and maintenance, some treat them as sunk)
+          {fleetFc && fleetFc.shared > 0 && (
+            <span className="w-full" style={{ color: t.muted }}>
+              <b style={{ color: t.text }}>Adjusted</b> — loan, driver and maintenance counted once per
+              vehicle and split across its runs. {fleetFc.shared} of {fleetFc.vehicles} buses run more
+              than one service ({fleetFc.runs} runs in total), so charging each service in full would
+              add <b style={{ color: t.watch }}>{inr0(fleetFc.fleet.doubleCounted)}/day</b> of cost
+              that does not exist. Inside a service the figures stay standalone.
             </span>
           )}
         </div>

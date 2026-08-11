@@ -6,7 +6,7 @@
  * (an SVG of its routes), its name, last-edited time and a quick summary.
  * ==========================================================================*/
 import React, { useRef, useMemo } from "react";
-import { Plus, Sparkles, MapPinned, Trash2, Clock, Users, Bus, FileUp, History } from "lucide-react";
+import { Plus, Sparkles, MapPinned, Trash2, Clock, Users, Bus, FileUp, History, CheckCircle2, Circle } from "lucide-react";
 import { PALETTE } from "./ui.jsx";
 
 function relTime(ts) {
@@ -63,10 +63,14 @@ function PlanThumb({ t, assignments, stopsById, depot, busColor, lines }) {
   );
 }
 
-export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel, onImportFile, onImportPrev, prevPlan }) {
+export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel, onImportFile, onImportPrev, prevPlan, finalised, onFinalise }) {
   // hidden file input for "Import plan file" — reads a plan JSON exported by a teammate
   const fileRef = useRef(null);
   const prevMeta = prevPlan && prevPlan.meta;
+  /* Which candidate is the finalised one. `isDefault` means nobody chose — the optimised
+     plan is standing in — and that must read differently from a deliberate choice. */
+  const isFinal = (kind, id) => !!finalised && !finalised.isDefault &&
+    (kind === "draft" ? finalised.draftId === id : finalised.kind === "plan");
   // thumbnail polylines for the permanent prev-route card (drawn straight from the ERP feed)
   const prevLines = useMemo(() => {
     if (!prevPlan || !Array.isArray(prevPlan.buses)) return null;
@@ -163,6 +167,17 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
                           <span className="inline-flex items-center gap-1"><Users size={11} /> {m.riders ?? 0}{totalRiders ? `/${totalRiders}` : ""}</span>
                           <span className="inline-flex items-center gap-1"><Bus size={11} /> {m.buses ?? 0}</span>
                         </div>
+                        {onFinalise && (
+                          <button type="button" onClick={(e) => { e.stopPropagation(); onFinalise({ kind: "draft", id: d.id, name: d.name }); }}
+                            title={isFinal("draft", d.id) ? "This is the finalised plan for this service" : "Use this as the finalised plan"}
+                            className="inline-flex items-center gap-1 mt-1.5 rounded-lg px-2 py-0.5 text-[11px] font-semibold"
+                            style={{ border: "1px solid " + (isFinal("draft", d.id) ? t.good : t.border),
+                                     background: isFinal("draft", d.id) ? t.goodSoft : t.surface,
+                                     color: isFinal("draft", d.id) ? t.good : t.muted, cursor: "pointer" }}>
+                            {isFinal("draft", d.id) ? <CheckCircle2 size={11} /> : <Circle size={11} />}
+                            {isFinal("draft", d.id) ? "Finalised" : "Finalise"}
+                          </button>
+                        )}
                       </div>
                       <button type="button" title="Delete plan"
                         onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${d.name}"? This can't be undone.`)) onDelete(d); }}

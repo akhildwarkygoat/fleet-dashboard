@@ -12,6 +12,7 @@ import { Btn, Empty, PALETTE } from "./ui.jsx";
 import NewPlanBoard from "./NewPlanBoard.jsx";
 import PlanGallery from "./PlanGallery.jsx";
 import { activePlanUrl, getActivePlanLabel } from "./planOptions.js";
+import { resolveFinalised, setFinalised, clearFinalised } from "./finalisedPlans.js";
 import { Save, Sparkles, RotateCcw, Download, Undo2, Redo2, Wand2, ArrowLeft, Sunset, Sunrise } from "lucide-react";
 import { downloadPlanJson } from "./planExport.js";
 
@@ -98,6 +99,18 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   // the cost model already counts both directions (chain km = 2 × one-way).
   const [period, setPeriod] = useState("evening");       // "evening" | "morning"
   const [drafts, setDrafts] = useState(() => store.listPlanDrafts(svcId));
+  /* Which plan this service actually runs. Absent -> the optimiser's output stands in,
+     flagged isDefault so "nobody decided" never reads as "somebody chose this". */
+  const [finalised, setFinal] = useState(() => (svc ? resolveFinalised(svc) : null));
+  const finalise = (ref) => {
+    if (!svc) return;
+    const cur = resolveFinalised(svc);
+    const same = ref.kind === "draft" ? cur.draftId === ref.id : cur.kind === "plan" && !cur.isDefault;
+    if (same) { clearFinalised(svc.id); setFinal(resolveFinalised(svc)); toast && toast(`${svc.name} back to the optimised plan`); return; }
+    setFinalised(svc.id, ref);
+    setFinal(resolveFinalised(svc));
+    toast && toast(`Finalised "${ref.name}" for ${svc.name}`);
+  };
   const [current, setCurrent] = useState(null);           // { id, name } of the open saved draft, or null (unsaved)
   const [draftName, setDraftName] = useState("Untitled plan");
   const [seed, setSeed] = useState(EMPTY);
@@ -183,7 +196,7 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   if (!ready || !solverLoaded) return <Empty t={t} title="Loading road network…" sub="Building the distance matrix for live routing." />;
 
   if (view === "gallery") {
-    return <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={planLabel}
+    return <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={planLabel} finalised={finalised} onFinalise={finalise}
       stopsById={stopsById} depot={depot} busColor={busColor}
       onNewBlank={newBlank} onImport={importPlan} onOpen={openDraft} onDelete={deleteDraft} onImportFile={importFromFile}
       onImportPrev={importPrevRoutes} prevPlan={prevRoutes} />;

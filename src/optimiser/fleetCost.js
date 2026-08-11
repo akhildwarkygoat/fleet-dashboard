@@ -84,8 +84,12 @@ export function fleetCost(entries, opts = {}) {
       s.buses += 1;
       s.riders += num(run.route.riders);
       s.km += num(run.route.km);
-      s.standalone += runCost(bus, run.route, false);
-      s.adjusted += runCost(bus, run.route, true);
+      /* recorded on the run as well as summed, so a view can re-cost its own routes table
+         from the same numbers instead of recomputing the split and drifting from it */
+      run.standalone = runCost(bus, run.route, false);
+      run.adjusted = runCost(bus, run.route, true);
+      s.standalone += run.standalone;
+      s.adjusted += run.adjusted;
     }
   }
 
@@ -124,6 +128,15 @@ export function fleetCost(entries, opts = {}) {
       ownedRuns,
     },
   };
+}
+
+/** Adjusted cost per (service, vehicle), for re-costing a routes table in place. */
+export function runCostIndex(fc) {
+  const m = new Map();
+  for (const bus of fc.perBus.values())
+    for (const run of bus.runs)
+      m.set(run.svcId + "|" + bus.name, { adjusted: run.adjusted, standalone: run.standalone, runs: bus.runs.length });
+  return m;
 }
 
 /** Services a vehicle serves, for the "· 5 services · ⅕ standing" chip. */
