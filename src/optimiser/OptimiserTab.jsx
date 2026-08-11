@@ -5,7 +5,7 @@
  * ALL stops onto the cheapest feasible fleet plan and proves it (cost + time).
  * ==========================================================================*/
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Upload, MapPin, Trash2, Plus, RotateCcw, Bus, Route as RouteIcon, Sparkles, AlertTriangle, X, ChevronRight, ArrowUp, Maximize2, Eye, EyeOff, Info, ListFilter, Search, SlidersHorizontal as Settings } from "lucide-react";
+import { Upload, MapPin, Trash2, Plus, RotateCcw, Bus, Route as RouteIcon, Sparkles, AlertTriangle, X, ChevronRight, ArrowUp, Maximize2, Eye, EyeOff, Info, ListFilter, Search } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, Cell, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ReferenceLine,
@@ -25,7 +25,7 @@ import { Card, Btn, Field, TextInput, SelectInput, Tile, Empty, StatusPill, Segm
 import { ServiceBoard, TimingsView } from "./TimingsView.jsx";
 import { stopsForRiders, coverageOf } from "./serviceStops.js";
 import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js";
-import { KPI_DEFS, getHiddenKpis, setHiddenKpis, visibleKpis } from "./kpiPrefs.js";
+import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
 
 const inr = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
@@ -1063,65 +1063,6 @@ function KpiCell({ t, c }) {
     </div>
   );
 }
-/* Which KPIs to show. Lives beside the tiles it controls, and writes a preference the
-   Planner reads too — the two boards deliberately share one list so a metric you steer by
-   while building a plan is still there when you look at the finished one. */
-function KpiSettings({ t, hidden, onChange }) {
-  const [open, setOpen] = useState(false);
-  const shown = KPI_DEFS.length - hidden.size;
-  const toggle = (key) => {
-    const next = new Set(hidden);
-    next.has(key) ? next.delete(key) : next.add(key);
-    setHiddenKpis(next);
-    onChange(next);
-  };
-  return (
-    <div className="relative">
-      <button type="button" onClick={() => setOpen((o) => !o)}
-        title="Choose which KPIs to show"
-        className="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-semibold transition"
-        style={{ background: open ? t.primarySoft : t.surface, border: "1px solid " + (open ? t.primary : t.border),
-                 color: open ? t.primary : t.muted, cursor: "pointer" }}>
-        <Settings size={13} /> KPIs
-        <span style={{ color: t.faint, fontWeight: 500 }}>{shown}/{KPI_DEFS.length}</span>
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0" style={{ zIndex: 30 }} onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-2 rounded-2xl border p-2 w-72"
-            style={{ zIndex: 31, background: t.surface, borderColor: t.border, boxShadow: "0 10px 30px rgba(15,23,42,.14)" }}>
-            <div className="flex items-center justify-between px-2 py-1.5">
-              <span className="text-xs font-bold uppercase tracking-wider" style={{ color: t.faint }}>Show these KPIs</span>
-              <button type="button" onClick={() => { setHiddenKpis(new Set()); onChange(new Set()); }}
-                className="text-xs rounded-lg px-2 py-0.5"
-                style={{ border: "1px solid " + t.border, background: t.surface2, color: t.text, cursor: "pointer" }}>
-                All
-              </button>
-            </div>
-            <div className="max-h-80 overflow-auto">
-              {KPI_DEFS.map((d) => {
-                const on = !hidden.has(d.key);
-                return (
-                  <label key={d.key} className="flex items-start gap-2.5 px-2 py-1.5 rounded-xl cursor-pointer"
-                    style={{ background: "transparent" }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = t.surface2; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-                    <input type="checkbox" checked={on} onChange={() => toggle(d.key)} style={{ marginTop: 2, cursor: "pointer" }} />
-                    <span>
-                      <span className="text-sm font-semibold block" style={{ color: t.text }}>{d.label}</span>
-                      <span className="text-xs" style={{ color: t.muted }}>{d.hint}</span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 function KpiGroup({ t, groups }) {
   return (
     <div className="flex flex-col sm:flex-row gap-3">
@@ -1174,7 +1115,7 @@ function FleetPlanView({ t, svc }) {
   const [routeQuery, setRouteQuery] = useState(""); // routes table search box
   const [stopsPanelOpen, setStopsPanelOpen] = useState(true); // master-map stop-order panel: expanded/minimized
   const [err, setErr] = useState(false);
-  const [hiddenKpis, setHiddenKpis_] = useState(getHiddenKpis);
+  const [hiddenKpis] = useState(getHiddenKpis);
   const isOverall = !svc || !!svc.overall;
   const planSrc = isOverall ? null : (svc.id !== "s9" ? (svc.planUrl || null) : activePlanUrl());
   /* Overall means EVERY service that has a plan, merged — not 9 am's plan standing in for the
@@ -1381,19 +1322,14 @@ function FleetPlanView({ t, svc }) {
         // half-empty container behind it.
         const groups = [[cost, util], [avgride, maxride], [totDist, avgDist], [owned, rental], [seats, avgStops]]
           .map((g) => visibleKpis(g, hiddenKpis)).filter((g) => g.length);
-        return (
-          <div className="space-y-2">
-            <div className="flex justify-end">
-              <KpiSettings t={t} hidden={hiddenKpis} onChange={setHiddenKpis_} />
-            </div>
-            {groups.length
-              ? <KpiGroup t={t} groups={groups} />
-              : <div className="rounded-2xl border px-4 py-3 text-sm text-center"
-                  style={{ background: t.surface, borderColor: t.border, color: t.muted }}>
-                  Every KPI is hidden — turn some back on above.
-                </div>}
-          </div>
-        );
+        // The chooser lives on the Planner, where the panel floats over the map and space is
+        // scarce. This board just honours whatever was chosen there.
+        return groups.length
+          ? <KpiGroup t={t} groups={groups} />
+          : <div className="rounded-2xl border px-4 py-3 text-sm text-center"
+              style={{ background: t.surface, borderColor: t.border, color: t.muted }}>
+              Every KPI is hidden — turn some back on from the Planner tab.
+            </div>;
       })()}
       {/* Master map — rendered bare (no card wrapper), matching the Stops-page map */}
       <div>

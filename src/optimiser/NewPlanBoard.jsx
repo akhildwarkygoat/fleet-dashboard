@@ -10,8 +10,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { PALETTE } from "./ui.jsx";
 import GMap from "./GMap.jsx";
 import { routeGeometry } from "./roadGeom.js";
-import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarChart3, Bus } from "lucide-react";
-import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
+import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarChart3, Bus, SlidersHorizontal } from "lucide-react";
+import { KPI_DEFS, getHiddenKpis, setHiddenKpis, visibleKpis } from "./kpiPrefs.js";
 
 const UNADDED = "#f87171"; // light red — stop not yet on any bus
 const ADDED = "#4ade80";   // light green — stop assigned to a bus
@@ -105,7 +105,8 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
      while building a plan disappeared the moment you opened the finished one. Keys match
      kpiPrefs.KPI_DEFS; the maths mirrors the Fleet-plan definitions exactly (ride and
      distance are people-weighted, distance is halved to one-way). */
-  const [hiddenKpis] = useState(getHiddenKpis);
+  const [hiddenKpis, setHidden] = useState(getHiddenKpis);
+  const [kpiMenu, setKpiMenu] = useState(false);
   const ownRows = usedRows.filter((r) => r.bus.type === "own");
   const rentRows = usedRows.filter((r) => r.bus.type === "rent");
   const seatSum = (list) => list.reduce((n, r) => n + (+r.cap || 0), 0);
@@ -214,7 +215,46 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
               : <><b>Assigning to {busName}</b> — click stops on the map to add/remove (click several for multiple).</>)
             : <>Pick a bus on the right, then click stops on the map to assign them.{morning ? " Morning plan: routes run stops → factory." : ""}</>}
           {activeBus && <button type="button" onClick={() => setActiveBus(null)} className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-semibold" style={{ border: "1px solid " + t.border, background: glassBtn, color: t.text, cursor: "pointer" }}><X size={11} /> Done</button>}
-          <button type="button" onClick={() => setShowKpis(false)} title="Hide stats" className={activeBus ? "" : "ml-auto"} style={{ color: t.muted, cursor: "pointer" }}><EyeOff size={13} /></button>
+          <div className={"relative " + (activeBus ? "" : "ml-auto")}>
+            <button type="button" onClick={() => setKpiMenu((o) => !o)} title="Choose which stats to show"
+              className="inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-semibold"
+              style={{ border: "1px solid " + (kpiMenu ? t.primary : t.border), background: glassBtn,
+                       color: kpiMenu ? t.primary : t.text, cursor: "pointer" }}>
+              <SlidersHorizontal size={11} /> {KPI_DEFS.length - hiddenKpis.size}/{KPI_DEFS.length}
+            </button>
+            {kpiMenu && (
+              <>
+                <div className="fixed inset-0" style={{ zIndex: 40 }} onClick={() => setKpiMenu(false)} />
+                <div className="absolute right-0 mt-1.5 rounded-2xl p-2 w-64" style={{ zIndex: 41, ...glass }}>
+                  <div className="flex items-center justify-between px-1.5 pb-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: t.muted }}>Stats to show</span>
+                    <button type="button" onClick={() => { setHiddenKpis(new Set()); setHidden(new Set()); }}
+                      className="text-[10px] rounded-lg px-2 py-0.5 font-semibold"
+                      style={{ border: "1px solid " + t.border, background: glassBtn, color: t.text, cursor: "pointer" }}>All</button>
+                  </div>
+                  <div className="max-h-72 overflow-auto">
+                    {KPI_DEFS.map((d) => (
+                      <label key={d.key} className="flex items-start gap-2 px-1.5 py-1 rounded-xl cursor-pointer"
+                        onMouseEnter={(e) => { e.currentTarget.style.background = glassInner; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+                        <input type="checkbox" checked={!hiddenKpis.has(d.key)} style={{ marginTop: 3, cursor: "pointer" }}
+                          onChange={() => {
+                            const next = new Set(hiddenKpis);
+                            next.has(d.key) ? next.delete(d.key) : next.add(d.key);
+                            setHiddenKpis(next); setHidden(next);
+                          }} />
+                        <span>
+                          <span className="text-[11px] font-semibold block" style={{ color: t.text }}>{d.label}</span>
+                          <span className="text-[10px]" style={{ color: t.muted }}>{d.hint}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          <button type="button" onClick={() => setShowKpis(false)} title="Hide stats" style={{ color: t.muted, cursor: "pointer" }}><EyeOff size={13} /></button>
         </div>
         {/* Was a fixed 4 columns for exactly 4 tiles. With the full KPI set — and a count that
             changes as you toggle them — it wraps instead, so the panel grows a row rather than
