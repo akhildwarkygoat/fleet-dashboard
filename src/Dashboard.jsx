@@ -21,6 +21,12 @@ import { useGSAP } from "@gsap/react";
 import { MotionPathPlugin } from "gsap/MotionPathPlugin";
 import { SpotlightNav } from "./components/ui/spotlight-button.jsx";
 
+/* ERP shift strings that one service alone no longer identifies — "ROTATIONAL SHIFT" is
+   shared by the three slots, which are told apart by the rider's punch slot. Derived from
+   SERVICES so adding a slot-divided service needs no change here. Used to spot a stored
+   snapshot that predates the split and force one refresh. */
+const SLOT_SHIFTS = new Set(SERVICES.filter((s) => s.erpSlot && s.erpShift).map((s) => s.erpShift));
+
 /* ============================ MOTION (GSAP) ============================ */
 gsap.registerPlugin(useGSAP, MotionPathPlugin);
 gsap.config({ nullTargetWarn: false }); // page timeline selectors may legitimately match nothing on some tabs
@@ -2631,6 +2637,13 @@ export default function App() {
         // employees stored before the shift field existed can't answer "which shift?" —
         // one silent refresh fills it rather than leaving the board claiming no riders
         if (emps.length && !emps.some((e) => e.shift && e.unit && e.lat != null)) staleEmployees.current = true;
+        // …and the same rule for `slot`, added when Rotational split into its three slots.
+        // A snapshot saved before that split carries shift/unit/lat and so passes the test
+        // above, but no slot — and serviceIdFor puts a slotless rider in NONE of the three,
+        // so all three read "needs riders" against a feed that has them. Only fires when the
+        // snapshot actually holds riders on a slot-divided shift, so a feed genuinely without
+        // them can't re-sync on every load.
+        if (emps.length && emps.some((e) => SLOT_SHIFTS.has(e.shift)) && !emps.some((e) => e.slot)) staleEmployees.current = true;
         setBuses(b); setRecords(recs); setAttendance(att); setEmployees(emps); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
         const st = (await Store.get("settings")) || {};
         if (!st.bands || !st.bands.length) st.bands = DEFAULT_BANDS.map((x) => ({ ...x }));
