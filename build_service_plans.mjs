@@ -23,6 +23,7 @@ import fs from "node:fs";
 import { optimise, validatePlan, haversineKm, scorePlan } from "./src/optimiser/engine.js";
 import { stopsForRiders } from "./src/optimiser/serviceStops.js";
 import { SERVICES, FACTORY_DEPOT, ZENWEAR_DEPOT } from "./src/optimiser/services.js";
+import FROZEN_ROTA from "./src/rotationalRoster.json" with { type: "json" };
 
 const arg = (k, d = null) => {
   const i = process.argv.indexOf(k);
@@ -54,7 +55,7 @@ function unitOf(row) {
   return "Gainup";
 }
 /* Unit beats shift — mirrors serviceIdFor() so the split matches the dashboard exactly.
-   `slot` is the rider's Pun_Shift, which is what separates Rotational's three services. */
+   `slot` is the rider's frozen roster slot, which is what separates Rotational's three services. */
 function serviceOf(row, slot) {
   const u = unitOf(row);
   const byUnit = SERVICES.find((s) => s.erpUnit && s.erpUnit === u);
@@ -88,16 +89,12 @@ for (const r of rows) {
   a.days++;
   att.set(e, a);
 }
-/* Rotational slot per rider: the most recent non-blank Pun_Shift. Reading the latest row
-   instead would empty two of the three slots mid-day, before they have clocked in. */
-const empSlot = new Map();
-for (const r of rows) {
-  const e = norm(r.Empl_no), sl = norm(r.Pun_Shift), t = parseErpDate(r.date);
-  if (!e || !sl) continue;
-  const prev = empSlot.get(e);
-  if (!prev || t >= prev.t) empSlot.set(e, { t, sl });
-}
-const slotOfEmp = (e) => (empSlot.get(e) || {}).sl || "";
+/* Rotational slot per rider: read from the FROZEN roster, exactly as the dashboard does.
+   Not from Pun_Shift — that says which slot a rider was on in the week they punched, and the
+   rota moves one place every Monday, so building from it would cut these plans against a
+   different roster every week. Plan and dashboard must be one roster or neither is trustworthy.
+   To re-cut the split, re-freeze src/rotationalRoster.json and rebuild all three together. */
+const slotOfEmp = (e) => FROZEN_ROTA.slots[e] || "";
 
 const absenteeOf = (emp) => {
   const a = att.get(emp);

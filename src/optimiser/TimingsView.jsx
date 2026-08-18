@@ -13,7 +13,13 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Bus, Search, AlertTriangle, Clock, Layers, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import { Card, Tile, Empty } from "./ui.jsx";
-import { SERVICES, OVERALL, fmtClock, erpStatsFor, serviceNeed, subShiftsOf, ROTATION_SLOTS, nextSlot, weekStart } from "./services.js";
+import { SERVICES, OVERALL, fmtClock, erpStatsFor, serviceNeed, subShiftsOf, ROTATION_SLOTS, weekStart } from "./services.js";
+import { ROTA_FROZEN_ON } from "../erp.js";
+
+/* YYYY-MM-DD from a LOCAL date. toISOString() would convert to UTC first, which in IST rolls
+   midnight back to the previous day — a Monday then prints as the Sunday before it. */
+const fmtISO = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 /* ---------------- service picker ---------------- */
 export function ServiceBoard({ t, onPick, shifts, shiftDate }) {
@@ -343,34 +349,37 @@ export function TimingsView({ t, shifts }) {
       </Card>
 
       <Card t={t} title="Rotational — the three slots"
-        hint="Rotational is one ERP shift covering three round-the-clock slots. Groups move on every Monday: Day → Full night → Half night → Day. Which employees sit in which group isn't in the ERP yet, so the cycle below is the pattern, not an assignment.">
+        hint="Rotational is one ERP shift covering three round-the-clock slots. On the floor riders rotate one place every Monday; the planning roster deliberately does not, so each slot keeps the riders its plan was built for.">
         <div className="overflow-x-auto">
           <table className="w-full text-sm" style={{ minWidth: 520 }}>
             <thead><tr style={{ background: t.surface2 }}>
-              {["Slot", "Window", "Moves to next Monday"].map((h, i) => (
-                <th key={h} className={"py-2 px-3 text-xs font-semibold uppercase tracking-wider " + (i ? "text-left" : "text-left")} style={{ color: t.muted }}>{h}</th>
+              {["Slot", "Window", "Riders on the frozen roster"].map((h) => (
+                <th key={h} className="py-2 px-3 text-xs font-semibold uppercase tracking-wider text-left" style={{ color: t.muted }}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {ROTATION_SLOTS.map((sl) => (
-                <tr key={sl.id} style={{ borderTop: "1px solid " + t.border }}>
-                  <td className="py-2 px-3 font-semibold whitespace-nowrap" style={{ color: t.text }}>
-                    <span className="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle" style={{ background: sl.color }} />{sl.name}
-                  </td>
-                  <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>{fmtClock(sl.from)} – {fmtClock(sl.to % 1440)}{sl.to > 24 * 60 ? " (next day)" : ""}</td>
-                  <td className="py-2 px-3" style={{ color: t.muted }}>
-                    <span className="inline-block w-2 h-2 rounded-sm mr-1.5 align-middle" style={{ background: nextSlot(sl.id).color }} />{nextSlot(sl.id).name}
-                  </td>
-                </tr>
-              ))}
+              {ROTATION_SLOTS.map((sl) => {
+                const svc = SERVICES.find((s) => s.slot === sl.id);
+                const st = svc && erpStatsFor(svc, shifts);
+                return (
+                  <tr key={sl.id} style={{ borderTop: "1px solid " + t.border }}>
+                    <td className="py-2 px-3 font-semibold whitespace-nowrap" style={{ color: t.text }}>
+                      <span className="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle" style={{ background: sl.color }} />{sl.name}
+                    </td>
+                    <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>{fmtClock(sl.from)} – {fmtClock(sl.to % 1440)}{sl.to > 24 * 60 ? " (next day)" : ""}</td>
+                    <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>{st ? st.riders.toLocaleString("en-IN") : "—"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
         <div className="text-xs mt-3" style={{ color: t.faint }}>
-          Week beginning {weekStart(new Date()).toISOString().slice(0, 10)}. Each rider's slot is
-          read from the ERP punch feed (Pun_Shift), so the three slots are now separate services
-          with their own riders, gate times and plans — no group phase has to be assumed. The
-          cycle above only projects forward past the days the feed carries.
+          Week beginning {fmtISO(weekStart(new Date()))}. Who sits in each slot is
+          read from a frozen roster taken on {ROTA_FROZEN_ON} — the same ERP pull the three plans were
+          built from — not from this week's punches. That is what keeps a plan costed against the riders
+          it was actually built for. Re-freeze the roster and rebuild all three plans together when the
+          split needs re-cutting; doing one without the other is what puts riders in the wrong slot.
         </div>
       </Card>
 

@@ -452,7 +452,7 @@ const unitColor = (t, u) => (u === "Gainup" ? t.gainup : u === "Zenwear" ? t.zen
    drop it once no device can still be holding a pre-rename snapshot. */
 const UNIT_RENAMES = { Subbulapuram: "Zenwear" };
 const canonUnit = (u) => UNIT_RENAMES[u] || u;
-const SCHEMA = "fleet-v7"; // bump to invalidate stored data; v7 discards any dummy-seeded store so the app boots empty and loads from the ERP
+const SCHEMA = "fleet-v8"; // bump to invalidate stored data; v8 discards snapshots whose rider slots came from the live punch feed, before the Rotational roster was frozen
 const NAME_POOL = ["A. Kumar", "R. Murugan", "S. Devi", "K. Prakash", "M. Latha", "V. Raja", "P. Selvi", "T. Anand", "N. Gokul", "D. Priya", "B. Suresh", "J. Mary", "L. Karthik", "G. Divya", "H. Ramesh", "C. Anitha", "E. Vijay", "F. Sneha", "I. Manoj", "O. Kavya"];
 function sampleData() {
   const buses = [

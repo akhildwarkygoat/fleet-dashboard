@@ -26,12 +26,32 @@
  *   - driver name / phone                     -> NEEDS_ERP
  *   - diesel and driver salary                -> absent from BOTH feeds (see ERP_COST_HEADS)
  * ==========================================================================*/
+import FROZEN_ROTA from "./rotationalRoster.json";
 
 export const RUN_OPTIMISER = "Run optimiser to find out";
 export const NEEDS_ERP = "Needs to be added to the ERP";
 
 const ERP_ENDPOINT = "/erp/general/VehicleEmpMapDetails";
 const ERP_COST_ENDPOINT = "/erp/general/VehicleEmpMapProjectDetails";
+
+/* ---- Rotational roster: FROZEN, not read live ----
+ * Rotational's three slots rotate one place every Monday, so a rider's Pun_Shift only says
+ * where they were in the week it was punched. Reading it live meant the three services were
+ * re-cut every Monday against plans that were not, and a rider who had not yet punched this
+ * week was filed one slot behind — 323 of 767 riders on a Tuesday.
+ *
+ * So the roster is fixed instead. rotationalRoster.json is the split taken from the ERP pull
+ * of 11-08-2026, the same snapshot public/plan_rot-*.json were generated from, and it
+ * reproduces those plans exactly: 303 Day / 218 Half night / 239 Full night. Rider and plan
+ * therefore always agree, and neither moves on its own.
+ *
+ * The trade: the roster no longer tracks the live rotation, so it drifts as people actually
+ * move between slots. Re-freeze it from a fresh pull whenever the plans are regenerated —
+ * the two are one decision, never separate ones. A rider absent from the roster (a joiner
+ * since the freeze) belongs to no rotational service until they are added, which is visible
+ * rather than silently wrong. */
+export const ROTA_FROZEN_ON = FROZEN_ROTA._frozenOn;
+const frozenSlot = (emp) => FROZEN_ROTA.slots[emp] || "";
 
 /* Both feeds need a body/Content-Length or the endpoint 411s. */
 async function erpPost(endpoint) {
@@ -246,12 +266,6 @@ export function mapErpToDashboard(rows) {
   const empLatest = new Map();  // Empl_no -> { date, r }  (keep the most recent mapping)
   const attendance = {};        // date -> { Empl_no: "P"|"A" }
   const empAtt = new Map();     // Empl_no -> { absent, days }  (absentee rate across the feed)
-  /* Empl_no -> the rider's most recent NON-BLANK Pun_Shift (1/2/3 = 06:00/14:00/22:00).
-     Rotational's three slots are separate services now, and this is what sorts riders between
-     them. Deliberately not "the latest row's value": mid-day the second and third shifts have
-     not punched yet, so today's rows are blank for most of them and reading those would empty
-     two of the three services until evening. */
-  const empSlot = new Map();
 
   for (const r of rows || []) {
     const veh = (r.VehName || r.Veh_Mas || "").trim();
@@ -265,11 +279,6 @@ export function mapErpToDashboard(rows) {
     // …and the same punches rolled up per rider, so a derived stop can carry a REAL
     // absentee rate. Without it every derived stop assumed nobody is ever away, and the
     // engine's per-stop `ceil(head x (1 - absentee + buffer))` rounded up at each one.
-    const slot = (r.Pun_Shift || "").trim();
-    if (slot) {
-      const prev = empSlot.get(emp);
-      if (!prev || d >= prev.d) empSlot.set(emp, { d, slot });
-    }
     const ea = empAtt.get(emp) || { absent: 0, days: 0 };
     if (!present) ea.absent++;
     ea.days++;
@@ -315,8 +324,9 @@ export function mapErpToDashboard(rows) {
     busId: (r.VehName || r.Veh_Mas || "").trim(),
     // share of this rider's punches that were absences — feeds stop-level absentee
     absentee: (() => { const a = empAtt.get(emp); return a && a.days ? a.absent / a.days : 0; })(),
-    // Rotational slot from the punch feed: "1" Day · "2" Half night · "3" Full night
-    slot: (empSlot.get(emp) || {}).slot || "",
+    // Rotational slot from the FROZEN roster, not from this rider's punches — see the note
+    // on FROZEN_ROTA above. "1" Day · "2" Half night · "3" Full night; "" = not on the roster.
+    slot: frozenSlot(emp),
     department: (r.DeptName || "").trim(),
     designation: (r.Catagory || "").trim(),
     travelMin: null,                   // -> RUN_OPTIMISER in the UI

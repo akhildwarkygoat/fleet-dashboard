@@ -27,65 +27,35 @@ export const FACTORY_DEPOT = { name: "Batlagundu factory", lat: 10.207550, lng: 
 export const ZENWEAR_DEPOT = { name: "Zenwear — Subbulapuram", lat: 9.6732711, lng: 77.8072837 };
 
 /* ---- Rotational ----
- * Three round-the-clock slots. Every rider steps one place along
+ * Three round-the-clock slots. On the floor these rotate: a rider steps one place along
  *     Day → Full night → Half night → Day
- * on Monday, and stays there for the week.
+ * every Monday. That cycle is real — it is visible in the punch feed, where the three
+ * commonest week-to-week moves are exactly those three.
  *
- * Verified against the punch feed rather than assumed: over the days the ERP carries, the
- * three commonest week-to-week moves are exactly Half→Day (282), Day→Full (228) and
- * Full→Half (166), with only 4% moving against the cycle.
+ * The dashboard deliberately does NOT follow it. Membership is FROZEN to the roster in
+ * src/rotationalRoster.json (see the note there and in erp.js). Tracking the rotation live
+ * meant re-cutting the three services every Monday against plans that stayed put, and filing
+ * anyone who had not yet punched this week one slot behind. A plan is only worth costing if
+ * the riders in it are the riders it was built for, so roster and plan are frozen together
+ * and re-cut together.
  *
- * Which slot a given rider is on is now READ from the feed (`Pun_Shift`, 1/2/3), so nothing
- * here has to be guessed for any date the feed covers. These helpers project the cycle
- * FORWARD past that horizon — "where is this rider three weeks from now".
+ * These entries therefore describe the three slots as PLANNING BUCKETS — a name, a colour and
+ * the window each one runs — not where any given rider is this week. Nothing here computes a
+ * rider's slot from the calendar; that is exactly what was removed.
  */
 export const ROTATION_SLOTS = [
   { id: "day",   name: "Day",        from: 6 * 60,  to: 14 * 60, color: "#0d9488" },
   { id: "full",  name: "Full night", from: 22 * 60, to: 30 * 60, color: "#4338ca" },  // 22:00 → 06:00 next day
   { id: "half",  name: "Half night", from: 14 * 60, to: 22 * 60, color: "#7c5cd6" },
 ];
-/* The cycle order IS the array order: Day → Full night → Half night → back to Day. */
 
-/* Monday of the week `date` falls in (local), which is when the rotation steps. */
+/* Monday of the week `date` falls in (local). Used to label a week, not to step the rota. */
 export function weekStart(date) {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
   d.setDate(d.getDate() - ((d.getDay() + 6) % 7));   // getDay: Sun=0 → Monday-based
   return d;
 }
-/* How many Mondays have passed since the anchor — i.e. how many steps the rotation has taken. */
-export function rotationIndex(date, anchor = ROTATION_ANCHOR) {
-  const weeks = Math.floor((weekStart(date) - weekStart(anchor)) / (7 * 86400e3));
-  const n = ROTATION_SLOTS.length;
-  return ((weeks % n) + n) % n;
-}
-/* Anchor week: the Monday the cycle is measured from. Both 03-08 and 10-08 are Mondays in
-   the feed and the observed transitions line up with them, so the phase is no longer a guess. */
-export const ROTATION_ANCHOR = new Date(2026, 7, 3);   // Mon 03-08-2026
-
-/* Which slot a rotation group is on in a given week.
-   `group` is 0-based (group 0 starts on Day in the anchor week). */
-export function rotationalSlotOn(group, date) {
-  const i = (rotationIndex(date) + (group || 0)) % ROTATION_SLOTS.length;
-  return ROTATION_SLOTS[i];
-}
-/* Where a rider currently on `slotId` will be in the week containing `date`, stepping one
-   place every Monday. `from` defaults to now, so slotAfter("day") answers "and next week?".
-   This is the dynamic part: it needs no group number and no stored phase — just the slot the
-   feed says the rider is on today and how many Mondays separate the two dates. */
-export function slotOn(slotId, date, from = new Date()) {
-  const i = ROTATION_SLOTS.findIndex((s) => s.id === slotId);
-  if (i < 0) return null;
-  const n = ROTATION_SLOTS.length;
-  const weeks = Math.round((weekStart(date) - weekStart(from)) / (7 * 86400e3));
-  return ROTATION_SLOTS[(((i + weeks) % n) + n) % n];
-}
-
-/* The next slot a group moves to — "Day → Full night" reads straight off this. */
-export const nextSlot = (slotId) => {
-  const i = ROTATION_SLOTS.findIndex((s) => s.id === slotId);
-  return i < 0 ? null : ROTATION_SLOTS[(i + 1) % ROTATION_SLOTS.length];
-};
 
 /* A rider belongs to EXACTLY ONE service. Unit wins over shift: every unit starts at the
    same gate time, so the shift field alone cannot tell a Zenwear rider from a Batlagundu
@@ -99,8 +69,8 @@ export function serviceIdFor(unit, shift, slot) {
   if (!byShift.length) return null;
   if (byShift.length === 1) return byShift[0].id;
   /* Several services share one ERP shift string — Rotational's three slots all read
-     "ROTATIONAL SHIFT". The rider's punch slot (Pun_Shift: 1/2/3) picks which. A rider with
-     no slot on record belongs to none of them rather than being dumped into the first. */
+     "ROTATIONAL SHIFT". The rider's slot (1/2/3, from the frozen roster) picks which. A rider
+     with no slot on record belongs to none of them rather than being dumped into the first. */
   const bySlot = byShift.find((s) => s.erpSlot && s.erpSlot === String(slot || "").trim());
   return bySlot ? bySlot.id : null;
 }
@@ -116,9 +86,10 @@ export const SERVICES = [
   { id: "s7",    name: "7 am Morning", color: "#d97706", gate: 7 * 60, erpShift: "MORNING SHIFT - 7", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_s7.json" },
   /* Rotational is THREE services, not one. It always ran three round-the-clock slots, but the
      ERP could not say who rode when, so it had to be planned as a single 786-rider block that
-     needed ~3x the fleet and never solved. The feed now carries `Pun_Shift` per rider per day
-     (1/2/3 = 06:00/14:00/22:00), so each slot is its own service with its own ~200 riders,
-     gate time and plan. `erpSlot` is what splits them; `slot` ties back to ROTATION_SLOTS. */
+     needed ~3x the fleet and never solved. `Pun_Shift` (1/2/3 = 06:00/14:00/22:00) gave the
+     missing split, and it is now held frozen in src/rotationalRoster.json so each slot keeps
+     the ~250 riders its plan was built for instead of being re-cut every Monday.
+     `erpSlot` is what splits them; `slot` ties back to ROTATION_SLOTS. */
   { id: "rot-day",  name: "Rotational · Day",        color: "#0d9488", gate: 6 * 60,  erpShift: "ROTATIONAL SHIFT", erpSlot: "1", slot: "day",  depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-day.json" },
   { id: "rot-half", name: "Rotational · Half night", color: "#7c5cd6", gate: 14 * 60, erpShift: "ROTATIONAL SHIFT", erpSlot: "2", slot: "half", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-half.json" },
   { id: "rot-full", name: "Rotational · Full night", color: "#4338ca", gate: 22 * 60, erpShift: "ROTATIONAL SHIFT", erpSlot: "3", slot: "full", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-full.json" },
