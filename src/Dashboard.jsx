@@ -2541,6 +2541,7 @@ export default function App() {
   const [buses, setBuses] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [attendance, setAttendance] = useState({});
+  const [rotaHistory, setRotaHistory] = useState({});   // date -> Empl_no -> [bus, slot, P/A]; how Rotational actually ran
   const [records, setRecords] = useState([]);
   // Running costs come from the ERP costing feed and are read-only here. They live in their
   // own state (not on the bus) so the costing feed can be resynced on its own, without
@@ -2644,7 +2645,7 @@ export default function App() {
         // snapshot actually holds riders on a slot-divided shift, so a feed genuinely without
         // them can't re-sync on every load.
         if (emps.length && emps.some((e) => SLOT_SHIFTS.has(e.shift)) && !emps.some((e) => e.slot)) staleEmployees.current = true;
-        setBuses(b); setRecords(recs); setAttendance(att); setEmployees(emps); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
+        setBuses(b); setRecords(recs); setAttendance(att); setEmployees(emps); setRotaHistory((await Store.get("rotaHistory")) || {}); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
         const st = (await Store.get("settings")) || {};
         if (!st.bands || !st.bands.length) st.bands = DEFAULT_BANDS.map((x) => ({ ...x }));
         if (st.workingDays == null) st.workingDays = 312;
@@ -2657,7 +2658,7 @@ export default function App() {
         // No stored fleet yet — never seed dummy data. Keep only the config defaults
         // (settings, custom metrics) and leave the fleet empty; the ERP sync below fills it.
         const s = sampleData(); setSettings(s.settings); setFormulas(s.formulas); setVariables(s.variables);
-        setBuses([]); setEmployees([]); setAttendance({}); setRecords([]);
+        setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setRotaHistory({});
       }
       // Costs are stored alongside the fleet so the last pull is on screen before the
       // first fetch of the day lands; they refresh with it.
@@ -2680,6 +2681,7 @@ export default function App() {
   useEffect(() => { busesRef.current = buses; }, [buses]);
   useEffect(() => { if (loaded) Store.set("employees", employees); }, [employees, loaded]);
   useEffect(() => { if (loaded) Store.set("attendance", attendance); }, [attendance, loaded]);
+  useEffect(() => { if (loaded) Store.set("rotaHistory", rotaHistory); }, [rotaHistory, loaded]);
   useEffect(() => { if (loaded) Store.set("records", records); }, [records, loaded]);
   useEffect(() => { if (loaded) Store.set("formulas", formulas); }, [formulas, loaded]);
   useEffect(() => { if (loaded) Store.set("variables", variables); }, [variables, loaded]);
@@ -2775,7 +2777,7 @@ export default function App() {
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
-  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setCostProfiles({}); setCostMeta(null); setCostStatus({ phase: "idle", at: null, msg: "" }); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Cleared local data — re-syncing ERP"); syncErp(); };
+  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setRotaHistory({}); setCostProfiles({}); setCostMeta(null); setCostStatus({ phase: "idle", at: null, msg: "" }); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Cleared local data — re-syncing ERP"); syncErp(); };
   /* Costing feed — fetched with the punch feed on the daily sync, and on its own from the
      Resync buttons. Kept separate so a costing failure never costs you the fleet, and so
      re-pulling costs (a few hundred rows) doesn't drag the punch feed with it. */
@@ -2822,7 +2824,7 @@ export default function App() {
             onComplete: resolve });
         });
       }
-      setBuses(data.buses); setEmployees(data.employees); setAttendance(data.attendance); setRecords(data.records);
+      setBuses(data.buses); setEmployees(data.employees); setAttendance(data.attendance); setRecords(data.records); setRotaHistory(data.rotaHistory || {});
 
       Store.set("lastErpSync", Date.now()); // freshness marker the refresh interval measures against
       setErpStatus({ phase: "ok", at: Date.now(), msg: `${data.buses.length} buses · ${data.employees.length} employees`, progress: null });
@@ -2926,7 +2928,7 @@ export default function App() {
               ledger={ledger} onAddLedger={(e) => setLedger((L) => [...L, e])} onDelLedger={(id) => setLedger((L) => L.filter((x) => x.id !== id))}
               busInfo={busInfo} onSetBusField={setBusField} toast={toast} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={effBuses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
-            {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} erpEmployees={employees} erpShifts={erpRoll} erpShiftDate={erpShiftDate} />}
+            {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} erpEmployees={employees} erpShifts={erpRoll} erpShiftDate={erpShiftDate} rotaHistory={rotaHistory} />}
             {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} onSyncCosts={() => syncCosts()} costStatus={costStatus} costMeta={costMeta} toast={toast} themeName={themeName} setThemeName={setThemeName}
               formulas={formulas} variables={variables}
               onAddMetric={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}

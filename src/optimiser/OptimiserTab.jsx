@@ -23,6 +23,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Card, Btn, Field, TextInput, SelectInput, Tile, Empty, StatusPill, Segmented, makeTooltip, routeColorMap, PALETTE } from "./ui.jsx";
 import { ServiceBoard, TimingsView } from "./TimingsView.jsx";
+import RotaHistoryView from "./RotaHistoryView.jsx";
 import { stopsForRiders, coverageOf } from "./serviceStops.js";
 import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js";
 import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
@@ -1981,7 +1982,7 @@ function SimulatorView({ t }) {
   );
 }
 
-export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShifts, erpShiftDate }) {
+export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShifts, erpShiftDate, rotaHistory }) {
   const [sub, setSub] = useState("stops");
   // Which service is being planned (or Overall). Asked on every entry to the tab (state
   // only, deliberately not persisted) — the board IS the switcher, so no header toggles.
@@ -2064,7 +2065,10 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
           {svc.name}
           <span className="text-xs font-normal" style={{ color: t.muted }}>Change ▾</span>
         </button>
-        <Segmented t={t} value={sub} onChange={setSub} options={[["stops", "Stops"], ["plan", "Fleet plan"], ["new", "Planner"], ["timings", "Timings"]]} />
+        <Segmented t={t} value={sub} onChange={setSub} options={[["stops", "Stops"], ["plan", "Fleet plan"], ["new", "Planner"], ["timings", "Timings"],
+          /* Rotational is the only shift that moves, so it is the only one with an
+             "as operated" record worth reading a day at a time. */
+          ...(svc && svc.slot ? [["ran", "As operated"]] : [])]} />
         {(sub === "plan" || sub === "new") && planOpts && planOpts.length > 1 && (
           <div className="inline-flex items-center gap-1 rounded-xl p-1" style={{ background: t.surface2, border: "1px solid " + t.border }}>
             <span className="text-[10px] font-bold uppercase tracking-wider px-2" style={{ color: t.faint }}>Plan</span>
@@ -2113,6 +2117,7 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
       {sub === "new" && <NewPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} toast={toast}
         erpBuses={svcErpBuses} svc={svc && !svc.overall ? svc : null} svcStops={svcStops} />}
       {sub === "timings" && <TimingsView t={t} shifts={erpShifts} />}
+      {sub === "ran" && <RotaHistoryView t={t} rotaHistory={rotaHistory} employees={erpEmployees} depot={svc && svc.depot} />}
     </div>
   );
 }

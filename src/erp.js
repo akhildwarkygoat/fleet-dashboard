@@ -255,17 +255,26 @@ export function mapErpCosts(rows, { asOf = Date.now() } = {}) {
   };
 }
 
+/* The rows are folded per rider, which is what every other view needs — but it throws away
+   the one thing "how was Rotational actually run on the 12th?" depends on: which bus a rider
+   rode and which slot they punched ON A GIVEN DAY. Kept only for riders on the rotational
+   shift, and only as [bus, slot, present], because that is the shift that moves; keeping it
+   for all 4,500 riders would multiply the stored snapshot for no reader. */
+const ROTA_SHIFT = "ROTATIONAL SHIFT";
+
 /**
- * Fold raw ERP rows into { buses, employees, attendance, records }.
- * - bus.id      = vehicle reg (stable across syncs, so cost profiles survive)
- * - employee.id = Empl_no (attendance is keyed on this)
- * - records     = [] — daily spend/budget comes from the costing feed (mapErpCosts)
+ * Fold raw ERP rows into { buses, employees, attendance, records, rotaHistory }.
+ * - bus.id       = vehicle reg (stable across syncs, so cost profiles survive)
+ * - employee.id  = Empl_no (attendance is keyed on this)
+ * - records      = [] — daily spend/budget comes from the costing feed (mapErpCosts)
+ * - rotaHistory  = date -> Empl_no -> [bus, slot, "P"|"A"], rotational riders only
  */
 export function mapErpToDashboard(rows) {
   const buses = new Map();      // veh -> { seat:{}, unit:{}, type:Set }
   const empLatest = new Map();  // Empl_no -> { date, r }  (keep the most recent mapping)
   const attendance = {};        // date -> { Empl_no: "P"|"A" }
   const empAtt = new Map();     // Empl_no -> { absent, days }  (absentee rate across the feed)
+  const rotaHistory = {};       // date -> { Empl_no: [bus, slot, "P"|"A"] }
 
   for (const r of rows || []) {
     const veh = (r.VehName || r.Veh_Mas || "").trim();
@@ -276,6 +285,11 @@ export function mapErpToDashboard(rows) {
     // attendance (live punch feed)
     const present = /present/i.test(r.Att_Type || "");
     (attendance[d] = attendance[d] || {})[emp] = present ? "P" : "A";
+    // how Rotational actually ran that day — the bus and the slot as punched, NOT the frozen
+    // roster. This is the record of what happened; the roster is the plan.
+    if (normShift(r.Shift) === ROTA_SHIFT) {
+      (rotaHistory[d] = rotaHistory[d] || {})[emp] = [veh, (r.Pun_Shift || "").trim(), present ? "P" : "A"];
+    }
     // …and the same punches rolled up per rider, so a derived stop can carry a REAL
     // absentee rate. Without it every derived stop assumed nobody is ever away, and the
     // engine's per-stop `ceil(head x (1 - absentee + buffer))` rounded up at each one.
@@ -332,5 +346,5 @@ export function mapErpToDashboard(rows) {
     travelMin: null,                   // -> RUN_OPTIMISER in the UI
   }));
 
-  return { buses: busList, employees, attendance, records: [] };
+  return { buses: busList, employees, attendance, records: [], rotaHistory };
 }
