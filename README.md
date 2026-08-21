@@ -32,6 +32,43 @@ pip install -r requirements.txt
 python optimize.py          # writes public/solver_result.json
 ```
 
+### ERP login (required — the dashboard has no data without it)
+
+The ERP is no longer open. `POST /api/login` with a username and password returns a
+bearer token, and every `/api/general/*` call must carry it; without one the feed
+answers `401 Authorization has been denied for this request.` and the dashboard sits
+on "Contacting ERP…".
+
+Create **`.erp_key`** in the project root:
+
+```json
+{ "Username": "…", "password": "…" }
+```
+
+(The ERP was documented to us with two different spellings of these fields, so
+`UserName`/`Password` works too — the login tries both.)
+
+`ERP_USER` / `ERP_PASS` environment variables work too and take precedence.
+
+The file is gitignored, same rule as `.maps_key`: **never committed, never printed.**
+It is read by the dev server and by `refresh_routes.sh` — *not* by the browser. The
+proxy attaches the token as the request passes through, so the ERP password never
+reaches the bundle and never lands on a dashboard machine.
+
+On startup the log says which mode is in use:
+
+```
+ERP   login configured — requests will carry a bearer token
+ERP   logged in
+```
+
+A wrong password reports there, at startup, rather than as a vague sync failure later.
+With no credentials at all it calls the ERP unauthenticated, which now fails — that
+path only exists so a site still on the old open ERP keeps working.
+
+> **Production:** the backend passthrough has to perform this same login. The browser
+> cannot, for the same reason it cannot hold the password.
+
 ### Google Maps key (optional — for live road distances)
 
 There is **no API key in the source**. The app runs on the pre-cached road

@@ -18,6 +18,9 @@ Thumbs.db
 .claude/
 # Google Maps API key — never committed, never printed
 .maps_key
+# ERP username + password for /api/login — same rule. The dev server and refresh_routes.sh
+# read this; it is never sent to the browser, so the password stays off every dashboard machine.
+.erp_key
 
 # ERP-derived data — contains employee PII (names + home GPS + attendance).
 # NEVER commit to a public repo. Regenerate locally with the build_*.py scripts.

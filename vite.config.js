@@ -1,6 +1,123 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+
+/* ── ERP login ────────────────────────────────────────────────────────────────────
+ * The ERP is no longer open: POST /api/login with a username and password returns a
+ * bearer token, and every /api/general/* call has to carry it.
+ *
+ * The credentials are read HERE, in the dev server, and never reach the browser — the
+ * proxy attaches the header as the request passes through. Putting them in the React
+ * app instead would ship the ERP password to every machine that opens the dashboard,
+ * where anyone could read it out of the bundle.
+ *
+ * Supply them either way (see README):
+ *   ERP_USER / ERP_PASS   environment variables, or
+ *   .erp_key              {"Username": "…", "password": "…"} — gitignored, same rule
+ *                         as .maps_key: never committed, never printed. Either casing
+ *                         is accepted, since the ERP was documented to us both ways.
+ *
+ * With neither, requests go out unauthenticated exactly as before, so a site still on
+ * the old open ERP keeps working and the startup log says which mode is in use.
+ *
+ * PRODUCTION: the backend passthrough has to do this same login. The browser cannot,
+ * for the same reason it cannot hold the password. */
+const ERP_BASE = process.env.ERP_BASE || "http://life.gainup.in:8089";
+
+function erpCredentials() {
+  if (process.env.ERP_USER && process.env.ERP_PASS)
+    return { user: process.env.ERP_USER, pass: process.env.ERP_PASS };
+  try {
+    // strip a UTF-8 BOM: PowerShell's Set-Content/Out-File writes one by default, and
+    // JSON.parse throws on it — an unhelpful failure for the Windows machines this runs on
+    const raw = JSON.parse(fs.readFileSync(".erp_key", "utf8").replace(/^﻿/, ""));
+    // the ERP's own two descriptions of this API disagree on casing, so accept either
+    const user = raw.Username || raw.UserName || raw.username || raw.user;
+    const pass = raw.Password || raw.password || raw.pass;
+    if (user && pass) return { user, pass };
+  } catch { /* no file, or not JSON — treated as "no credentials" */ }
+  return null;
+}
+
+/* The ERP was documented to us twice with different casing — {"Username", "password"} in
+   the email, {"UserName", "Password"} in the Postman screenshot. Most .NET endpoints bind
+   case-insensitively and would take either, but we can't verify which this one does without
+   a live login, so try the emailed shape first and fall back to the other. Whichever works
+   is logged, so this stops being guesswork the first time anyone runs it. */
+const LOGIN_SHAPES = [
+  { label: 'Username/password', body: (c) => ({ Username: c.user, password: c.pass }) },
+  { label: 'UserName/Password', body: (c) => ({ UserName: c.user, Password: c.pass }) },
+];
+
+/* One token, reused. Re-logging in per request would turn every 30-minute sync into two
+   round trips and hammer the login endpoint; `inflight` collapses the burst of calls the
+   dashboard makes on load into a single login. */
+let erpToken = null, erpTokenAt = 0, erpLogin = null, erpShape = "";
+const TOKEN_TTL_MS = 20 * 60 * 1000;   // re-login well inside any plausible expiry
+
+async function ensureErpToken(force = false) {
+  const creds = erpCredentials();
+  if (!creds) return null;
+  if (!force && erpToken && Date.now() - erpTokenAt < TOKEN_TTL_MS) return erpToken;
+  if (erpLogin) return erpLogin;
+  erpLogin = (async () => {
+    let last = "";
+    for (const shape of LOGIN_SHAPES) {
+      const res = await fetch(ERP_BASE + "/API/LOGIN", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(shape.body(creds)),
+      });
+      if (!res.ok) { last = `HTTP ${res.status} for ${shape.label}`; continue; }
+      const body = await res.json().catch(() => null);
+      // the documented shape is {"token": "…"}; the others cost nothing and save a
+      // debugging session if the ERP is ever changed to wrap or rename it
+      const t = body && (body.token || body.Token || body.access_token ||
+                         (body.data && (body.data.token || body.data.Token)));
+      if (!t) { last = `${shape.label} was accepted but no token came back`; continue; }
+      erpToken = String(t); erpTokenAt = Date.now();
+      erpShape = shape.label;
+      return erpToken;
+    }
+    throw new Error(last || "login failed");
+  })().finally(() => { erpLogin = null; });
+  return erpLogin;
+}
+
+/* Fetches the token before the proxy forwards anything. Registered in configureServer
+   without returning a function, so it runs BEFORE Vite's own proxy middleware. */
+function erpAuthPlugin() {
+  return {
+    name: "erp-auth",
+    configureServer(server) {
+      const has = !!erpCredentials();
+      server.config.logger.info(has
+        ? "  ERP   login configured — requests will carry a bearer token"
+        : "  ERP   no credentials (.erp_key or ERP_USER/ERP_PASS) — calling the ERP unauthenticated");
+      // Log in at startup rather than waiting for the first request. It means the token is
+      // already warm when the dashboard opens, and — the reason it matters — a wrong password
+      // is reported here, in the window the user is looking at, instead of surfacing later as
+      // a generic "ERP sync failed" inside the app.
+      if (has) {
+        ensureErpToken()
+          .then(() => server.config.logger.info(`  ERP   logged in (${erpShape})`))
+          .catch((e) => server.config.logger.error("  ERP   login failed — " + e.message));
+      }
+      server.middlewares.use("/erp", async (req, res, next) => {
+        try {
+          await ensureErpToken();
+        } catch (e) {
+          // Don't fail the request here. The ERP answers unauthenticated calls with a
+          // 401 the dashboard already surfaces as "ERP sync failed"; swallowing the
+          // login error and letting that happen keeps one error path, not two.
+          server.config.logger.error("  ERP   login failed — " + e.message);
+        }
+        next();
+      });
+    },
+  };
+}
 
 /* ── Dev-only endpoint that rebuilds the Prev-route data from the LIVE ERP ──────────
  * The "Prev. route" map (routes_map.html) POSTs /__rebuild_routes on load; this runs
@@ -47,7 +164,7 @@ function routesRebuildPlugin() {
 }
 
 export default defineConfig({
-  plugins: [react(), routesRebuildPlugin()],
+  plugins: [react(), routesRebuildPlugin(), erpAuthPlugin()],
   server: {
     host: true,
     // honour the port the launcher assigns (autoPort) via the PORT env var; fall back to 5173
@@ -61,9 +178,24 @@ export default defineConfig({
         // public hostname, not the 172.16.x LAN address: the LAN IP only resolves inside the
         // office network, so the dashboard died the moment anyone opened it from home or a
         // phone. life.gainup.in serves the same ERP and works from either side.
-        target: process.env.ERP_BASE || "http://life.gainup.in:8089",
+        target: ERP_BASE,
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/erp/, "/api"),
+        configure(proxy) {
+          // the token is fetched by erpAuthPlugin's middleware, which has already run by
+          // the time the request gets here — so this only has to attach it
+          proxy.on("proxyReq", (proxyReq) => {
+            if (erpToken) proxyReq.setHeader("Authorization", "Bearer " + erpToken);
+          });
+          // A rejected token is the one failure worth reacting to. Drop it so the next
+          // call logs in again, instead of repeating the same dead token every 30 minutes
+          // until someone restarts the dashboard.
+          proxy.on("proxyRes", (proxyRes) => {
+            if (proxyRes.statusCode === 401 || proxyRes.statusCode === 403) {
+              erpToken = null; erpTokenAt = 0;
+            }
+          });
+        },
       },
     },
   },
