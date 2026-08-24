@@ -21,10 +21,10 @@ const DEFAULT_ZOOM = 9;
 
 const esc = (x) => String(x || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
-/* Stops holding riders who never rotate. A deep purple, deliberately darker and less pink than
-   both the palette's magenta (#c026d3) and Half night's violet (#7c5cd6), so "already settled"
-   reads as a different KIND of marker rather than as another route — this board is scanned for
-   what still needs checking, not for what each stop is. */
+/* Riders who never rotate. A deep purple, deliberately darker and less pink than both the
+   palette's magenta (#c026d3) and Half night's violet (#7c5cd6), so it reads as a different KIND
+   of marker rather than as another route — this board is scanned for what still needs checking,
+   not for what each stop is. */
 export const FIXED_SHIFT_COLOR = "#6b21a8";
 
 /* A stop dot: coloured disc with the headcount, larger + ringed when selected. */
@@ -66,7 +66,8 @@ const makeCluster = (primary, onPrimary) => (cluster) => {
 export default function GMap({ t, stops, routeColors, depot, polylines, selectedId, onSelect, dropPinMode, onDropPin, height = 460, scrollWheelZoom = false, autoFit = true }) {
   const elRef = useRef(null), mapRef = useRef(null);
   const clusterRef = useRef(null), polyLayerRef = useRef(null), depotRef = useRef(null);
-  const markersRef = useRef({});          // stop.id -> { marker, color, headcount }
+  const markersRef = useRef({});          // render key -> { marker, color, headcount, selId }
+                                          // (a mixed stop renders twice, so key !== stop id there)
   const selRef = useRef(selectedId);
   const sigRef = useRef("");
   const fitSigRef = useRef("");
@@ -82,38 +83,54 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
     const list = (stops || []).filter((s) => s.lat != null && s.lng != null);
     const rc = routeColors || {};
     const batch = [];
+
+    /* One stop can hold both kinds of rider, and labelling that "1 of 3 do not rotate" reads as
+       a riddle rather than an instruction. So a mixed stop becomes TWO dots instead: a purple one
+       for the riders who never rotate and a route-coloured one for the riders who do. Each dot is
+       then purely one thing, and its count is the count of that group.
+       They sit ~13 m apart, which is nothing at the zoom the board opens on (and they cluster
+       together anyway) but separates cleanly once you zoom in — which is exactly where somebody
+       is deciding whether this stop still needs checking. */
+    const SPLIT_DEG = 0.00012;
+    const rendered = [];
     list.forEach((s) => {
-      // A stop holding riders who sit out the weekly rotation is drawn dark blue instead of its
-      // route colour. That is the whole point of the marking: everything NOT dark blue is a stop
-      // whose riders move every Monday and therefore has to be re-checked each rotation, so the
-      // eye can skip the blue ones. The tooltip still says how many, because a stop can be only
-      // partly fixed and "some of them" is a different instruction from "all of them".
       const fixed = s.fixedShift || 0;
-      const color = fixed > 0 ? FIXED_SHIFT_COLOR : (rc[s.route] || t.primary);
-      const mk = L.marker([s.lat, s.lng], { icon: stopDot(color, s.headcount, s.id === selRef.current), headcount: s.headcount || 0 });
+      const total = s.riderCount ?? s.headcount ?? 0;
+      if (fixed > 0 && fixed < total) {
+        rendered.push({ ...s, key: s.id + "#fixed", selId: s.id, lng: s.lng - SPLIT_DEG, headcount: fixed, group: "fixed" });
+        rendered.push({ ...s, key: s.id + "#rota", selId: s.id, lng: s.lng + SPLIT_DEG, headcount: total - fixed, group: "rota" });
+      } else {
+        rendered.push({ ...s, key: s.id, selId: s.id, group: fixed > 0 ? "fixed" : null });
+      }
+    });
+
+    rendered.forEach((s) => {
+      // Purple = these riders never rotate, so this dot needs no re-check when the rota moves.
+      // Anything in its route colour does. That contrast is the whole point of the marking.
+      const color = s.group === "fixed" ? FIXED_SHIFT_COLOR : (rc[s.route] || t.primary);
+      const n = s.headcount;
+      const mk = L.marker([s.lat, s.lng], { icon: stopDot(color, n, s.selId === selRef.current), headcount: n || 0 });
+      const note =
+        s.group === "fixed"
+          ? `<br><span style="color:${FIXED_SHIFT_COLOR};font-weight:700">&#128274; ${n === 1 ? "does not rotate" : "do not rotate"}</span>` +
+            `<br><span style="color:#64748b;font-weight:400">same shift every week</span>`
+          : s.group === "rota"
+          ? `<br><span style="color:${color};font-weight:700">&#128260; ${n === 1 ? "rotates every Monday" : "rotate every Monday"}</span>` +
+            `<br><span style="color:#64748b;font-weight:400">re-check when the rota moves</span>`
+          : "";
       mk.bindTooltip(
         `<div style="font:600 12px/1.35 Inter,system-ui,sans-serif"><b>${esc(s.name)}</b>` +
         (s.village ? `<br><span style="color:#64748b">${esc(s.village)}</span>` : "") +
-        (s.headcount != null ? `<br><span style="color:#0e7490">&#128101; ${s.headcount} rider${s.headcount === 1 ? "" : "s"}</span>` : "") +
+        (n != null ? `<br><span style="color:#0e7490">&#128101; ${n} rider${n === 1 ? "" : "s"}</span>` : "") +
         (s.busName
           ? `<br><span style="color:${s.busColor || "#334155"};font-weight:700">&#128652; ${esc(s.busName)}</span>`
           : (s.busName === null && "busName" in s ? `<br><span style="color:#94a3b8">&#128652; unassigned</span>` : "")) +
-        (fixed > 0
-          ? `<br><span style="color:${FIXED_SHIFT_COLOR};font-weight:700">&#128274; ${
-              fixed >= (s.riderCount ?? s.headcount ?? 0)
-                ? (fixed === 1 ? "this rider does not rotate" : "these riders do not rotate")
-                : `${fixed} of ${s.riderCount} do not rotate`
-            }</span><br><span style="color:#64748b;font-weight:400">${
-              fixed >= (s.riderCount ?? s.headcount ?? 0)
-                ? "same shift every week — no need to re-check"
-                : "the rest move with the rota — still needs checking"
-            }</span>`
-          : "") +
+        note +
         `</div>`,
         { direction: "top", offset: [0, -12] }
       );
-      mk.on("click", () => onSelRef.current && onSelRef.current(s.id));
-      markersRef.current[s.id] = { marker: mk, color, headcount: s.headcount };
+      mk.on("click", () => onSelRef.current && onSelRef.current(s.selId));
+      markersRef.current[s.key] = { marker: mk, color, headcount: n, selId: s.selId };
       batch.push(mk);
     });
     cluster.addLayers(batch);
@@ -163,12 +180,16 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
   // selection → restyle prev + new marker, and reveal the selected one from its cluster
   useEffect(() => {
     const cluster = clusterRef.current; if (!cluster) return;
-    const restyle = (id, sel) => { const r = markersRef.current[id]; if (r) r.marker.setIcon(stopDot(r.color, r.headcount, sel)); };
+    // A mixed stop is drawn as two markers sharing one stop id, so selection works on selId
+    // rather than on the registry key — otherwise picking that row in the table would highlight
+    // neither half of it.
+    const forStop = (id) => Object.values(markersRef.current).filter((r) => r.selId === id);
+    const restyle = (id, sel) => forStop(id).forEach((r) => r.marker.setIcon(stopDot(r.color, r.headcount, sel)));
     restyle(selRef.current, false);
     restyle(selectedId, true);
     selRef.current = selectedId;
-    const r = markersRef.current[selectedId];
-    if (r) cluster.zoomToShowLayer(r.marker, () => r.marker.openTooltip());
+    const hit = forStop(selectedId)[0];
+    if (hit) cluster.zoomToShowLayer(hit.marker, () => hit.marker.openTooltip());
     // eslint-disable-next-line
   }, [selectedId]);
 
