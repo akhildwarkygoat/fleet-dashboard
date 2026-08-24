@@ -21,6 +21,12 @@ const DEFAULT_ZOOM = 9;
 
 const esc = (x) => String(x || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
+/* Stops holding riders who never rotate. A deep purple, deliberately darker and less pink than
+   both the palette's magenta (#c026d3) and Half night's violet (#7c5cd6), so "already settled"
+   reads as a different KIND of marker rather than as another route — this board is scanned for
+   what still needs checking, not for what each stop is. */
+export const FIXED_SHIFT_COLOR = "#6b21a8";
+
 /* A stop dot: coloured disc with the headcount, larger + ringed when selected. */
 function stopDot(color, headcount, sel) {
   const size = sel ? 30 : 24;
@@ -77,7 +83,13 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
     const rc = routeColors || {};
     const batch = [];
     list.forEach((s) => {
-      const color = rc[s.route] || t.primary;
+      // A stop holding riders who sit out the weekly rotation is drawn dark blue instead of its
+      // route colour. That is the whole point of the marking: everything NOT dark blue is a stop
+      // whose riders move every Monday and therefore has to be re-checked each rotation, so the
+      // eye can skip the blue ones. The tooltip still says how many, because a stop can be only
+      // partly fixed and "some of them" is a different instruction from "all of them".
+      const fixed = s.fixedShift || 0;
+      const color = fixed > 0 ? FIXED_SHIFT_COLOR : (rc[s.route] || t.primary);
       const mk = L.marker([s.lat, s.lng], { icon: stopDot(color, s.headcount, s.id === selRef.current), headcount: s.headcount || 0 });
       mk.bindTooltip(
         `<div style="font:600 12px/1.35 Inter,system-ui,sans-serif"><b>${esc(s.name)}</b>` +
@@ -86,6 +98,17 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
         (s.busName
           ? `<br><span style="color:${s.busColor || "#334155"};font-weight:700">&#128652; ${esc(s.busName)}</span>`
           : (s.busName === null && "busName" in s ? `<br><span style="color:#94a3b8">&#128652; unassigned</span>` : "")) +
+        (fixed > 0
+          ? `<br><span style="color:${FIXED_SHIFT_COLOR};font-weight:700">&#128274; ${
+              fixed >= (s.riderCount ?? s.headcount ?? 0)
+                ? (fixed === 1 ? "this rider does not rotate" : "these riders do not rotate")
+                : `${fixed} of ${s.riderCount} do not rotate`
+            }</span><br><span style="color:#64748b;font-weight:400">${
+              fixed >= (s.riderCount ?? s.headcount ?? 0)
+                ? "same shift every week — no need to re-check"
+                : "the rest move with the rota — still needs checking"
+            }</span>`
+          : "") +
         `</div>`,
         { direction: "top", offset: [0, -12] }
       );

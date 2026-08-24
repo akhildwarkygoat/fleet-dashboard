@@ -116,6 +116,14 @@ export function stopsForRiders(riders, existing = [], { mergeM = MERGE_M, coverM
       // attendance history contribute 0, which is the old behaviour for that rider only.
       absentee: members.reduce((s, j) => s + (+pts[j].absentee || 0), 0) / members.length,
       route: "Imported",
+      // How many riders standing here sit out the weekly rotation. Carried through so the map
+      // can mark the stop: a stop that is all fixed-shift riders needs no re-check when the
+      // rota moves, and one that is partly fixed needs a careful look rather than a glance.
+      fixedShift: members.reduce((n, j) => n + (pts[j].fixedShift ? 1 : 0), 0),
+      // the raw number of riders at this stop. `headcount` is overwritten downstream with the
+      // EFFECTIVE (absentee-adjusted) figure, so "are all of them fixed-shift?" has to be asked
+      // against this rather than against a number that has been rounded for planning.
+      riderCount: members.length,
       riders: members.map((j) => pts[j].name || pts[j].id),
       merged: members.length > 1,          // more than one rider at this exact coordinate
       buses: busList,                      // [[registration, riders], …] busiest first

@@ -27,6 +27,7 @@
  *   - diesel and driver salary                -> absent from BOTH feeds (see ERP_COST_HEADS)
  * ==========================================================================*/
 import FROZEN_ROTA from "./rotationalRoster.json";
+import NON_ROTATING from "./nonRotatingRiders.json";
 
 export const RUN_OPTIMISER = "Run optimiser to find out";
 export const NEEDS_ERP = "Needs to be added to the ERP";
@@ -52,6 +53,20 @@ const ERP_COST_ENDPOINT = "/erp/general/VehicleEmpMapProjectDetails";
  * rather than silently wrong. */
 export const ROTA_FROZEN_ON = FROZEN_ROTA._frozenOn;
 const frozenSlot = (emp) => FROZEN_ROTA.slots[emp] || "";
+
+/* ---- Riders who do NOT rotate ----
+ * The rota is supposed to move everyone one place each Monday. 104 riders never move: they
+ * punched the same slot in every week the feed carries, and the transport manager confirmed
+ * the six of them we could put in front of him, six for six.
+ *
+ * They matter because they are the standing exception to the rule. Any logic that steps
+ * everyone forward is wrong about exactly these people, and on the Stops board they are the
+ * riders whose shift does NOT need re-checking each rotation — which is why the map marks
+ * them rather than leaving them to be found by hand.
+ *
+ * Employee numbers only, no names or GPS: same rule as rotationalRoster.json. */
+export const NON_ROTATING_COUNTS = NON_ROTATING._counts;
+const doesNotRotate = (emp) => !!NON_ROTATING.riders[emp];
 
 /* Both feeds need a body/Content-Length or the endpoint 411s. */
 async function erpPost(endpoint) {
@@ -341,6 +356,8 @@ export function mapErpToDashboard(rows) {
     // Rotational slot from the FROZEN roster, not from this rider's punches — see the note
     // on FROZEN_ROTA above. "1" Day · "2" Half night · "3" Full night; "" = not on the roster.
     slot: frozenSlot(emp),
+    // …and whether this rider sits out the rotation entirely (see NON_ROTATING above)
+    fixedShift: doesNotRotate(emp),
     department: (r.DeptName || "").trim(),
     designation: (r.Catagory || "").trim(),
     travelMin: null,                   // -> RUN_OPTIMISER in the UI
