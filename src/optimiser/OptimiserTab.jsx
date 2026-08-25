@@ -228,13 +228,25 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
     || stopVeh["n:" + (s.name || "").toLowerCase().trim()]
     || "";
 
-  // search filter + pagination
+  /* Search filter + pagination.
+     Registrations are matched with the spaces and hyphens stripped from BOTH sides, so
+     "tn57 cj" and "TN57-CJ3434" both find TN57CJ3434 — the number gets written several ways
+     between the ERP, the manager's sheet and whoever is typing.
+     Every vehicle at the stop is searchable, not just the one the badge shows: a stop served
+     by two buses would otherwise be unfindable by its second one. */
   const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (!s) return viewStops;
-    return viewStops.filter((x) => (x.name || "").toLowerCase().includes(s)
-      || (x.village || "").toLowerCase().includes(s) || (x.route || "").toLowerCase().includes(s));
-  }, [viewStops, q]);
+    const raw = q.trim().toLowerCase();
+    if (!raw) return viewStops;
+    const plain = raw.replace(/[\s-]/g, "");
+    return viewStops.filter((x) => {
+      if ((x.name || "").toLowerCase().includes(raw)) return true;
+      if ((x.village || "").toLowerCase().includes(raw)) return true;
+      if ((x.route || "").toLowerCase().includes(raw)) return true;
+      if (!plain) return false;
+      const regs = [vehFor(x), x.busName, ...(Array.isArray(x.buses) ? x.buses.map(([b]) => b) : [])];
+      return regs.some((r) => r && String(r).toLowerCase().replace(/[\s-]/g, "").includes(plain));
+    });
+  }, [viewStops, q, stopVeh]);
   useEffect(() => { setPage(0); }, [q]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PER));
   const pageSafe = Math.min(page, pageCount - 1);
@@ -285,7 +297,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
         right={
           <div className="flex items-center gap-2">
             <span className="text-xs whitespace-nowrap" style={{ color: t.muted }}>{filtered.length} stop{filtered.length === 1 ? "" : "s"}{q ? " match" : ""}</span>
-            <SearchInput t={t} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search stop, village or route…" width={230} />
+            <SearchInput t={t} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search stop, village, route or vehicle…" width={260} />
           </div>
         }>
         <div className="overflow-x-auto">
