@@ -213,9 +213,19 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
       setStopVeh(m);
     }).catch(() => {});
   }, []);
-  const vehFor = (s) => stopVeh["n:" + (s.name || "").toLowerCase().trim()]
+  /* Which vehicle to show against a stop.
+     `s.busName` is the ERP's own answer for THIS service — the bus its riders are actually
+     mapped to — and it wins whenever it exists. stopVeh is only a fallback for the curated 9 am
+     network, whose stops carry no rider-derived bus.
+     It used to be the other way round, and the cost was severe: stopVeh is built from ONE
+     globally-selected plan (default /solver_result.json, the 9 am plan), matched on stop NAME,
+     so any rotational or Zenwear stop sharing a name with a 9 am stop displayed the 9 am plan's
+     bus — 519 of 788 stops showed a registration no rider standing there is assigned to.
+     Coordinate before name, too: a village name covers many pickup points (Nilakottai spans 23),
+     so the name key was last-write-wins across unrelated stops. */
+  const vehFor = (s) => s.busName
     || (s.lat != null && s.lng != null ? stopVeh["c:" + (+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4)] : "")
-    || s.busName            // derived services have no plan yet; use the ERP's own assignment
+    || stopVeh["n:" + (s.name || "").toLowerCase().trim()]
     || "";
 
   // search filter + pagination

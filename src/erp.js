@@ -51,8 +51,14 @@ const ERP_COST_ENDPOINT = "/erp/general/VehicleEmpMapProjectDetails";
  * the two are one decision, never separate ones. A rider absent from the roster (a joiner
  * since the freeze) belongs to no rotational service until they are added, which is visible
  * rather than silently wrong. */
-export const ROTA_FROZEN_ON = FROZEN_ROTA._frozenOn;
+export const ROTA_WEEK = FROZEN_ROTA._rotaWeek;
 const frozenSlot = (emp) => FROZEN_ROTA.slots[emp] || "";
+/* Where that slot came from — "observed" (this rider punched it in the rota week the roster
+   names), "projected" (stepped one Monday from their last punch) or "stale" (stepped from an
+   older snapshot, because the feed's ~11-day window no longer reaches them). An observed slot
+   is a fact; the other two are good guesses, and the Stops map marks them so nobody reads an
+   inference as a reading. */
+const slotSourceOf = (emp) => (FROZEN_ROTA.source && FROZEN_ROTA.source[emp]) || "";
 
 /* ---- Riders who do NOT rotate ----
  * The rota is supposed to move everyone one place each Monday. 104 riders never move: they
@@ -288,7 +294,8 @@ export function mapErpToDashboard(rows) {
   const buses = new Map();      // veh -> { seat:{}, unit:{}, type:Set }
   const empLatest = new Map();  // Empl_no -> { date, r }  (keep the most recent mapping)
   const attendance = {};        // date -> { Empl_no: "P"|"A" }
-  const empAtt = new Map();     // Empl_no -> { absent, days }  (absentee rate across the feed)
+  const empDays = {};           // Empl_no -> { date: presentBool }  (one entry per rider-DAY)
+  const dayRows = new Set();    // "emp date" already counted — the feed repeats rows
   const rotaHistory = {};       // date -> { Empl_no: [bus, slot, "P"|"A"] }
 
   for (const r of rows || []) {
@@ -297,36 +304,70 @@ export function mapErpToDashboard(rows) {
     const d = normDate(r.date);
     if (!veh || !emp || !d) continue;
 
-    // attendance (live punch feed)
+    // The feed repeats rows: 11,488 of 61,457 rows in the 25-Aug pull are a second (or third)
+    // copy of an (employee, date) already seen — 19% of the payload. Every per-row tally below
+    // therefore has to be per rider-DAY, or a rider who happens to be duplicated counts twice.
+    // A rider marked present on ANY of their rows that day was present.
+    const seenKey = emp + " " + d;
+    const firstRowToday = !dayRows.has(seenKey);
     const present = /present/i.test(r.Att_Type || "");
-    (attendance[d] = attendance[d] || {})[emp] = present ? "P" : "A";
+    if (firstRowToday) dayRows.add(seenKey);
+
+    // attendance (live punch feed)
+    (attendance[d] = attendance[d] || {})[emp] = present ? "P" : (attendance[d][emp] || "A");
     // how Rotational actually ran that day — the bus and the slot as punched, NOT the frozen
     // roster. This is the record of what happened; the roster is the plan.
     if (normShift(r.Shift) === ROTA_SHIFT) {
       (rotaHistory[d] = rotaHistory[d] || {})[emp] = [veh, (r.Pun_Shift || "").trim(), present ? "P" : "A"];
     }
-    // …and the same punches rolled up per rider, so a derived stop can carry a REAL
-    // absentee rate. Without it every derived stop assumed nobody is ever away, and the
-    // engine's per-stop `ceil(head x (1 - absentee + buffer))` rounded up at each one.
-    const ea = empAtt.get(emp) || { absent: 0, days: 0 };
-    if (!present) ea.absent++;
-    ea.days++;
-    empAtt.set(emp, ea);
+    // …and the same punches rolled up per rider, so a derived stop can carry a REAL absentee
+    // rate. Without it every derived stop assumed nobody is ever away, and the engine's per-stop
+    // `ceil(head x (1 - absentee + buffer))` rounded up at each one.
+    // Counted once per rider-day (see the dedupe above) and resolved in a second pass, because
+    // whether a day counts at all depends on how the whole factory behaved on it — see WORKED.
+    if (firstRowToday) (empDays[emp] = empDays[emp] || {})[d] = present;
 
     // employee — keep the latest-dated row (its bus/department/role win)
     const prev = empLatest.get(emp);
     if (!prev || d > prev.date) empLatest.set(emp, { date: d, r });
 
-    // bus — tally capacity, brand and owned/rental across its rows
+    // bus — tally capacity, brand and owned/rental across its rows. Also once per rider-day:
+    // these are decided by majority vote (mode), and a duplicated row is a stuffed ballot — it
+    // was enough to flip a bus's unit label and with it the Total-fleet split on the Live tiles.
     let bs = buses.get(veh);
     if (!bs) { bs = { seat: {}, unit: {}, type: new Set(), mil: {} }; buses.set(veh, bs); }
-    const seat = String(r.Seat || r.Seat_New || "").trim();
-    if (seat && seat !== "0") bs.seat[seat] = (bs.seat[seat] || 0) + 1;
-    const u = unitOf(r.Compname, r.Comp_New);
-    bs.unit[u] = (bs.unit[u] || 0) + 1;
+    if (firstRowToday) {
+      const seat = String(r.Seat || r.Seat_New || "").trim();
+      if (seat && seat !== "0") bs.seat[seat] = (bs.seat[seat] || 0) + 1;
+      const u = unitOf(r.Compname, r.Comp_New);
+      bs.unit[u] = (bs.unit[u] || 0) + 1;
+      const mil = String(r.Mileage || "").trim();   // per-bus km/L (ERP column)
+      if (mil && mil !== "0" && mil !== "0.00") bs.mil[mil] = (bs.mil[mil] || 0) + 1;
+    }
     if (r.Type) bs.type.add(/rent/i.test(r.Type) ? "Rental" : "Owned");
-    const mil = String(r.Mileage || "").trim();   // per-bus km/L (ERP column)
-    if (mil && mil !== "0" && mil !== "0.00") bs.mil[mil] = (bs.mil[mil] || 0) + 1;
+  }
+
+  /* Which dates the factory actually ran. The feed carries every calendar day, including Sundays,
+     when ~87% of the workforce is marked absent because nobody is rostered — counting those as
+     absences overstated the mean absentee rate by 8.2 points (25.4% vs 17.2%) and, since the
+     engine plans `ceil(head x (1 - absentee + buffer))` seats, quietly UNDER-provisioned every
+     stop: a 20-rider stop was planned for 16 seats instead of 18.
+     The feed's newest date is also dropped — it is the pull date, still in progress, and its
+     not-yet-arrived riders read as absent for the same reason. */
+  const dayTotals = {};
+  for (const [emp, days] of Object.entries(empDays))
+    for (const [d, p] of Object.entries(days)) {
+      const t = (dayTotals[d] = dayTotals[d] || { present: 0, n: 0 });
+      t.n++; if (p) t.present++;
+    }
+  const allDates = Object.keys(dayTotals).sort();
+  const pullDate = allDates[allDates.length - 1];
+  const WORKED = new Set(allDates.filter((d) => d !== pullDate && dayTotals[d].n && dayTotals[d].present / dayTotals[d].n >= 0.5));
+  const empAtt = new Map();
+  for (const [emp, days] of Object.entries(empDays)) {
+    let absent = 0, n = 0;
+    for (const [d, p] of Object.entries(days)) { if (!WORKED.has(d)) continue; n++; if (!p) absent++; }
+    empAtt.set(emp, { absent, days: n });
   }
 
   const busList = [...buses.entries()].map(([veh, bs]) => ({
@@ -358,6 +399,8 @@ export function mapErpToDashboard(rows) {
     slot: frozenSlot(emp),
     // …and whether this rider sits out the rotation entirely (see NON_ROTATING above)
     fixedShift: doesNotRotate(emp),
+    slotSource: slotSourceOf(emp),   // observed | projected | stale — see slotSourceOf
+
     department: (r.DeptName || "").trim(),
     designation: (r.Catagory || "").trim(),
     travelMin: null,                   // -> RUN_OPTIMISER in the UI

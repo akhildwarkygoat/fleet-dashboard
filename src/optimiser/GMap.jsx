@@ -27,6 +27,11 @@ const esc = (x) => String(x || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<"
    not for what each stop is. */
 export const FIXED_SHIFT_COLOR = "#6b21a8";
 
+/* Riders whose rota slot was INFERRED — stepped forward from an older punch because they did not
+   clock in during the rota week the roster names. Slate, not another saturated hue: it reads as
+   "unconfirmed" rather than as a third category of rider, which is exactly what it is. */
+export const INFERRED_SLOT_COLOR = "#475569";
+
 /* A stop dot: coloured disc with the headcount, larger + ringed when selected. */
 function stopDot(color, headcount, sel) {
   const size = sel ? 30 : 24;
@@ -110,7 +115,14 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
     rendered.forEach((s) => {
       // Purple = these riders never rotate, so this dot needs no re-check when the rota moves.
       // Anything in its route colour does. That contrast is the whole point of the marking.
-      const color = s.group === "fixed" ? FIXED_SHIFT_COLOR : (rc[s.route] || t.primary);
+      // A stop whose riders were all inferred is drawn slate: their shift is a projection, not a
+      // reading, and the supervisor should check it before trusting the dot. Fixed-shift purple
+      // wins over it — a rider who never rotates needs no projection in the first place.
+      const inferred = s.inferred || 0;
+      const allInferred = inferred > 0 && inferred >= (s.riderCount ?? s.headcount ?? 0);
+      const color = s.group === "fixed" ? FIXED_SHIFT_COLOR
+        : allInferred ? INFERRED_SLOT_COLOR
+        : (rc[s.route] || t.primary);
       const n = s.headcount;
       const mk = L.marker([s.lat, s.lng], { icon: stopDot(color, n, s.selId === selRef.current), headcount: n || 0 });
       const note =
@@ -121,6 +133,12 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
           ? `<br><span style="color:${color};font-weight:700">&#128260; ${n === 1 ? "rotates every Monday" : "rotate every Monday"}</span>` +
             `<br><span style="color:#64748b;font-weight:400">re-check when the rota moves</span>`
           : "";
+      const inferNote = inferred > 0 && s.group !== "fixed"
+        ? `<br><span style="color:${INFERRED_SLOT_COLOR};font-weight:700">&#9888; ${
+            allInferred ? (inferred === 1 ? "shift inferred, not punched" : "shifts inferred, not punched")
+                        : `${inferred} of these shifts inferred`
+          }</span><br><span style="color:#64748b;font-weight:400">did not clock in this rota week — stepped from their last punch</span>`
+        : "";
       const ppl = Array.isArray(s.people) ? s.people : null;
       /* The dot's number is the EFFECTIVE headcount — riders minus expected absentees, i.e. seats
          to plan for. That is the right number to plan on and the wrong number to caption a list of
@@ -169,6 +187,7 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
         (realN != null ? `<br><span style="color:#0e7490">&#128101; ${realN} rider${realN === 1 ? "" : "s"}</span>${seatNote}` : "") +
         busLine +
         note +
+        inferNote +
         nameLines +
         `</div>`,
         { direction: "top", offset: [0, -12] }

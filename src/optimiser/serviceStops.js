@@ -133,7 +133,11 @@ export function stopsForRiders(riders, existing = [], { mergeM = MERGE_M, coverM
         code: pts[j].code || "",
         busId: pts[j].busId || "",
         fixedShift: !!pts[j].fixedShift,
+        slotSource: pts[j].slotSource || "",
       })),
+      // Riders whose slot was INFERRED (stepped forward from an older punch) rather than read
+      // from a punch in this rota week. They are the ones a supervisor should sanity-check.
+      inferred: members.reduce((n, j) => n + (pts[j].slotSource && pts[j].slotSource !== "observed" ? 1 : 0), 0),
       merged: members.length > 1,          // more than one rider at this exact coordinate
       buses: busList,                      // [[registration, riders], …] busiest first
       busName: busList.length ? (busList.length === 1 ? busList[0][0] : `${busList[0][0]} +${busList.length - 1}`) : null,

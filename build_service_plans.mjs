@@ -78,17 +78,44 @@ const latestPerEmp = new Map();
 const att = new Map();
 /* vehicle -> riders per service, so a shared bus's cost can be split by actual use */
 const busUse = new Map();
+/* Counted per rider-DAY, not per row, and only on days the factory actually ran — the same
+   two corrections erp.js makes, because a plan built on a different absentee rate than the
+   dashboard shows is a plan nobody can reconcile.
+     - the feed repeats rows (11,488 of 61,457 in the 25-Aug pull are duplicates), and a
+       duplicated present-day used to count twice;
+     - it carries Sundays, when ~87% are marked absent because nobody is rostered, and the
+       newest date, which is the pull day and still in progress.
+   Together those overstated absentee by 8.2 points, and since demand is
+   ceil(head x (1 - absentee + buffer)) that UNDER-provisioned every stop. */
+const empDays = new Map();                       // emp -> Map(date -> presentBool)
 for (const r of rows) {
   const e = norm(r.Empl_no);
   if (!e) continue;
   const t = parseErpDate(r.date);
   const prev = latestPerEmp.get(e);
   if (!prev || t > prev.t) latestPerEmp.set(e, { t, r });
-  const a = att.get(e) || { absent: 0, days: 0 };
-  if (!/present/i.test(norm(r.Att_Type))) a.absent++;
-  a.days++;
-  att.set(e, a);
+  const d = norm(r.date).slice(0, 10);
+  if (!d) continue;
+  const days = empDays.get(e) || new Map();
+  days.set(d, /present/i.test(norm(r.Att_Type)) || days.get(d) === true);
+  empDays.set(e, days);
 }
+const dayTotals = new Map();
+for (const days of empDays.values())
+  for (const [d, p] of days) {
+    const c = dayTotals.get(d) || { present: 0, n: 0 };
+    c.n++; if (p) c.present++;
+    dayTotals.set(d, c);
+  }
+const dates = [...dayTotals.keys()].sort((x, y) => parseErpDate(x) - parseErpDate(y));
+const pullDate = dates[dates.length - 1];
+const WORKED = new Set(dates.filter((d) => d !== pullDate && dayTotals.get(d).n && dayTotals.get(d).present / dayTotals.get(d).n >= 0.5));
+for (const [e, days] of empDays) {
+  let absent = 0, n = 0;
+  for (const [d, p] of days) { if (!WORKED.has(d)) continue; n++; if (!p) absent++; }
+  att.set(e, { absent, days: n });
+}
+log(`absentee measured over ${WORKED.size} working day(s); dropped ${dates.length - WORKED.size} (Sundays + the pull date ${pullDate})`);
 /* Rotational slot per rider: read from the FROZEN roster, exactly as the dashboard does.
    Not from Pun_Shift — that says which slot a rider was on in the week they punched, and the
    rota moves one place every Monday, so building from it would cut these plans against a

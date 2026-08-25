@@ -14,7 +14,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Bus, Search, AlertTriangle, Clock, Layers, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import { Card, Tile, Empty } from "./ui.jsx";
 import { SERVICES, OVERALL, fmtClock, erpStatsFor, serviceNeed, subShiftsOf, ROTATION_SLOTS, weekStart } from "./services.js";
-import { ROTA_FROZEN_ON } from "../erp.js";
+import { ROTA_WEEK } from "../erp.js";
 
 /* YYYY-MM-DD from a LOCAL date. toISOString() would convert to UTC first, which in IST rolls
    midnight back to the previous day — a Monday then prints as the Sunday before it. */
@@ -376,10 +376,12 @@ export function TimingsView({ t, shifts }) {
         </div>
         <div className="text-xs mt-3" style={{ color: t.faint }}>
           Week beginning {fmtISO(weekStart(new Date()))}. Who sits in each slot is
-          read from a frozen roster taken on {ROTA_FROZEN_ON} — the same ERP pull the three plans were
-          built from — not from this week's punches. That is what keeps a plan costed against the riders
-          it was actually built for. Re-freeze the roster and rebuild all three plans together when the
-          split needs re-cutting; doing one without the other is what puts riders in the wrong slot.
+          read from the roster cut for the rota week beginning {ROTA_WEEK}, which is also the week the
+          three plans were built from — so a plan stays costed against the riders it was actually built
+          for. Most riders in it punched that week; the rest were stepped forward one place per Monday
+          from their last punch, and the Stops map marks those as inferred rather than observed.
+          Re-cut it with build_rotational_roster.py and rebuild all three plans together; doing one
+          without the other is what puts riders in the wrong slot.
         </div>
       </Card>
 
