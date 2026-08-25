@@ -125,6 +125,15 @@ export function stopsForRiders(riders, existing = [], { mergeM = MERGE_M, coverM
       // against this rather than against a number that has been rounded for planning.
       riderCount: members.length,
       riders: members.map((j) => pts[j].name || pts[j].id),
+      // Who is actually standing here, carried per rider rather than as one joined string, so a
+      // stop split across two markers can name the right people in each half instead of repeating
+      // the whole list twice. Names come from the live ERP and are never persisted to disk.
+      people: members.map((j) => ({
+        name: pts[j].name || pts[j].id,
+        code: pts[j].code || "",
+        busId: pts[j].busId || "",
+        fixedShift: !!pts[j].fixedShift,
+      })),
       merged: members.length > 1,          // more than one rider at this exact coordinate
       buses: busList,                      // [[registration, riders], …] busiest first
       busName: busList.length ? (busList.length === 1 ? busList[0][0] : `${busList[0][0]} +${busList.length - 1}`) : null,

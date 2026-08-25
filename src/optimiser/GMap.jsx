@@ -96,11 +96,14 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
     list.forEach((s) => {
       const fixed = s.fixedShift || 0;
       const total = s.riderCount ?? s.headcount ?? 0;
+      const people = Array.isArray(s.people) ? s.people : null;
       if (fixed > 0 && fixed < total) {
-        rendered.push({ ...s, key: s.id + "#fixed", selId: s.id, lng: s.lng - SPLIT_DEG, headcount: fixed, group: "fixed" });
-        rendered.push({ ...s, key: s.id + "#rota", selId: s.id, lng: s.lng + SPLIT_DEG, headcount: total - fixed, group: "rota" });
+        rendered.push({ ...s, key: s.id + "#fixed", selId: s.id, lng: s.lng - SPLIT_DEG, headcount: fixed, group: "fixed",
+          people: people ? people.filter((p) => p.fixedShift) : null });
+        rendered.push({ ...s, key: s.id + "#rota", selId: s.id, lng: s.lng + SPLIT_DEG, headcount: total - fixed, group: "rota",
+          people: people ? people.filter((p) => !p.fixedShift) : null });
       } else {
-        rendered.push({ ...s, key: s.id, selId: s.id, group: fixed > 0 ? "fixed" : null });
+        rendered.push({ ...s, key: s.id, selId: s.id, group: fixed > 0 ? "fixed" : null, people });
       }
     });
 
@@ -118,14 +121,55 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
           ? `<br><span style="color:${color};font-weight:700">&#128260; ${n === 1 ? "rotates every Monday" : "rotate every Monday"}</span>` +
             `<br><span style="color:#64748b;font-weight:400">re-check when the rota moves</span>`
           : "";
+      const ppl = Array.isArray(s.people) ? s.people : null;
+      /* The dot's number is the EFFECTIVE headcount — riders minus expected absentees, i.e. seats
+         to plan for. That is the right number to plan on and the wrong number to caption a list of
+         names with: a stop with 3 people and a 2-seat demand would read "2 riders" above three
+         names. So the tooltip counts the actual people and names the planning figure separately
+         only when the two differ. */
+      const realN = ppl ? ppl.length : (s.riderCount ?? n);
+      const seatNote = !s.group && n != null && realN != null && n !== realN
+        ? `<span style="color:#94a3b8;font-weight:400"> · ${n} seat${n === 1 ? "" : "s"} to plan</span>`
+        : "";
+      /* Vehicles: every registration serving this stop with its own rider count, not the
+         "TN… +2" summary the dot carries. On a split marker only the buses that group's riders
+         actually ride are listed, so the fixed half never claims a bus it has nobody on. */
+      const groupBuses = s.group && Array.isArray(s.people)
+        ? (() => {
+            const tally = {};
+            s.people.forEach((p) => { if (p.busId) tally[p.busId] = (tally[p.busId] || 0) + 1; });
+            return Object.entries(tally).sort((a, b) => b[1] - a[1]);
+          })()
+        : (Array.isArray(s.buses) ? s.buses : null);
+      const busLine = groupBuses && groupBuses.length
+        ? groupBuses.map(([reg, c]) =>
+            `<br><span style="color:${s.busColor || "#334155"};font-weight:700">&#128652; ${esc(reg)}` +
+            (groupBuses.length > 1 || c !== realN ? `<span style="font-weight:400;color:#64748b"> · ${c} rider${c === 1 ? "" : "s"}</span>` : "") +
+            `</span>`).join("")
+        : (s.busName
+            ? `<br><span style="color:${s.busColor || "#334155"};font-weight:700">&#128652; ${esc(s.busName)}</span>`
+            : (s.busName === null && "busName" in s ? `<br><span style="color:#94a3b8">&#128652; unassigned</span>` : ""));
+
+      /* Who is standing here. Capped because a tooltip that runs off the map is worse than one
+         that says how many it left out; derived stops top out around 7 riders, but Zenwear's
+         and the 7 am network's are not bounded by anything we control. */
+      const NAME_CAP = 12;
+      const nameLines = ppl && ppl.length
+        ? `<br><div style="margin-top:3px;padding-top:3px;border-top:1px solid #e2e8f0;font-weight:400;color:#334155">` +
+          ppl.slice(0, NAME_CAP).map((p) =>
+            `${esc(p.name)}${p.code ? `<span style="color:#94a3b8"> · ${esc(p.code)}</span>` : ""}`).join("<br>") +
+          (ppl.length > NAME_CAP ? `<br><span style="color:#94a3b8">+${ppl.length - NAME_CAP} more</span>` : "") +
+          `</div>`
+        : "";
+
+
       mk.bindTooltip(
-        `<div style="font:600 12px/1.35 Inter,system-ui,sans-serif"><b>${esc(s.name)}</b>` +
+        `<div style="font:600 12px/1.35 Inter,system-ui,sans-serif;max-width:230px"><b>${esc(s.name)}</b>` +
         (s.village ? `<br><span style="color:#64748b">${esc(s.village)}</span>` : "") +
-        (n != null ? `<br><span style="color:#0e7490">&#128101; ${n} rider${n === 1 ? "" : "s"}</span>` : "") +
-        (s.busName
-          ? `<br><span style="color:${s.busColor || "#334155"};font-weight:700">&#128652; ${esc(s.busName)}</span>`
-          : (s.busName === null && "busName" in s ? `<br><span style="color:#94a3b8">&#128652; unassigned</span>` : "")) +
+        (realN != null ? `<br><span style="color:#0e7490">&#128101; ${realN} rider${realN === 1 ? "" : "s"}</span>${seatNote}` : "") +
+        busLine +
         note +
+        nameLines +
         `</div>`,
         { direction: "top", offset: [0, -12] }
       );
