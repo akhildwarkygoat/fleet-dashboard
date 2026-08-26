@@ -125,6 +125,12 @@ const axisAt = (m, after = AX_START) => {
   while (v < after) v += 1440;
   return v;
 };
+/* One bus's lane, and the line everything in it is centred on. A pickup block is 22px tall at
+   top 4, so the bars' centreline is 15 — NOT half the 34px lane. Drops and layover rails are
+   hung off this constant rather than each guessing an offset, which is how the rail ended up
+   pinned near the bottom edge reading as if it belonged to the row below. */
+const ROW_H = 34, ROW_MID = 15;
+
 /* Clip a span to the axis; null when it falls entirely outside the day being drawn. */
 const clip = (s, e) => {
   const a = Math.max(s, AX_START), b = Math.min(e, AX_END);
@@ -429,19 +435,28 @@ export function TimingsView({ t, shifts }) {
                       style={{ color: row.clashes ? t.poor : t.muted, position: "sticky", left: 0, zIndex: 4, background: t.surface }}>
                       {row.clashes ? <AlertTriangle size={11} /> : <Bus size={11} style={{ opacity: 0.5 }} />}{row.veh}
                     </div>
-                    <div className="relative" style={{ height: 34, borderBottom: "1px solid " + t.border }}>
+                    <div className="relative" style={{ height: ROW_H, borderBottom: "1px solid " + t.border }}>
                       {/* A layover reads S———P: the bus Stops where its run finished and Parks
                           there until the next one. A plain coloured rail said "something is
                           happening here" without saying what, and on 97 rows that is noise. The
                           two ends are what carry the meaning, so they are what is drawn. */}
                       {(layovers.get(row.veh) || []).map((l, i) => {
                         const c = l.kind === "overnight" ? t.watch : t.good;
+                        /* The caps sit INSIDE the rail, not centred on its ends. Straddling the
+                           ends put half of each badge on top of the run block it butts against,
+                           so the rail appeared to overlap the bar it was meant to hand over to.
+                           Inside, there is clear air on both sides of every join. */
                         const cap = (letter, side) => (
                           <span key={side} className="absolute flex items-center justify-center"
-                            style={{ [side]: -6, top: -4.5, width: 12, height: 12, borderRadius: 3,
+                            style={{ [side]: 0, top: -4.5, width: 12, height: 12, borderRadius: 3,
                                      background: c, color: "#fff", fontSize: 8, fontWeight: 800,
                                      lineHeight: 1, letterSpacing: 0 }}>{letter}</span>
                         );
+                        /* Two 12px badges plus breathing room need ~30px of rail. Below that the
+                           bare rail says it on its own — better than two badges shoved into each
+                           other on a bus whose layover is twenty minutes. */
+                        const railPx = ((pct(l.e) - pct(l.s)) / 100) * (BASE_W * zoom - LABEL_W);
+                        const roomForCaps = railPx >= 30;
                         return (
                           <div key={"lay" + i}
                             title={`${row.veh} · S → P\nStops at ${l.a.to.name || "its last stop"} ${fmtClock(l.a.end)} after the ${l.a.label}\n` +
@@ -450,11 +465,21 @@ export function TimingsView({ t, shifts }) {
                                    (l.clippedEnd ? " — past the end of this chart" : "") + "\n" +
                                    `Saves ${l.saveKm} km of empty running (₹${l.saveRs}/day)${l.assumed ? "\n(depends on an assumed release time)" : ""}`}
                             className="absolute"
-                            style={{ top: 26, height: 3, left: pct(l.s) + "%",
-                                     width: Math.max(pct(l.e) - pct(l.s), 0.5) + "%",
+                            /* ON THE BARS' CENTRELINE (ROW_MID), not under them. The rail
+                               starts exactly where the drop block ends and finishes exactly
+                               where the next pickup begins, so at the row's mid-height it reads
+                               as one continuous thread: run — parked — run. Pinned to the
+                               bottom of the row it was 12px adrift and looked like it belonged
+                               to the bus on the line below. */
+                            /* Inset 3px at each end so the rail does not touch the blocks it
+                               joins — a hairline of gap is what makes it read as a handover
+                               rather than as one merged shape. */
+                            style={{ top: ROW_MID - 1.5, height: 3,
+                                     left: `calc(${pct(l.s)}% + 3px)`,
+                                     width: `calc(${Math.max(pct(l.e) - pct(l.s), 0.5)}% - 6px)`,
                                      background: c, opacity: 0.9, borderRadius: 2 }}>
-                            {!l.clippedStart && cap("S", "left")}
-                            {!l.clippedEnd && cap("P", "right")}
+                            {roomForCaps && !l.clippedStart && cap("S", "left")}
+                            {roomForCaps && !l.clippedEnd && cap("P", "right")}
                           </div>
                         );
                       })}
@@ -466,7 +491,7 @@ export function TimingsView({ t, shifts }) {
                             title={`${row.veh} · ${d.label}\n${fmtClock(d.start)}–${fmtClock(d.end)} · ${d.stops} stops · ${d.riders} riders${d.assumedOff ? "\n(release time assumed — the ERP carries no `off` for this service)" : ""}`}
                             className="absolute rounded-md"
                             style={{
-                              top: 6, height: 14,
+                              top: ROW_MID - 7, height: 14,
                               left: pct(d.s) + "%", width: Math.max(pct(d.e) - pct(d.s), 0.6) + "%",
                               // hollow + dashed when the timing is assumed rather than measured
                               background: c + (d.assumedOff ? "18" : "33"),
@@ -479,7 +504,7 @@ export function TimingsView({ t, shifts }) {
                           title={`${row.veh} · ${r.svc.name}\n${fmtClock(r.start)}–${fmtClock(r.end)} · ${r.km} km · ${r.stops} stops · ${r.riders} riders${r.clash ? "\n⚠ overlaps the previous run" : ""}`}
                           className="absolute rounded-md"
                           style={{
-                            top: 4, height: 22,
+                            top: ROW_MID - 11, height: 22,
                             left: pct(r.start) + "%", width: Math.max(pct(r.end) - pct(r.start), 0.6) + "%",
                             background: r.clash
                               ? `repeating-linear-gradient(45deg, ${r.svc.color}66 0 5px, transparent 5px 10px)`
