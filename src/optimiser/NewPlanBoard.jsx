@@ -13,7 +13,7 @@ import { routeGeometry } from "./roadGeom.js";
 import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarChart3, Bus, SlidersHorizontal, MapPin } from "lucide-react";
 import { KPI_DEFS, getHiddenKpis, setHiddenKpis, visibleKpis } from "./kpiPrefs.js";
 import ParkPicker, { useParkPoints, parkLabel } from "./ParkPicker.jsx";
-import { parkForRoute, setRoutePark, setRouteStart } from "./parkPrefs.js";
+import { parkForRoute, startForRoute, setRoutePark, setRouteStart } from "./parkPrefs.js";
 
 const UNADDED = "#f87171"; // light red — stop not yet on any bus
 const ADDED = "#4ade80";   // light green — stop assigned to a bus
@@ -56,10 +56,11 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
      other than what the open panel says it means. */
   const [picking, setPicking] = useState(null);       // { busId, which: "start"|"park" } | null
   const nameOf = (busId) => (busById[busId] || {}).name || busId;
+  /* One lookup per end, both from parkPrefs. The storage key format was being rebuilt by hand
+     here as well as in the hook that scores the plan; a third copy would have been the one that
+     drifted, and a drifted key reads as "no choice made" rather than failing. */
   const specOf = (busId, which) =>
-    which === "start"
-      ? (parkPrefs.starts && parkPrefs.starts[`${svcId}|${nameOf(busId)}`]) || { kind: "auto" }
-      : parkForRoute(svcId, nameOf(busId), parkPrefs);
+    (which === "start" ? startForRoute : parkForRoute)(svcId, nameOf(busId), parkPrefs);
 
   const setEnd = (busId, which, spec) => {
     const name = nameOf(busId);

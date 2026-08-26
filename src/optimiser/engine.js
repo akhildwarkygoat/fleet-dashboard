@@ -104,51 +104,50 @@ function twoOpt(depot, seq, p) {
   return best;
 }
 
-/** Route distance (km): depot -> first -> ... -> last -> depot (loop incl. deadhead). */
-function routeKm(depot, seq, p) {
+/** ONE traversal of a route: start -> s1 -> ... -> sn -> park.
+ *
+ *  Every distance the cost model uses is this shape. The two legacy modes are exactly it with
+ *  particular ends, which is the point — see dayKm.  */
+function oneWayKm(start, seq, park, p) {
   if (!seq.length) return 0;
-  let km = legKm(depot, seq[0], p);
+  let km = legKm(start, seq[0], p);
   for (let i = 0; i < seq.length - 1; i++) km += legKm(seq[i], seq[i + 1], p);
-  km += legKm(seq[seq.length - 1], depot, p);
+  km += legKm(seq[seq.length - 1], park, p);
   return km;
 }
+
+/** Route distance (km): depot -> first -> ... -> last -> depot (loop incl. deadhead). */
+const routeKm = (depot, seq, p) => oneWayKm(depot, seq, depot, p);
 
 /** One-way chain distance (km): depot -> first -> ... -> last, NO return. */
-function chainKmOneWay(depot, seq, p) {
-  if (!seq.length) return 0;
-  let km = legKm(depot, seq[0], p);
-  for (let i = 0; i < seq.length - 1; i++) km += legKm(seq[i], seq[i + 1], p);
-  return km;
-}
+const chainKmOneWay = (depot, seq, p) => oneWayKm(depot, seq, seq.length ? seq[seq.length - 1] : depot, p);
 
-/** Day distance used for COST. Chain mode (bus parks at its last stop) = 2 × the one-way chain
- *  (evening drop + morning pickup, no depot deadhead) — matches optimize.py --chain. Else the loop. */
-function dayKm(depot, seq, p) {
-  return p.chain ? 2 * chainKmOneWay(depot, seq, p) : routeKm(depot, seq, p);
-}
+/** Where a run ENDS when nobody has said. Chain mode leaves the bus at its last stop; the loop
+ *  basis brings it home. Getting this wrong is what let one bus in a plan be costed on a
+ *  different basis from the bus beside it. */
+const defaultPark = (depot, seq, p) => (p.chain && seq.length ? seq[seq.length - 1] : depot);
 
-/** Day distance when the run has an explicit START and PARK point.
+/**
+ * Day distance used for COST, between whatever two ends this run actually has.
  *
- *  The bus runs the chain twice a day and the two ends are no longer both the depot:
+ *     dayKm = (chain ? 2 : 1) x  [ start -> s1 -> ... -> sn -> park ]
  *
- *      evening   start → s1 → … → sn → park
- *      morning   park  → sn → … → s1 → start
+ * ONE formula, so a bus that has been given explicit ends is costed on the same basis as the
+ * bus beside it that has not. Both legacy modes fall out of it exactly:
  *
- *  With `park` at the last stop and `start` at the depot this is exactly 2 × the one-way
- *  chain — the same number `dayKm` produces in chain mode — so switching a bus to an explicit
- *  park does not silently re-base its cost. It only moves once you move the point. */
-function dayKmBetween(start, seq, park, p) {
-  if (!seq.length) return 0;
-  const chain = chainKm(seq, p);
-  const out = legKm(start, seq[0], p) + chain + legKm(seq[seq.length - 1], park, p);
-  const back = legKm(park, seq[seq.length - 1], p) + chain + legKm(seq[0], start, p);
-  return out + back;
-}
-/** Distance along the stop chain itself, ends excluded. */
-function chainKm(seq, p) {
-  let km = 0;
-  for (let i = 0; i < seq.length - 1; i++) km += legKm(seq[i], seq[i + 1], p);
-  return km;
+ *   chain, no ends   start=depot, park=last stop -> 2 x the one-way chain (the last leg is
+ *                    the stop to itself, which is zero)
+ *   loop,  no ends   start=depot, park=depot     -> the full out-and-back loop
+ *
+ * An earlier cut modelled the round trip as out-then-back and summed the two directions
+ * separately. That is arguably more faithful to a real day, but Google's matrix is not
+ * symmetric — the drive home is not the drive out — so it did NOT reproduce 2 x the one-way
+ * chain, and merely NAMING a bus's default ends moved its cost by 7 km on the test corridor.
+ * Doubling one traversal is the basis every plan in this repo was costed on; matching it
+ * exactly matters more than being cleverer than it.
+ */
+function dayKm(depot, seq, p, start, park) {
+  return (p.chain ? 2 : 1) * oneWayKm(start || depot, seq, park || defaultPark(depot, seq, p), p);
 }
 
 /** First-picked rider's ride time (min): first stop -> ... -> factory.
@@ -482,12 +481,13 @@ export function scorePlan(assignments, fleet, depot, params = {}) {
     const bus = busById.get(a.busId);
     if (!bus) continue;
     const seq = a.stops.map((s) => (s._dem != null ? s : { ...s, _dem: effectiveDemand(s, p) }));
-    /* Where this bus begins and ends. Defaults reproduce the depot-to-depot numbers exactly, so
-       a plan nobody has re-parked costs the same as it always did. */
+    /* Where this bus begins and ends. Unset falls back to the basis default, so a plan nobody
+       has re-parked costs exactly what it always did — and, just as importantly, a bus that HAS
+       been moved goes through the same formula as the ones that have not. */
     const start = a.start || depot;
-    const park = a.park || (seq.length ? seq[seq.length - 1] : depot);
+    const park = a.park || defaultPark(depot, seq, p);
     const moved = !!(a.start || a.park);
-    const km = moved ? dayKmBetween(start, seq, park, p) : dayKm(depot, seq, p);
+    const km = dayKm(depot, seq, p, start, park);
     const rideMin = firstRideMin(depot, seq, p);       // first pickup -> factory (reference)
     const totalMin = (seq.length ? legMin(start, seq[0], p) : 0) + rideMin;
     /* Time to the last stop is measured FROM THE START, not from the depot: moving a bus's

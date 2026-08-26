@@ -301,23 +301,50 @@ const FULL = { id: "rot-full", name: "Full night", color: "#4338ca", gate: 22 * 
    feature shipped. */
 {
   const { scorePlan } = await import("./engine.js");
-  const dep = { name: "F", lat: 10.2, lng: 77.8 };
+  const dep = { name: "F", lat: 10.2, lng: 77.8, _idx: 0 };
   const chain = [
-    { id: "a", name: "near", lat: 10.21, lng: 77.81, headcount: 5, absentee: 0 },
-    { id: "b", name: "mid", lat: 10.28, lng: 77.90, headcount: 8, absentee: 0 },
-    { id: "c", name: "far", lat: 10.36, lng: 77.98, headcount: 7, absentee: 0 },
+    { id: "a", name: "near", lat: 10.21, lng: 77.81, headcount: 5, absentee: 0, _idx: 1 },
+    { id: "b", name: "mid", lat: 10.28, lng: 77.90, headcount: 8, absentee: 0, _idx: 2 },
+    { id: "c", name: "far", lat: 10.36, lng: 77.98, headcount: 7, absentee: 0, _idx: 3 },
   ];
+  /* DELIBERATELY ASYMMETRIC — every leg costs more coming back than going out, exactly as
+     Google's real matrix does on a one-way system. The first version of this test used the
+     haversine fallback, which is symmetric, and so could not see that the round trip was being
+     summed as out-then-back rather than as twice one traversal. It passed while the real
+     corridor was 7 km out. A distance test on symmetric distances proves almost nothing. */
+  const KM = [
+    //  depot near  mid   far
+    [0, 2, 20, 40],
+    [9, 0, 18, 38],
+    [21, 19, 0, 20],
+    [44, 39, 22, 0],
+  ];
+  const metric = { km: (i, j) => KM[i][j], min: (i, j) => KM[i][j] * 2 };
   const bus = [{ id: "b1", name: "BUS1", type: "own", capacity: 40, loanMonth: 35000, driverDay: 800, maintDay: 280, dieselPerKm: 22 }];
-  const run = (extra) => scorePlan([{ busId: "b1", stops: chain, ...extra }], bus, dep, { chain: true }).plan.routes[0];
+  const run = (extra, mode = { chain: true }) =>
+    scorePlan([{ busId: "b1", stops: chain, ...extra }], bus, dep, { metric, ...mode }).plan.routes[0];
 
   const base = run({});
   const explicit = run({ start: dep, park: chain[2] });
   ok(Math.abs(explicit.km - base.km) < 1e-9 && Math.abs(explicit.cost - base.cost) < 1e-9,
-     "naming the DEFAULT ends changes nothing — depot and last stop reproduce the old numbers",
+     "naming the DEFAULT ends changes nothing, even on an asymmetric matrix",
      `${base.km}/${base.cost} vs ${explicit.km}/${explicit.cost}`);
   ok(!base.moved && explicit.moved, "…but the route records that ends were given explicitly");
+  ok(base.km === 2 * (2 + 18 + 20), "chain mode is twice ONE traversal, not out-plus-back", String(base.km));
 
-  const beyond = { name: "beyond", lat: 10.45, lng: 78.10 };
+  /* The other half of the same bug: on the loop basis, giving a bus ends must not silently
+     move it onto the two-traversal basis while the bus beside it stays on one. */
+  const loop = run({}, {});
+  const loopExplicit = run({ start: dep, park: dep }, {});
+  ok(Math.abs(loop.km - loopExplicit.km) < 1e-9,
+     "loop basis: naming depot at both ends reproduces the loop",
+     `${loop.km} vs ${loopExplicit.km}`);
+  ok(loop.km === 2 + 18 + 20 + 44, "…and that loop is one traversal home again", String(loop.km));
+  ok(run({ park: chain[2] }, {}).km < loop.km,
+     "loop basis: parking out drops the leg home rather than doubling the day",
+     `${run({ park: chain[2] }, {}).km} vs ${loop.km}`);
+
+  const beyond = { name: "beyond", lat: 10.45, lng: 78.10 };   // off-matrix -> haversine legs
   const parked = run({ park: beyond });
   ok(parked.km > base.km && parked.cost > base.cost,
      "parking past the last stop adds kilometres and cost", `${base.km}km -> ${parked.km}km`);

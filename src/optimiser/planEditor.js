@@ -94,7 +94,7 @@ function forEngine(stop, idxOf, demandOf) {
  * (`estimated: true`) instead of being passed off as a measured distance.
  */
 const SNAP_KM = 0.1;                                   // 100 m — same house, same node
-function endpointForEngine(pt, depot, stops, idxOf) {
+export function endpointForEngine(pt, depot, stops, idxOf) {
   if (!pt || pt.lat == null) return null;
   if (haversineKm(pt, depot) < SNAP_KM) return { ...pt, _idx: 0, estimated: false };
   let best = null, bestD = SNAP_KM;
@@ -104,6 +104,29 @@ function endpointForEngine(pt, depot, stops, idxOf) {
   }
   const i = best ? idxOf.get(best.id) : undefined;
   return { ...pt, _idx: i, estimated: i == null };
+}
+
+/**
+ * Turn a plain {busId, stops} list into one scorePlan() can cost, attaching each bus's chosen
+ * start and park.
+ *
+ * Shared by the live board and by scoreDraft(), because they MUST agree: scoreDraft writes the
+ * body that gets finalised, and a body costed without the endpoints reported a bus at its
+ * depot-basis price while the board that produced it showed the parked one. Same inputs, same
+ * function, one answer.
+ */
+export function withEndpoints(assignments, { depot, stops, idxOf, endpointsOf, busById }) {
+  if (!endpointsOf) return assignments;
+  return assignments.map((a) => {
+    const ends = endpointsOf(a.busId, (busById && busById.get(a.busId) || {}).name || a.busId,
+                             a.stops[a.stops.length - 1]);
+    if (!ends || (!ends.start && !ends.park)) return a;
+    return {
+      ...a,
+      start: ends.start ? endpointForEngine(ends.start, depot, stops, idxOf) : null,
+      park: ends.park ? endpointForEngine(ends.park, depot, stops, idxOf) : null,
+    };
+  });
 }
 
 /**
@@ -203,6 +226,11 @@ export function usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, de
   // haversine estimate (inflating km/ride ~1.3×). buildMetric() puts the depot at pts[0].
   const depotNode = useMemo(() => ({ ...depot, _idx: 0 }), [depot]);
 
+  /* The stop universe as a flat list, built ONCE. It is only needed to snap a chosen endpoint
+     to a matrix node, but it used to be rebuilt inside the per-bus loop — 97 buses x 2,700 stops
+     is a quarter of a million element copies on every single click of the map. */
+  const allStopsList = useMemo(() => [...stopsById.values()], [stopsById]);
+
   // ---- derived: live scored plan ----
   const live = useMemo(() => {
     if (!metric || !idxOf) return null;
@@ -210,22 +238,15 @@ export function usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, de
     for (const [busId, ids] of assign) {
       if (!ids.length) continue;
       const stops = ids.map((id) => stopsById.get(id)).filter(Boolean).map((s) => forEngine(s, idxOf, demandOf));
-      /* Where this bus starts and parks. Both are usually null, in which case scorePlan falls
-         back to the depot and the last stop and the numbers are unchanged — moving an end is
-         what makes km, ride and cost move, and nothing else about the scoring differs. The
-         points are put on the matrix so their legs are real road distances, not estimates. */
-      const ends = endpointsOf ? endpointsOf(busId, (busById.get(busId) || {}).name, stops[stops.length - 1]) : null;
-      const all = [...stopsById.values()];
-      assignments.push({
-        busId, stops,
-        start: ends && ends.start ? endpointForEngine(ends.start, depot, all, idxOf) : null,
-        park: ends && ends.park ? endpointForEngine(ends.park, depot, all, idxOf) : null,
-      });
+      assignments.push({ busId, stops });
     }
+    /* Where each bus starts and parks. Usually neither is set, and scorePlan then falls back to
+       the basis defaults so the numbers are exactly what they were before this existed. */
+    const withEnds = withEndpoints(assignments, { depot, stops: allStopsList, idxOf, endpointsOf, busById });
     // chain: bus parks at its last stop — matches the shipped plan's --chain accounting, so
     // cost/km reproduce the OR-Tools solver's numbers (not an out-and-back loop approximation).
-    return scorePlan(assignments, fleet.map(busForEngine), depotNode, { metric, chain: true });
-  }, [assign, metric, idxOf, fleet, depotNode, stopsById, demandOf, endpointsOf, busById, depot]);
+    return scorePlan(withEnds, fleet.map(busForEngine), depotNode, { metric, chain: true });
+  }, [assign, metric, idxOf, fleet, depotNode, stopsById, demandOf, endpointsOf, busById, depot, allStopsList]);
 
   // ---- derived: per-bus rows (fill, over-cap, ordered stops) for the UI ----
   const perBus = useMemo(() => fleet.map((b) => {

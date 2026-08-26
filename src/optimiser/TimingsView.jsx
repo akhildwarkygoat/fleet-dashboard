@@ -15,6 +15,8 @@ import { Bus, Search, AlertTriangle, Clock, Layers, ChevronRight, ZoomIn, ZoomOu
 import { Card, Tile, Empty } from "./ui.jsx";
 import { SERVICES, OVERALL, fmtClock, erpStatsFor, serviceNeed, subShiftsOf, ROTATION_SLOTS, weekStart } from "./services.js";
 import { ROTA_WEEK } from "../erp.js";
+import { recostLinks } from "./layover.js";
+import { getParkPrefs, parkForRoute } from "./parkPrefs.js";
 
 /* YYYY-MM-DD from a LOCAL date. toISOString() would convert to UTC first, which in IST rolls
    midnight back to the previous day — a Monday then prints as the Sunday before it. */
@@ -177,6 +179,9 @@ function dropRuns(conn, on) {
 export function TimingsView({ t, shifts }) {
   const [plans, setPlans] = useState({});               // service id -> plan json
   const [conn, setConn] = useState(null);               // bus_connections.json, if built
+  /* Read once on mount. Switching to this subtab remounts the view, so a park changed in the
+     Planner is picked up the next time the clock is looked at. */
+  const [prefs] = useState(getParkPrefs);
   const [on, setOn] = useState(() => new Set(SERVICES.map((s) => s.id)));
   const [q, setQ] = useState("");
   const [clashOnly, setClashOnly] = useState(false);
@@ -192,8 +197,25 @@ export function TimingsView({ t, shifts }) {
   }, []);
 
   const allRuns = useMemo(() => SERVICES.flatMap((s) => runsFromPlan(plans[s.id], s)), [plans]);
-  const layovers = useMemo(() => (showLayovers ? layoverRows(conn, on) : new Map()), [conn, on, showLayovers]);
-  const drops = useMemo(() => (showLayovers ? dropRuns(conn, on) : []), [conn, on, showLayovers]);
+  /* Re-price the shipped model against the parking the manager has actually chosen.
+     bus_connections.json is built offline and knows nothing about it, so a bus pinned to the
+     factory in the Planner still had its layover drawn here and still counted toward the
+     headline — two boards quoting different money for the same decision. `recostLinks` walks
+     the measured distance table shipped inside that file, so a re-priced link is still a
+     measured number, not a re-estimate. */
+  const priced = useMemo(() => (conn ? recostLinks(conn, {
+    parkOf: (l) => parkForRoute(l.a.svcId, l.veh, prefs),
+  }) : null), [conn, prefs]);
+  const connLive = useMemo(
+    () => (priced ? { ...conn, links: priced.links, totals: priced.totals } : conn),
+    [conn, priced]
+  );
+  const pinnedHome = useMemo(
+    () => (priced ? priced.links.filter((l) => !l.atDepot && l.chosen && l.saveKm <= 0).length : 0),
+    [priced]
+  );
+  const layovers = useMemo(() => (showLayovers ? layoverRows(connLive, on) : new Map()), [connLive, on, showLayovers]);
+  const drops = useMemo(() => (showLayovers ? dropRuns(connLive, on) : []), [connLive, on, showLayovers]);
   const dropsByVeh = useMemo(() => {
     const m = new Map();
     for (const d of drops) { if (!m.has(d.veh)) m.set(d.veh, []); m.get(d.veh).push(d); }
@@ -497,6 +519,14 @@ export function TimingsView({ t, shifts }) {
                 <i className="inline-block w-3 h-2.5 rounded-sm" style={{ border: "1px dashed " + t.muted }} />
                 Drop run on an assumed release time
               </span>
+              {/* A rail that vanished because somebody pinned that bus home is otherwise
+                  indistinguishable from a rail the model never found. */}
+              {pinnedHome > 0 && (
+                <span className="inline-flex items-center gap-1.5" style={{ color: t.watch }}>
+                  <ParkingSquare size={12} />
+                  {pinnedHome} layover{pinnedHome === 1 ? "" : "s"} not drawn — those buses are pinned to the factory in the Planner
+                </span>
+              )}
             </>
           )}
           <span style={{ color: t.faint }}>Solid blocks are pickup runs, thin blocks the drops · hatched = the bus is double-booked · scroll on the chart (or the +/− buttons) to stretch the clock · the crosshair reads the exact time</span>

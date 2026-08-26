@@ -7,7 +7,7 @@
  * ==========================================================================*/
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import * as store from "./store.js";
-import { usePlanMetric, usePlanEditor, seedFromSolver, fleetFromSolver, fleetFromErp, busForEngine } from "./planEditor.js";
+import { usePlanMetric, usePlanEditor, seedFromSolver, fleetFromSolver, fleetFromErp, busForEngine, withEndpoints } from "./planEditor.js";
 import { Btn, Empty, PALETTE } from "./ui.jsx";
 import NewPlanBoard from "./NewPlanBoard.jsx";
 import PlanGallery from "./PlanGallery.jsx";
@@ -16,7 +16,7 @@ import { resolveFinalised, setFinalised, clearFinalised } from "./finalisedPlans
 import { Save, Sparkles, RotateCcw, Download, Undo2, Redo2, Wand2, ArrowLeft, Sunset, Sunrise } from "lucide-react";
 import { downloadPlanJson, toSolverResult } from "./planExport.js";
 import { scorePlan } from "./engine.js";
-import { getParkPrefs, parkForRoute } from "./parkPrefs.js";
+import { getParkPrefs, parkForRoute, startForRoute } from "./parkPrefs.js";
 import { useParkPoints } from "./ParkPicker.jsx";
 
 const EMPTY = new Map();
@@ -117,7 +117,21 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
         .map((st) => ({ ...st, _idx: idxOf.get(st.id), _dem: demandOf(st) })),
     })).filter((a) => a.stops.length);
     if (!asg.length) return null;
-    const live = scorePlan(asg, fleet.map(busForEngine), depot, metric ? { metric } : {});
+    /* Score it the way the BOARD scored it, or finalising quietly rewrites the plan the manager
+       just approved. Two things were missing and both changed the money:
+         - the start/park choices, so a bus parked out was banked at its drive-home price;
+         - `chain: true`, so the board's two-traversal day became a single loop.
+       The body written here is what the Timings clock, the service card and the fleet-cost
+       board all read, so it has to be the same arithmetic that was on screen. */
+    const withEnds = withEndpoints(asg, {
+      depot, stops: allStops, idxOf, endpointsOf,
+      busById: new Map(fleet.map((b) => [b.id, b])),
+    });
+    /* The depot is matrix node 0. Passing it WITHOUT `_idx` made every depot→first-stop leg
+       fall back to haversine × 1.3 — an estimate, in the one artefact that gets finalised and
+       costed. The live board has always passed the node; this now does too. */
+    const live = scorePlan(withEnds, fleet.map(busForEngine), { ...depot, _idx: 0 },
+                           { chain: true, ...(metric ? { metric } : {}) });
     if (!live || !live.ok) return null;
     return toSolverResult(live, fleet, depot, totalRiders, allStops);
   };
@@ -162,12 +176,13 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   /* null for either end means "the default" — the engine then measures from the depot and the
      last stop, which is what it has always done. Only a bus that has actually been moved gets
      an override, so an untouched plan costs exactly what it costed before this existed. */
-  const endpointsOf = useCallback((busId, busName, lastStop) => {
-    const startSpec = endPrefs.starts && endPrefs.starts[`${svcId}|${busName}`];
+  const endpointsOf = useCallback((busId, busName) => {
+    const startSpec = startForRoute(svcId, busName, endPrefs);
     const parkSpec = parkForRoute(svcId, busName, endPrefs);
-    const start = startSpec ? pointOf(startSpec, null) : null;
-    const park = parkSpec && parkSpec.kind !== "auto" ? pointOf(parkSpec, null) : null;
-    return { start, park };
+    return {
+      start: startSpec.kind !== "auto" ? pointOf(startSpec, null) : null,
+      park: parkSpec.kind !== "auto" ? pointOf(parkSpec, null) : null,
+    };
   }, [endPrefs, svcId, pointOf]);
 
   const editor = usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, demandOf, endpointsOf });
