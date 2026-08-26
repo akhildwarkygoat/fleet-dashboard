@@ -5,7 +5,7 @@
  * plan, then a full map-first editor (NewPlanBoard). Plans are named drafts you
  * can save, reopen and delete — each stored in localStorage.
  * ==========================================================================*/
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import * as store from "./store.js";
 import { usePlanMetric, usePlanEditor, seedFromSolver, fleetFromSolver, fleetFromErp, busForEngine } from "./planEditor.js";
 import { Btn, Empty, PALETTE } from "./ui.jsx";
@@ -16,6 +16,8 @@ import { resolveFinalised, setFinalised, clearFinalised } from "./finalisedPlans
 import { Save, Sparkles, RotateCcw, Download, Undo2, Redo2, Wand2, ArrowLeft, Sunset, Sunrise } from "lucide-react";
 import { downloadPlanJson, toSolverResult } from "./planExport.js";
 import { scorePlan } from "./engine.js";
+import { getParkPrefs, parkForRoute } from "./parkPrefs.js";
+import { useParkPoints } from "./ParkPicker.jsx";
 
 const EMPTY = new Map();
 const mapFrom = (assignments) => { const m = new Map(); for (const k of Object.keys(assignments || {})) m.set(k, assignments[k]); return m; };
@@ -140,7 +142,35 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   const [draftName, setDraftName] = useState("Untitled plan");
   const [seed, setSeed] = useState(EMPTY);
 
-  const editor = usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, demandOf });
+  /* ---- where each bus starts and parks ----
+     Held HERE rather than in the board because it feeds the scoring: km, ride time and cost all
+     depend on the two ends of the run, so the editor has to see a change to them at the same
+     moment the map does. The board reads and writes the same state. */
+  const [endPrefs, setEndPrefs] = useState(getParkPrefs);
+  const parkPoints = useParkPoints();
+  const pointOf = useCallback((spec, fallback) => {
+    if (!spec || spec.kind === "auto" || spec.kind === "tail") return fallback;
+    if (spec.kind === "depot") return { lat: depot.lat, lng: depot.lng, name: depot.name };
+    if (spec.kind === "stop") return { lat: spec.lat, lng: spec.lng, name: spec.name };
+    if (spec.kind === "node" && spec.idx != null) {
+      const n = parkPoints.find((p) => p.idx === spec.idx);
+      return n ? { lat: n.lat, lng: n.lng, name: n.name } : fallback;
+    }
+    return fallback;
+  }, [depot, parkPoints]);
+
+  /* null for either end means "the default" — the engine then measures from the depot and the
+     last stop, which is what it has always done. Only a bus that has actually been moved gets
+     an override, so an untouched plan costs exactly what it costed before this existed. */
+  const endpointsOf = useCallback((busId, busName, lastStop) => {
+    const startSpec = endPrefs.starts && endPrefs.starts[`${svcId}|${busName}`];
+    const parkSpec = parkForRoute(svcId, busName, endPrefs);
+    const start = startSpec ? pointOf(startSpec, null) : null;
+    const park = parkSpec && parkSpec.kind !== "auto" ? pointOf(parkSpec, null) : null;
+    return { start, park };
+  }, [endPrefs, svcId, pointOf]);
+
+  const editor = usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, demandOf, endpointsOf });
 
   const meta = () => {
     const used = editor.perBus.filter((r) => r.stopIds.length);
@@ -255,7 +285,7 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
         <Btn t={t} onClick={save}><Save size={15} /> Save</Btn>
       </div>
       {estimated && <div className="text-xs rounded-xl px-3 py-2" style={{ background: t.watch + "22", color: t.watch }}>Using straight-line distance estimates — the road matrix cache didn't cover every stop.</div>}
-      <NewPlanBoard t={t} editor={editor} fleet={fleet} depot={depot} stopsById={stopsById} totalRiders={totalRiders} demandOf={demandOf} toast={toast} period={period} />
+      <NewPlanBoard t={t} editor={editor} fleet={fleet} depot={depot} stopsById={stopsById} totalRiders={totalRiders} demandOf={demandOf} toast={toast} period={period} svcId={svcId} parkPrefs={endPrefs} setParkPrefs={setEndPrefs} />
     </div>
   );
 }

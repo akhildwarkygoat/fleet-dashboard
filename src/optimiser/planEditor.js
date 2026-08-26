@@ -81,6 +81,32 @@ function forEngine(stop, idxOf, demandOf) {
 }
 
 /**
+ * A start/park point ready for the engine.
+ *
+ * The plan's road matrix is built over the depot and this plan's stops, so a point is only
+ * measurable if it IS one of those. That covers every way the point is normally chosen — the
+ * factory (node 0), the route's own last stop, or a stop clicked on the map — and those are
+ * matched here by coordinate rather than by id, because the picker hands back a place, not a
+ * stop object.
+ *
+ * A point that matches nothing keeps `_idx` undefined, and the engine falls back to
+ * haversine × road factor for its two legs. That is an ESTIMATE, so it is reported as one
+ * (`estimated: true`) instead of being passed off as a measured distance.
+ */
+const SNAP_KM = 0.1;                                   // 100 m — same house, same node
+function endpointForEngine(pt, depot, stops, idxOf) {
+  if (!pt || pt.lat == null) return null;
+  if (haversineKm(pt, depot) < SNAP_KM) return { ...pt, _idx: 0, estimated: false };
+  let best = null, bestD = SNAP_KM;
+  for (const s of stops) {
+    const d = haversineKm(pt, s);
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  const i = best ? idxOf.get(best.id) : undefined;
+  return { ...pt, _idx: i, estimated: i == null };
+}
+
+/**
  * The editable plan. `assignments` is a Map<busId, stopId[]> (ordered). Everything derived
  * (live KPIs, per-bus fill, unassigned list) recomputes from it.
  *
@@ -90,7 +116,7 @@ function forEngine(stop, idxOf, demandOf) {
  * @param stopsById   Map<stopId, stop> over the whole stop universe
  * @param metric,idxOf from usePlanMetric
  */
-export function usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, demandOf }) {
+export function usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, demandOf, endpointsOf }) {
   // Undo/redo history: a single stack + pointer. `assign` is the current entry. Every mutation
   // truncates any redo tail and pushes a new entry (capped at 50); undo/redo just move the pointer.
   const [hist, setHist] = useState(() => ({ stack: [cloneAssign(seed)], i: 0 }));
@@ -184,12 +210,22 @@ export function usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, de
     for (const [busId, ids] of assign) {
       if (!ids.length) continue;
       const stops = ids.map((id) => stopsById.get(id)).filter(Boolean).map((s) => forEngine(s, idxOf, demandOf));
-      assignments.push({ busId, stops });
+      /* Where this bus starts and parks. Both are usually null, in which case scorePlan falls
+         back to the depot and the last stop and the numbers are unchanged — moving an end is
+         what makes km, ride and cost move, and nothing else about the scoring differs. The
+         points are put on the matrix so their legs are real road distances, not estimates. */
+      const ends = endpointsOf ? endpointsOf(busId, (busById.get(busId) || {}).name, stops[stops.length - 1]) : null;
+      const all = [...stopsById.values()];
+      assignments.push({
+        busId, stops,
+        start: ends && ends.start ? endpointForEngine(ends.start, depot, all, idxOf) : null,
+        park: ends && ends.park ? endpointForEngine(ends.park, depot, all, idxOf) : null,
+      });
     }
     // chain: bus parks at its last stop — matches the shipped plan's --chain accounting, so
     // cost/km reproduce the OR-Tools solver's numbers (not an out-and-back loop approximation).
     return scorePlan(assignments, fleet.map(busForEngine), depotNode, { metric, chain: true });
-  }, [assign, metric, idxOf, fleet, depotNode, stopsById, demandOf]);
+  }, [assign, metric, idxOf, fleet, depotNode, stopsById, demandOf, endpointsOf, busById, depot]);
 
   // ---- derived: per-bus rows (fill, over-cap, ordered stops) for the UI ----
   const perBus = useMemo(() => fleet.map((b) => {
@@ -203,6 +239,12 @@ export function usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, de
       overSeats: heads > b.capacity,                 // soft: past the seat count (amber)
       overCap: heads > b.capacity + CAP_LENIENCY,    // hard: past seats + leniency — genuinely infeasible (red)
       km: route ? route.km : 0, ride: route ? route.toLastMin : 0, cost: route ? route.cost : 0,
+      /* The two ends this row was actually scored against, so the map draws the same points
+         the numbers were computed from rather than re-deriving them and drifting. */
+      start: route ? route.start : null,
+      park: route ? route.park : null,
+      moved: route ? !!route.moved : false,
+      estimatedEnds: !!(route && ((route.start && route.start.estimated) || (route.park && route.park.estimated))),
     };
   }), [assign, fleet, stopsById, live, demandOf]);
 

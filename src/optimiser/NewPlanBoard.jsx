@@ -10,13 +10,21 @@ import React, { useEffect, useMemo, useState } from "react";
 import { PALETTE } from "./ui.jsx";
 import GMap from "./GMap.jsx";
 import { routeGeometry } from "./roadGeom.js";
-import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarChart3, Bus, SlidersHorizontal } from "lucide-react";
+import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarChart3, Bus, SlidersHorizontal, MapPin } from "lucide-react";
 import { KPI_DEFS, getHiddenKpis, setHiddenKpis, visibleKpis } from "./kpiPrefs.js";
+import ParkPicker, { useParkPoints, parkLabel } from "./ParkPicker.jsx";
+import { parkForRoute, setRoutePark, setRouteStart } from "./parkPrefs.js";
 
 const UNADDED = "#f87171"; // light red — stop not yet on any bus
 const ADDED = "#4ade80";   // light green — stop assigned to a bus
 
-export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, totalRiders, demandOf, toast, period = "evening" }) {
+/* S = where the bus starts this run · P = where it parks when the run is done.
+   Green reads as "go", amber as "stand" — and neither is any route colour in PALETTE, so an
+   end pin can never be mistaken for a bus's own stops. */
+export const START_COLOR = "#16a34a";
+export const PARK_COLOR = "#b45309";
+
+export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, totalRiders, demandOf, toast, period = "evening", svcId = "plan", parkPrefs, setParkPrefs }) {
   // Assignments are stored in EVENING traversal order (factory → s1 → … → sn). Morning is the
   // same chain ridden backwards (sn → … → s1 → factory), so morning clicks PREPEND: the first
   // stop you click is where the bus starts, and each next click adds the stop after it on the
@@ -32,6 +40,60 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
     for (const [busId, ids] of editor.assign) ids.forEach((id) => m.set(id, busId));
     return m;
   }, [editor.assign]);
+
+  /* ---- where each bus starts and parks ----
+     Per bus, per service, so one registration can start and park differently on its Day run
+     and its night one. The state lives in NewPlanView because the SCORING depends on it — km,
+     ride time and cost are all measured between these two points — so the board receives it
+     rather than owning it. Changing an end therefore moves the pins and the numbers together.
+
+     Clicking a stop on the map is the other half of the answer: a village worth parking in is
+     usually a stop the route already serves, and picking it off a list of 1,134 names is a
+     worse way to say "that one" than pointing at it. */
+  const parkPoints = useParkPoints();
+  /* One state, not two. While `picking` is set the map is choosing that endpoint — there is no
+     separate "armed" step to forget, and therefore no window in which a click means something
+     other than what the open panel says it means. */
+  const [picking, setPicking] = useState(null);       // { busId, which: "start"|"park" } | null
+  const nameOf = (busId) => (busById[busId] || {}).name || busId;
+  const specOf = (busId, which) =>
+    which === "start"
+      ? (parkPrefs.starts && parkPrefs.starts[`${svcId}|${nameOf(busId)}`]) || { kind: "auto" }
+      : parkForRoute(svcId, nameOf(busId), parkPrefs);
+
+  const setEnd = (busId, which, spec) => {
+    const name = nameOf(busId);
+    setParkPrefs(which === "start" ? setRouteStart(svcId, name, spec) : setRoutePark(svcId, name, spec));
+    setPicking(null);
+    const where = !spec || spec.kind === "auto" ? (which === "start" ? "the factory" : "where its route ends")
+      : spec.kind === "depot" ? "the factory" : spec.name;
+    toast && toast(`${name} ${which === "start" ? "starts from" : "parks at"} ${where}`);
+  };
+
+  /* S and P for the ACTIVE bus only. 97 buses would be 194 pins; while you are working on one,
+     its two ends are what you need to see.
+       evening — the bus leaves its start (S) and finishes out in the villages (P)
+       morning — it starts where it parked (S) and delivers to the factory (P)
+     The same two points swap letters with the direction, which is what the labels are for. */
+  const endPins = useMemo(() => {
+    if (!activeBus) return [];
+    const r = editor.perBus.find((x) => x.bus.id === activeBus);
+    if (!r || !r.stops.length) return [];
+    /* Read the points the ROW WAS SCORED WITH rather than re-deriving them here — two
+       derivations of the same thing drift, and then the pin and the cost disagree. */
+    const label = (pt, fallback) => (pt && (pt.name || pt.label)) || fallback;
+    const startPt = r.start || depot;
+    const parkPt = r.park || r.stops[r.stops.length - 1];
+    const [S, P] = morning ? [parkPt, startPt] : [startPt, parkPt];
+    const est = r.estimatedEnds ? "\n(straight-line estimate — this point is not on the road matrix)" : "";
+    return [
+      { lat: S.lat, lng: S.lng, label: "S", color: START_COLOR,
+        title: `Starts at ${label(S, "the factory")}${est}` },
+      { lat: P.lat, lng: P.lng, label: "P", color: PARK_COLOR,
+        title: `Ends at ${label(P, "its last stop")}` +
+               (morning ? "" : " — and waits here until its next run") + est },
+    ];
+  }, [activeBus, editor.perBus, depot, morning]);
 
   const allStops = useMemo(() => [...stopsById.values()], [stopsById]);
   const assignedHeads = editor.perBus.reduce((n, r) => n + r.heads, 0);
@@ -72,6 +134,16 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   // route chain matches the order you built it), or (if already on it) remove JUST that stop —
   // the rest of the route stays. Use the bus card's ↯ to re-optimise the order after a removal.
   const onStopClick = (stopId) => {
+    /* THE PICKER BEING OPEN IS ITSELF THE MODE. While you are choosing where a bus starts or
+       parks, a click on the map means "there" — it never adds the stop to the route or takes it
+       off. Saying where to leave a bus is not the same as saying who it carries, and an earlier
+       cut that needed a separate "pick on map" press made every click before that press do the
+       wrong thing silently. */
+    if (picking) {
+      const s = stopsById.get(stopId);
+      if (s) setEnd(picking.busId, picking.which, { kind: "stop", lat: s.lat, lng: s.lng, name: s.name });
+      return;
+    }
     const owner = busOfStop.get(stopId); // bus this stop is currently on (undefined if unassigned)
     if (activeBus) {
       const list = editor.assign.get(activeBus) || [];
@@ -185,7 +257,24 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
     <div className={full ? "fixed inset-0 z-[1500] overflow-hidden" : "relative rounded-2xl overflow-hidden"}
       style={{ height: containerH, border: full ? "none" : "1px solid " + t.border, background: t.surface, marginTop: full ? 0 : undefined }}>
       {/* base map — click stops to assign to the active bus */}
-      <GMap t={t} stops={mapStops} routeColors={routeColors} depot={depot} polylines={polylines} onSelect={onStopClick} height={containerH} scrollWheelZoom={true} autoFit={false} />
+      <GMap t={t} stops={mapStops} routeColors={routeColors} depot={depot} polylines={polylines} pins={endPins} onSelect={onStopClick} height={containerH} scrollWheelZoom={true} autoFit={false} />
+
+      {/* Park picker — floats beside the bus panel, over the map, so the route and its two end
+          pins stay visible while the place is chosen. */}
+      {/* Clear of the stats panel rather than over it: the ride time and cost are exactly what
+          you are weighing while choosing where to leave the bus, so covering them would hide
+          the reason for the decision. */}
+      {picking && (
+        <div className="absolute z-[800]" style={{ bottom: PAD, right: showBuses ? PANEL_W + PAD * 2 : PAD, width: 268 }}>
+          <ParkPicker t={t} points={parkPoints}
+            busName={nameOf(picking.busId)}
+            which={picking.which}
+            current={specOf(picking.busId, picking.which)}
+            onPick={(spec) => setEnd(picking.busId, picking.which, spec)}
+            onClose={() => setPicking(null)}
+            glass={glass} glassInner={glassInner} />
+        </div>
+      )}
 
       {/* fullscreen toggle — bottom-left, clear of the panels/attribution */}
       <button type="button" onClick={() => setFull((f) => !f)} title={full ? "Exit fullscreen" : "Fullscreen map"}
@@ -322,14 +411,46 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                   <span className="tabular-nums font-semibold">{r.heads}/{r.cap}</span>
                 </div>
                 {on && r.stopIds.length > 0 && (
-                  <div className="flex items-center gap-2 mt-1.5 pt-1.5" style={{ borderTop: "1px solid " + glassDivider }}>
-                    <span className="text-[10px]" style={{ color: t.muted }}>{Math.round(r.ride)}m · ₹{Math.round(r.cost)}</span>
-                    <span className="flex-1" />
-                    <button type="button" title="Auto-sequence" onClick={(e) => { e.stopPropagation(); editor.autoSequence(r.bus.id); }} style={{ color: t.muted, cursor: "pointer" }}><Wand2 size={12} /></button>
-                    <button type="button" title="Clear this bus — removes all its stops" aria-label={`Clear all stops from ${r.bus.name}`} onClick={(e) => { e.stopPropagation(); editor.clearBus(r.bus.id); }}
-                      className="rounded-md p-0.5 transition-colors" style={{ color: t.poor, cursor: "pointer" }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = t.poor + "1f")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}><Trash2 size={12} /></button>
-                  </div>
+                  <>
+                    <div className="flex items-center gap-2 mt-1.5 pt-1.5" style={{ borderTop: "1px solid " + glassDivider }}>
+                      <span className="text-[10px]" style={{ color: t.muted }}>{Math.round(r.ride)}m · ₹{Math.round(r.cost)}</span>
+                      <span className="flex-1" />
+                      <button type="button" title="Auto-sequence" onClick={(e) => { e.stopPropagation(); editor.autoSequence(r.bus.id); }} style={{ color: t.muted, cursor: "pointer" }}><Wand2 size={12} /></button>
+                      <button type="button" title="Clear this bus — removes all its stops" aria-label={`Clear all stops from ${r.bus.name}`} onClick={(e) => { e.stopPropagation(); editor.clearBus(r.bus.id); }}
+                        className="rounded-md p-0.5 transition-colors" style={{ color: t.poor, cursor: "pointer" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = t.poor + "1f")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}><Trash2 size={12} /></button>
+                    </div>
+                    {/* The two ends of this bus's run, as two small chips. They read S and P to
+                        match the pins on the map and the layover rails on the Timings clock, so
+                        the same two letters mean the same two things everywhere. A chip is
+                        filled once that end has been moved off its default. */}
+                    <div className="flex items-center gap-1 mt-1.5">
+                      {[["start", "S", START_COLOR], ["park", "P", PARK_COLOR]].map(([which, letter, col]) => {
+                        const spec = specOf(r.bus.id, which);
+                        const set = spec.kind !== "auto";
+                        const open = picking && picking.busId === r.bus.id && picking.which === which;
+                        return (
+                          <button key={which} type="button"
+                            aria-label={`Set where ${r.bus.name} ${which === "start" ? "starts" : "parks"}`}
+                            title={`${r.bus.name} ${which === "start" ? "starts from" : "parks at"}: ` +
+                                   `${parkLabel(spec, which)}. Click to change.`}
+                            onClick={(e) => { e.stopPropagation(); setPicking(open ? null : { busId: r.bus.id, which }); }}
+                            className="flex-1 min-w-0 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-bold transition"
+                            style={{ background: open ? col : set ? col + "22" : glassBtn,
+                                     color: open ? "#fff" : set ? col : t.muted,
+                                     border: "1px solid " + (open || set ? col : glassInnerBorder), cursor: "pointer" }}>
+                            <span style={{ flexShrink: 0 }}>{letter}</span>
+                            <span className="truncate font-semibold">{parkLabel(spec, which)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {r.estimatedEnds && (
+                      <div className="text-[9px] mt-1" style={{ color: t.watch }}>
+                        one end is off the road matrix — its legs are straight-line estimates
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );

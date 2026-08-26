@@ -14,6 +14,13 @@
  * factory except Zenwear, which runs from its own Subbulapuram site ~59 km south.
  *
  * `gate` is minutes-from-midnight; null = the factory hasn't told us the timing.
+ * `off` is when the shift RELEASES — the moment the drop run leaves the gate. It
+ * matters as much as `gate` now that buses can be parked out and linked between
+ * services: the gap a bus waits through is `next gate − this off`, so a wrong
+ * `off` moves every layover. Only the three Rotational slots have a measured one
+ * (ROTATION_SLOTS, confirmed in the punch feed). Where it is null the layover
+ * model falls back to an 8-hour shift and FLAGS every saving that depended on the
+ * assumption, so an estimate never reads as a measurement.
  * `planUrl` = a finalised plan exists, so this service can be drawn on the
  * Timings clock. Riders in the ERP and a finalised plan are different things:
  * a service can have riders (so it appears with real numbers) and still have no
@@ -82,18 +89,25 @@ export const BATLAGUNDU_MATRIX = "/road_matrix.json";
 export const ZENWEAR_MATRIX = "/road_matrix_zenwear.json";
 
 export const SERVICES = [
-  { id: "s9",    name: "9 am General", color: "#2186eb", gate: 9 * 60, erpShift: "GENERAL SHIFT - 9", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/finalised_plan.json" },   // Batlagundu only — Zenwear's 9 am riders belong to Zenwear
-  { id: "s7",    name: "7 am Morning", color: "#d97706", gate: 7 * 60, erpShift: "MORNING SHIFT - 7", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_s7.json" },
+  /* `off: null` on the three fixed-hour services is deliberate and not a placeholder to
+     fill in with a guess — the factory has given us gate times and never release times.
+     The layover model assumes 8 h for these and marks the result "assumed"; ask the
+     transport manager for the real figure and the assumption disappears. */
+  { id: "s9",    name: "9 am General", color: "#2186eb", gate: 9 * 60, off: null, erpShift: "GENERAL SHIFT - 9", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/finalised_plan.json" },   // Batlagundu only — Zenwear's 9 am riders belong to Zenwear
+  { id: "s7",    name: "7 am Morning", color: "#d97706", gate: 7 * 60, off: null, erpShift: "MORNING SHIFT - 7", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_s7.json" },
   /* Rotational is THREE services, not one. It always ran three round-the-clock slots, but the
      ERP could not say who rode when, so it had to be planned as a single 786-rider block that
      needed ~3x the fleet and never solved. `Pun_Shift` (1/2/3 = 06:00/14:00/22:00) gave the
      missing split, and it is now held frozen in src/rotationalRoster.json so each slot keeps
      the ~250 riders its plan was built for instead of being re-cut every Monday.
      `erpSlot` is what splits them; `slot` ties back to ROTATION_SLOTS. */
-  { id: "rot-day",  name: "Rotational · Day",        color: "#0d9488", gate: 6 * 60,  erpShift: "ROTATIONAL SHIFT", erpSlot: "1", slot: "day",  depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-day.json" },
-  { id: "rot-half", name: "Rotational · Half night", color: "#7c5cd6", gate: 14 * 60, erpShift: "ROTATIONAL SHIFT", erpSlot: "2", slot: "half", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-half.json" },
-  { id: "rot-full", name: "Rotational · Full night", color: "#4338ca", gate: 22 * 60, erpShift: "ROTATIONAL SHIFT", erpSlot: "3", slot: "full", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-full.json" },
-  { id: "zen",   name: "Zenwear",      color: "#be1250", gate: 9 * 60, erpShift: null, erpUnit: "Zenwear", depot: ZENWEAR_DEPOT, matrixUrl: ZENWEAR_MATRIX, branch: true, planUrl: "/plan_zen.json" },
+  /* `off` here IS measured: the three slots tile the 24 hours end to end, so Day releases
+     exactly when Half night gates. That is what makes a Day drop and a Full-night pickup
+     in the same village a linkable pair rather than a guess. */
+  { id: "rot-day",  name: "Rotational · Day",        color: "#0d9488", gate: 6 * 60,  off: 14 * 60, erpShift: "ROTATIONAL SHIFT", erpSlot: "1", slot: "day",  depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-day.json" },
+  { id: "rot-half", name: "Rotational · Half night", color: "#7c5cd6", gate: 14 * 60, off: 22 * 60, erpShift: "ROTATIONAL SHIFT", erpSlot: "2", slot: "half", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-half.json" },
+  { id: "rot-full", name: "Rotational · Full night", color: "#4338ca", gate: 22 * 60, off: 6 * 60,  erpShift: "ROTATIONAL SHIFT", erpSlot: "3", slot: "full", depot: FACTORY_DEPOT, matrixUrl: BATLAGUNDU_MATRIX, planUrl: "/plan_rot-full.json" },
+  { id: "zen",   name: "Zenwear",      color: "#be1250", gate: 9 * 60, off: null, erpShift: null, erpUnit: "Zenwear", depot: ZENWEAR_DEPOT, matrixUrl: ZENWEAR_MATRIX, branch: true, planUrl: "/plan_zen.json" },
 ];
 
 /* The seventh choice on the board: not a service but the union of them —

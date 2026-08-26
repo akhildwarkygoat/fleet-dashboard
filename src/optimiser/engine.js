@@ -127,6 +127,30 @@ function dayKm(depot, seq, p) {
   return p.chain ? 2 * chainKmOneWay(depot, seq, p) : routeKm(depot, seq, p);
 }
 
+/** Day distance when the run has an explicit START and PARK point.
+ *
+ *  The bus runs the chain twice a day and the two ends are no longer both the depot:
+ *
+ *      evening   start → s1 → … → sn → park
+ *      morning   park  → sn → … → s1 → start
+ *
+ *  With `park` at the last stop and `start` at the depot this is exactly 2 × the one-way
+ *  chain — the same number `dayKm` produces in chain mode — so switching a bus to an explicit
+ *  park does not silently re-base its cost. It only moves once you move the point. */
+function dayKmBetween(start, seq, park, p) {
+  if (!seq.length) return 0;
+  const chain = chainKm(seq, p);
+  const out = legKm(start, seq[0], p) + chain + legKm(seq[seq.length - 1], park, p);
+  const back = legKm(park, seq[seq.length - 1], p) + chain + legKm(seq[0], start, p);
+  return out + back;
+}
+/** Distance along the stop chain itself, ends excluded. */
+function chainKm(seq, p) {
+  let km = 0;
+  for (let i = 0; i < seq.length - 1; i++) km += legKm(seq[i], seq[i + 1], p);
+  return km;
+}
+
 /** First-picked rider's ride time (min): first stop -> ... -> factory.
  *  The empty depot->first deadhead is excluded; boarding service added per later stop. */
 function firstRideMin(depot, seq, p) {
@@ -444,7 +468,9 @@ export function validatePlan(result, rawStops, fleet, depot, params = {}) {
  * render an externally-produced plan (the OR-Tools backend) through the identical
  * code path, so the solver plan and the heuristic plan compare apples-to-apples.
  *
- * @param assignments [{ busId, stops:[orderedStopObjs] }]  stop objs carry _idx (+_dem optional)
+ * @param assignments [{ busId, stops:[orderedStopObjs], start?, park? }]  stop objs carry _idx
+ *        (+_dem optional). `start` / `park` override where the run begins and ends — omit both
+ *        and every leg is measured from the depot, which is what every plan here assumes.
  * @returns { ok, plan:{routes,committedUnused}, kpis }  same shape as optimise()
  */
 export function scorePlan(assignments, fleet, depot, params = {}) {
@@ -456,15 +482,24 @@ export function scorePlan(assignments, fleet, depot, params = {}) {
     const bus = busById.get(a.busId);
     if (!bus) continue;
     const seq = a.stops.map((s) => (s._dem != null ? s : { ...s, _dem: effectiveDemand(s, p) }));
-    const km = dayKm(depot, seq, p);                   // day km for COST (chain = 2× one-way, else loop)
+    /* Where this bus begins and ends. Defaults reproduce the depot-to-depot numbers exactly, so
+       a plan nobody has re-parked costs the same as it always did. */
+    const start = a.start || depot;
+    const park = a.park || (seq.length ? seq[seq.length - 1] : depot);
+    const moved = !!(a.start || a.park);
+    const km = moved ? dayKmBetween(start, seq, park, p) : dayKm(depot, seq, p);
     const rideMin = firstRideMin(depot, seq, p);       // first pickup -> factory (reference)
-    const totalMin = (seq.length ? legMin(depot, seq[0], p) : 0) + rideMin;
-    const toLastMin = toLastStopMin(depot, seq, p);    // depot -> last pickup — the LIMIT metric
-    const kmToLast = toLastStopKm(depot, seq, p);
+    const totalMin = (seq.length ? legMin(start, seq[0], p) : 0) + rideMin;
+    /* Time to the last stop is measured FROM THE START, not from the depot: moving a bus's
+       start is precisely a change to how long its run takes, and a ride time that ignored it
+       would report the same minutes for a bus setting off 40 km further out. */
+    const toLastMin = toLastStopMin(start, seq, p);
+    const kmToLast = toLastStopKm(start, seq, p);
     const heads = seq.reduce((n, s) => n + s._dem, 0);
     const cost = busDayCost(bus, km, p);
     routes.push({
       stops: seq, km, kmToLast, heads, rideMin, totalMin, toLastMin, bus, cost,
+      start, park, moved,
       util: bus.capacity ? (heads / bus.capacity) * 100 : 0,
       overSoft: toLastMin > p.softCapMin,
     });

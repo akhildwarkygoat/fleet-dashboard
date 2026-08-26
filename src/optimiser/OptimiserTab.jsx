@@ -2087,6 +2087,8 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
           {svc.name}
           <span className="text-xs font-normal" style={{ color: t.muted }}>Change ▾</span>
         </button>
+        {/* No Parking tab: where a bus waits is decided per bus, on the Planner's map, next to
+            the route that put it there — not on a separate board you have to hold in your head. */}
         <Segmented t={t} value={sub} onChange={setSub} options={[["stops", "Stops"], ["plan", "Fleet plan"], ["new", "Planner"], ["timings", "Timings"],
           /* Rotational is the only shift that moves, so it is the only one with an
              "as operated" record worth reading a day at a time. */

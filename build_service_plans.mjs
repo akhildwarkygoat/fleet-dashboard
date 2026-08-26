@@ -23,6 +23,7 @@ import fs from "node:fs";
 import { optimise, validatePlan, haversineKm, scorePlan } from "./src/optimiser/engine.js";
 import { stopsForRiders } from "./src/optimiser/serviceStops.js";
 import { SERVICES, FACTORY_DEPOT, ZENWEAR_DEPOT } from "./src/optimiser/services.js";
+import { matrixContext, resolvePark, routeWithPark, LAYOVER_DEFAULTS } from "./src/optimiser/layover.js";
 import FROZEN_ROTA from "./src/rotationalRoster.json" with { type: "json" };
 
 const arg = (k, d = null) => {
@@ -30,13 +31,35 @@ const arg = (k, d = null) => {
   return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : d;
 };
 const SVC_ID = arg("--service");
+/* ---- Group x shift mode ----------------------------------------------------------------
+ * `--service rot-half` plans "whoever is on Half night this week" — so it has to be re-run
+ * every Monday, because that membership is replaced every Monday.
+ *
+ * `--group day --shift full` plans a fixed SET of people at a chosen clock: the riders who
+ * are on Day in the current roster, planned as they will run when the rota puts them on Full
+ * night. The group travels together (measured: ~90% of a group moves as a block each Monday),
+ * so its stops do not change when its clock does — only the hour and the fleet do.
+ *
+ * Build the nine combinations once and each Monday is a lookup instead of an optimiser run:
+ *     week 1  A=Day    B=Full   C=Half
+ *     week 2  A=Full   B=Half   C=Day
+ *     week 3  A=Half   B=Day    C=Full   (then it repeats)
+ * Re-cut only when membership has actually drifted, which is ~10% a week. */
+const GROUP = arg("--group");            // day | half | full  — which group (by this week's roster)
+const AT_SHIFT = arg("--shift");         // day | half | full  — which clock to plan them at
+const SLOT_CODE = { day: "1", half: "2", full: "3" };
 const ERP = arg("--erp", "data/erp_live.fresh.json");
 const OUT_DIR = arg("--out-dir", "public");
-if (!SVC_ID) { console.error("need --service <id>"); process.exit(2); }
-const svc = SERVICES.find((s) => s.id === SVC_ID);
-if (!svc) { console.error(`unknown service ${SVC_ID}`); process.exit(2); }
+if (!SVC_ID && !GROUP) { console.error("need --service <id>, or --group <day|half|full> [--shift <day|half|full>]"); process.exit(2); }
+/* In group mode the SERVICE supplies the clock, depot and matrix; the GROUP supplies the people. */
+const svc = GROUP
+  ? SERVICES.find((s) => s.slot === (AT_SHIFT || GROUP))
+  : SERVICES.find((s) => s.id === SVC_ID);
+if (!svc) { console.error(`unknown ${GROUP ? "shift " + (AT_SHIFT || GROUP) : "service " + SVC_ID}`); process.exit(2); }
+if (GROUP && !SLOT_CODE[GROUP]) { console.error(`--group must be day|half|full`); process.exit(2); }
+if (GROUP && AT_SHIFT && !SLOT_CODE[AT_SHIFT]) { console.error(`--shift must be day|half|full`); process.exit(2); }
 
-const log = (...a) => console.log(`[${SVC_ID}]`, ...a);
+const log = (...a) => console.log(`[${GROUP ? `grp-${GROUP}@${AT_SHIFT || GROUP}` : SVC_ID}]`, ...a);
 const norm = (s) => (s == null ? "" : String(s).trim());
 
 /* DD-MM-YYYY (with an optional time tail) -> epoch ms. Returns 0 when unparseable so
@@ -135,8 +158,14 @@ for (const { r } of latestPerEmp.values()) {
   const m = busUse.get(v);
   m.set(s, (m.get(s) || 0) + 1);
 }
-const mine = [...latestPerEmp.values()].map((x) => x.r).filter((r) => serviceOf(r, slotOfEmp(norm(r.Empl_no))) === SVC_ID);
-log(`${latestPerEmp.size} employees in feed · ${mine.length} belong to ${svc.name}`);
+const mine = GROUP
+  // the group is a fixed set of PEOPLE — everyone the roster puts on `GROUP` right now —
+  // regardless of which clock we are planning them at
+  ? [...latestPerEmp.values()].map((x) => x.r).filter((r) => slotOfEmp(norm(r.Empl_no)) === SLOT_CODE[GROUP])
+  : [...latestPerEmp.values()].map((x) => x.r).filter((r) => serviceOf(r, slotOfEmp(norm(r.Empl_no))) === SVC_ID);
+log(GROUP
+  ? `${latestPerEmp.size} employees in feed · ${mine.length} in group ${GROUP.toUpperCase()} · planned at ${svc.name} (gate ${svc.gate})`
+  : `${latestPerEmp.size} employees in feed · ${mine.length} belong to ${svc.name}`);
 
 const riders = [];
 for (const r of mine) {
@@ -228,10 +257,11 @@ log(`${fleet.length} buses from the ERP · ${seats} seats for ${heads} riders`);
 /* Real Google road km/min where the stop matches a matrix node; the engine falls back to
    haversine×roadFactor for any stop it cannot place, so a partial match still plans. */
 const matrixFile = svc.id === "zen" ? "public/road_matrix_zenwear.json" : "public/road_matrix.json";
-let metric = null, matched = 0;
+let metric = null, matched = 0, parkCtx = null;
 if (fs.existsSync(matrixFile)) {
   const m = JSON.parse(fs.readFileSync(matrixFile, "utf8"));
   const nodes = m.nodes;
+  parkCtx = matrixContext(m, { dieselPerKm: OWN.dieselPerKm });
   const idxOf = (p) => {
     let best = -1, bestD = 0.25;                 // 250 m — same spirit as COVER_M
     for (let i = 0; i < nodes.length; i++) {
@@ -391,8 +421,31 @@ log(`integrity: ${checks.length - failed}/${checks.length} checks pass`);
 // ---------------------------------------------------------------- write
 const round1 = (n) => Math.round((n || 0) * 10) / 10;
 const road = (a, b) => haversineKm(a, b) * 1.3;
+/* --park: where this service's buses stand when they are not running.
+     depot        (default) drive home after every run — what every plan here has always assumed
+     far          stay at the far end of the route, which is where the next run starts
+     <place name> a named road-matrix node, for when the village has nowhere a bus can stand
+   This RECORDS the decision and what it removes; it deliberately does NOT change `km` or
+   `cost`. Those reconcile to the dashboard and to fleetCost.js, and quietly re-basing them
+   here would break the one thing HANDOFF_ROTATIONAL says was hard to win — a plan whose
+   numbers match the ERP. The saving is reported beside them, on its own clearly-named basis,
+   and build_bus_connections.mjs is what turns it into a fleet-wide figure. */
+const PARK = arg("--park", "depot");
+const parkSpec = PARK === "depot" ? { kind: "depot" }
+  : PARK === "far" || PARK === "auto" ? { kind: "tail" }
+  : { kind: "node", name: PARK };
+let parkPoint = null;
+if (parkCtx && parkSpec.kind !== "tail") {
+  parkPoint = resolvePark(parkSpec, parkCtx, depot);
+  if (!parkPoint) { console.error(`[${SVC_ID}] --park "${PARK}": no road-matrix node by that name. Use "depot", "far", or a place from public/park_points.json`); process.exit(2); }
+}
 const routes = (live.plan.routes || []).map((r) => {
   const first = r.stops[0], last = r.stops[r.stops.length - 1];
+  const seq = r.stops.map((s) => ({ name: s.name, lat: s.lat, lng: s.lng, hc: +s.headcount || 0, _idx: s._idx }));
+  /* kind "tail" means "wherever this route ends", which is per-route and so is resolved here
+     rather than once for the service. */
+  const p = parkCtx ? routeWithPark({ seq }, parkPoint, parkCtx, depot,
+                                    { dieselPerKm: OWN.dieselPerKm }) : null;
   return {
     name: r.bus.name, type: r.bus.type, cap: r.bus.capacity,
     stops: r.stops.length, riders: r.heads,
@@ -400,9 +453,18 @@ const routes = (live.plan.routes || []).map((r) => {
     km_to_last: first ? round1(road(depot, first)) : 0,
     km_to_farthest: last ? round1(road(depot, last)) : 0,
     cost: Math.round(r.cost),
-    seq: r.stops.map((s) => ({ name: s.name, lat: s.lat, lng: s.lng, hc: +s.headcount || 0 })),
+    ...(p && PARK !== "depot" ? { park: { at: p.park.name, lat: p.park.lat, lng: p.park.lng,
+                                          empty_km_saved: p.saveKm, diesel_saved: p.saveRs } } : {}),
+    seq: seq.map(({ _idx, ...s }) => s),
   };
 });
+if (PARK !== "depot") {
+  const km = routes.reduce((s, r) => s + ((r.park && r.park.empty_km_saved) || 0), 0);
+  const money = routes.reduce((s, r) => s + ((r.park && r.park.diesel_saved) || 0), 0);
+  log(`parking at ${PARK === "far" ? "each route's far end" : parkPoint.name} — removes ` +
+      `${round1(km)} empty km/day, ₹${Math.round(money).toLocaleString("en-IN")}/day of diesel. ` +
+      `km and cost above are UNCHANGED: they stay on the depot-return basis the dashboard reconciles to.`);
+}
 const agg = (list) => {
   const rid = list.reduce((s, r) => s + r.riders, 0);
   const st = list.reduce((s, r) => s + r.cap, 0);
@@ -436,6 +498,16 @@ const payload = {
       : { basis: "full", standing: true, shared: false,
           note: "every bus charged 100% to this service, even when it also runs another" },
   integrity: { checks: checks.length, failed },
+  /* Where these buses stand between runs. `basis` is the one thing that must be read with the
+     saving: km and cost elsewhere in this file are still charged as if every bus drove home. */
+  parking: {
+    spec: PARK,
+    at: PARK === "depot" ? depot.name : PARK === "far" ? "each route's far end" : parkPoint.name,
+    empty_km_saved: round1(routes.reduce((s, r) => s + ((r.park && r.park.empty_km_saved) || 0), 0)),
+    diesel_saved: Math.round(routes.reduce((s, r) => s + ((r.park && r.park.diesel_saved) || 0), 0)),
+    dieselPerKm: OWN.dieselPerKm,
+    basis: "diesel over the empty leg home that this route no longer drives. `km` and `cost` in this file are NOT adjusted — they remain on the depot-return basis the dashboard reconciles to. Fleet-wide savings, including runs joined ACROSS services, come from build_bus_connections.mjs.",
+  },
   /* `depot` is [lat, lng] — the Fleet-plan map reads params.depot[0]/[1] to centre itself, so
      a plan without it renders "Map unavailable". max_ride/soft_ride feed the KPI explainers. */
   params: { demand: live.kpis.heads, stops: routes.reduce((s, r) => s + r.stops, 0),
@@ -447,7 +519,7 @@ const payload = {
   rental: agg(routes.filter((r) => r.type === "rent")),
   routes,
 };
-const out = `${OUT_DIR}/plan_${svc.id}.json`;
+const out = GROUP ? `${OUT_DIR}/plan_grp-${GROUP}-at-${AT_SHIFT || GROUP}.json` : `${OUT_DIR}/plan_${svc.id}.json`;
 fs.writeFileSync(out + ".tmp", JSON.stringify(payload, null, 1));
 fs.renameSync(out + ".tmp", out);
 log(`wrote ${out} — ${routes.length} routes, ${payload.overall.riders} riders, ₹${payload.overall.cost_head}/head`);

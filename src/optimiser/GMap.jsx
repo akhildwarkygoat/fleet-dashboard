@@ -43,6 +43,20 @@ function stopDot(color, headcount, sel) {
   });
 }
 
+/* A lettered pin — "S" where a bus begins its run, "E" where it ends and parks.
+   Deliberately a teardrop like the depot rather than a disc like a stop: these mark the two
+   ends of the bus's day, not two more places to pick riders up, and on a board where every
+   disc is a stop a third disc would read as one. Drawn above everything and outside the
+   cluster group, so they never fold into a count bubble and disappear at low zoom. */
+function letterPin(letter, color) {
+  const html =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="43" viewBox="0 0 46 58">` +
+    `<path d="M23 57 C12 41 2.5 33.5 2.5 21 A20.5 20.5 0 1 1 43.5 21 C43.5 33.5 34 41 23 57 Z" fill="${color}" stroke="#ffffff" stroke-width="3"/>` +
+    `<text x="23" y="29" text-anchor="middle" fill="#ffffff" font-family="Inter,system-ui,sans-serif" font-size="21" font-weight="800">${letter}</text>` +
+    `</svg>`;
+  return L.divIcon({ className: "gmap-endpin", html, iconSize: [34, 43], iconAnchor: [17, 43] });
+}
+
 /* The depot marker — a dark teardrop pin with a factory glyph. */
 function factoryPin() {
   const html =
@@ -68,9 +82,10 @@ const makeCluster = (primary, onPrimary) => (cluster) => {
   return L.divIcon({ html, className: "gmap-cluster", iconSize: [size, size] });
 };
 
-export default function GMap({ t, stops, routeColors, depot, polylines, selectedId, onSelect, dropPinMode, onDropPin, height = 460, scrollWheelZoom = false, autoFit = true }) {
+export default function GMap({ t, stops, routeColors, depot, polylines, pins, selectedId, onSelect, dropPinMode, onDropPin, height = 460, scrollWheelZoom = false, autoFit = true }) {
   const elRef = useRef(null), mapRef = useRef(null);
   const clusterRef = useRef(null), polyLayerRef = useRef(null), depotRef = useRef(null);
+  const pinsRef = useRef([]);             // the S/E end pins, kept outside the cluster group
   const markersRef = useRef({});          // render key -> { marker, color, headcount, selId }
                                           // (a mixed stop renders twice, so key !== stop id there)
   const selRef = useRef(selectedId);
@@ -274,6 +289,19 @@ export default function GMap({ t, stops, routeColors, depot, polylines, selected
         .bindTooltip(depot.name || "Factory", { direction: "top", offset: [0, -44] }).addTo(map);
     }
   }, [depot]);
+
+  /* Lettered end pins (S / E). Kept out of the cluster group on purpose: the two ends of a
+     bus's day must stay legible at every zoom, and a clustered pin vanishes into a bubble
+     exactly when you zoom out to see the whole route. */
+  useEffect(() => {
+    const map = mapRef.current; if (!map) return;
+    pinsRef.current.forEach((m) => m.remove());
+    pinsRef.current = (pins || [])
+      .filter((p) => p && p.lat != null && p.lng != null)
+      .map((p) => L.marker([p.lat, p.lng], { icon: letterPin(p.label, p.color || "#0f172a"), zIndexOffset: 1200 })
+        .bindTooltip(p.title || p.label, { direction: "top", offset: [0, -38] })
+        .addTo(map));
+  }, [pins]);
 
   useEffect(() => { if (elRef.current) elRef.current.style.cursor = dropPinMode ? "crosshair" : ""; }, [dropPinMode]);
 

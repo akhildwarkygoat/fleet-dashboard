@@ -11,7 +11,7 @@
  * default is everything.
  * ==========================================================================*/
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Bus, Search, AlertTriangle, Clock, Layers, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
+import { Bus, Search, AlertTriangle, Clock, Layers, ChevronRight, ZoomIn, ZoomOut, ParkingSquare } from "lucide-react";
 import { Card, Tile, Empty } from "./ui.jsx";
 import { SERVICES, OVERALL, fmtClock, erpStatsFor, serviceNeed, subShiftsOf, ROTATION_SLOTS, weekStart } from "./services.js";
 import { ROTA_WEEK } from "../erp.js";
@@ -115,22 +115,72 @@ export function ServiceBoard({ t, onPick, shifts, shiftDate }) {
 const AX_START = 4 * 60, AX_END = 30 * 60;             // 04:00 → 06:00 next day (covers the full-night slot)
 const pct = (min) => ((min - AX_START) / (AX_END - AX_START)) * 100;
 
+/* Minutes-from-midnight onto the 04:00→06:00 axis, at or after `after`. A full-night run
+   ending at 06:00 belongs at 1800 on this axis, not at 360 where it would draw before the
+   22:00 run that produced it. */
+const axisAt = (m, after = AX_START) => {
+  let v = ((m % 1440) + 1440) % 1440;
+  while (v < after) v += 1440;
+  return v;
+};
+/* Clip a span to the axis; null when it falls entirely outside the day being drawn. */
+const clip = (s, e) => {
+  const a = Math.max(s, AX_START), b = Math.min(e, AX_END);
+  return b > a ? [a, b] : null;
+};
+
 /* One run = a bus doing one service's pickup: it must be AT the gate when the
    shift starts, and its first rider boards `ride` minutes before that. */
 function runsFromPlan(plan, svc) {
   if (!plan || !Array.isArray(plan.routes) || svc.gate == null) return [];
   return plan.routes.map((r) => ({
-    veh: r.name, type: r.type, svc,
+    veh: r.name, type: r.type, svc, dir: "pickup",
     start: svc.gate - (r.ride || 0), end: svc.gate,
     km: r.km, ride: r.ride, riders: r.riders, stops: r.stops,
   }));
 }
 
+/* The drop runs and the layovers between them, from the offline connection model. A bus
+   standing in a village is the whole point of that model and there is nowhere else on this
+   board it could be seen — the clock previously drew only the morning half of each day, so
+   a bus that finished at 14:50 and restarted at 21:10 looked idle at the factory. */
+function layoverRows(conn, on) {
+  if (!conn || !Array.isArray(conn.links)) return new Map();
+  const byVeh = new Map();
+  for (const l of conn.links) {
+    if (l.atDepot || !l.worth) continue;
+    if (!on.has(l.a.svcId) || !on.has(l.b.svcId)) continue;
+    const s = axisAt(l.a.end);
+    const end = s + l.gap;
+    const seg = clip(s, end);
+    if (!seg) continue;
+    if (!byVeh.has(l.veh)) byVeh.set(l.veh, []);
+    /* An overnight layover runs past 06:00 the next morning, which is where this axis stops.
+       Drawing a P at the cut would put the parking marker at a time the bus is still parked, so
+       the clipped end is flagged and the marker is left off — the line simply runs to the edge. */
+    byVeh.get(l.veh).push({ ...l, s: seg[0], e: seg[1], clippedEnd: end > AX_END, clippedStart: s < AX_START });
+  }
+  return byVeh;
+}
+function dropRuns(conn, on) {
+  if (!conn || !Array.isArray(conn.runs)) return [];
+  return conn.runs
+    .filter((r) => r.dir === "drop" && on.has(r.svcId))
+    .map((r) => {
+      const s = axisAt(r.start);
+      const seg = clip(s, s + Math.max(1, r.ride));
+      return seg ? { ...r, s: seg[0], e: seg[1] } : null;
+    })
+    .filter(Boolean);
+}
+
 export function TimingsView({ t, shifts }) {
   const [plans, setPlans] = useState({});               // service id -> plan json
+  const [conn, setConn] = useState(null);               // bus_connections.json, if built
   const [on, setOn] = useState(() => new Set(SERVICES.map((s) => s.id)));
   const [q, setQ] = useState("");
   const [clashOnly, setClashOnly] = useState(false);
+  const [showLayovers, setShowLayovers] = useState(true);
 
   useEffect(() => {
     SERVICES.filter((s) => s.planUrl).forEach((s) => {
@@ -138,9 +188,17 @@ export function TimingsView({ t, shifts }) {
         .then((p) => p && setPlans((prev) => ({ ...prev, [s.id]: p })))
         .catch(() => {});
     });
+    fetch("/bus_connections.json").then((r) => (r.ok ? r.json() : null)).then(setConn).catch(() => {});
   }, []);
 
   const allRuns = useMemo(() => SERVICES.flatMap((s) => runsFromPlan(plans[s.id], s)), [plans]);
+  const layovers = useMemo(() => (showLayovers ? layoverRows(conn, on) : new Map()), [conn, on, showLayovers]);
+  const drops = useMemo(() => (showLayovers ? dropRuns(conn, on) : []), [conn, on, showLayovers]);
+  const dropsByVeh = useMemo(() => {
+    const m = new Map();
+    for (const d of drops) { if (!m.has(d.veh)) m.set(d.veh, []); m.get(d.veh).push(d); }
+    return m;
+  }, [drops]);
 
   const toggleSvc = (id) => setOn((prev) => {
     const next = new Set(prev);
@@ -148,10 +206,32 @@ export function TimingsView({ t, shifts }) {
     return next;
   });
 
+  /* Registrations are written a dozen ways (`tn57 cl`, `TN57-CL3434`), so the vehicle side of
+     the search strips everything that is not a letter or digit on both sides — the same rule
+     the Stops board uses. Service names and park places are ordinary text and match as typed. */
+  const parkedAt = useMemo(() => {
+    const m = new Map();
+    for (const l of (conn && conn.links) || []) {
+      if (!l.worth || l.atDepot || !l.park) continue;
+      if (!m.has(l.veh)) m.set(l.veh, new Set());
+      m.get(l.veh).add(String(l.park.name || "").toLowerCase());
+    }
+    return m;
+  }, [conn]);
+
   const visible = useMemo(() => {
     const ql = q.trim().toLowerCase();
-    return allRuns.filter((r) => on.has(r.svc.id) && (!ql || r.veh.toLowerCase().includes(ql)));
-  }, [allRuns, on, q]);
+    if (!ql) return allRuns.filter((r) => on.has(r.svc.id));
+    const bare = ql.replace(/[^a-z0-9]/g, "");
+    return allRuns.filter((r) => {
+      if (!on.has(r.svc.id)) return false;
+      const veh = r.veh.toLowerCase();
+      if (veh.includes(ql) || (bare && veh.replace(/[^a-z0-9]/g, "").includes(bare))) return true;
+      if (r.svc.name.toLowerCase().includes(ql)) return true;
+      const places = parkedAt.get(r.veh);
+      return !!places && [...places].some((p) => p.includes(ql));
+    });
+  }, [allRuns, on, q, parkedAt]);
 
   // one row per bus; runs sorted by start so overlaps read left→right
   const rows = useMemo(() => {
@@ -238,14 +318,20 @@ export function TimingsView({ t, shifts }) {
       </div>
 
       <Card t={t} title="All buses, one day"
-        hint="One row per bus, one block per pickup run — every service on the same clock, so a double-booked bus shows up as overlapping blocks. A run stretches from the first rider's board time to the factory gate.">
-        <div className="flex flex-wrap items-center gap-2 mb-4">
-          <div className="relative" style={{ minWidth: 190 }}>
-            <Search size={14} style={{ position: "absolute", left: 10, top: 9, color: t.muted }} />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter vehicle…" aria-label="Filter by vehicle registration"
-              className="w-full rounded-lg pl-8 pr-3 py-1.5 text-sm outline-none"
+        hint="One row per bus, one block per run — every service on the same clock, so a double-booked bus shows up as overlapping blocks. S marks where a bus starts a run, P where it parks when the run is done."
+        right={
+          /* One search, in the header. It used to sit in the toolbar below and match the
+             registration only, which meant "who is parked at Dindigul?" — the question this
+             board now answers — had no way to be asked. */
+          <div className="relative" style={{ minWidth: 230 }}>
+            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: t.muted }} />
+            <input value={q} onChange={(e) => setQ(e.target.value)}
+              placeholder="Bus, service or where it parks…" aria-label="Search buses, services and park places"
+              className="w-full rounded-lg pl-8 pr-3 py-2 text-sm outline-none"
               style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }} />
           </div>
+        }>
+        <div className="flex flex-wrap items-center gap-2 mb-4">
           {SERVICES.map((s) => {
             const isOn = on.has(s.id);
             const has = allRuns.some((r) => r.svc.id === s.id);
@@ -259,6 +345,15 @@ export function TimingsView({ t, shifts }) {
               </button>
             );
           })}
+          {conn && (
+            <button type="button" onClick={() => setShowLayovers(!showLayovers)} aria-pressed={showLayovers}
+              title="Show the drop runs and the time each bus spends parked out between them"
+              className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition"
+              style={{ background: showLayovers ? t.goodSoft : "transparent", border: "1px solid " + (showLayovers ? t.good : t.border),
+                       color: showLayovers ? t.good : t.muted, cursor: "pointer" }}>
+              <ParkingSquare size={12} /> Drops &amp; layovers
+            </button>
+          )}
           <button type="button" onClick={() => setClashOnly(!clashOnly)} aria-pressed={clashOnly}
             className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold ml-auto transition"
             style={{ background: clashOnly ? t.poorSoft : "transparent", border: "1px solid " + (clashOnly ? t.poor : t.border),
@@ -312,7 +407,51 @@ export function TimingsView({ t, shifts }) {
                       style={{ color: row.clashes ? t.poor : t.muted, position: "sticky", left: 0, zIndex: 4, background: t.surface }}>
                       {row.clashes ? <AlertTriangle size={11} /> : <Bus size={11} style={{ opacity: 0.5 }} />}{row.veh}
                     </div>
-                    <div className="relative" style={{ height: 30, borderBottom: "1px solid " + t.border }}>
+                    <div className="relative" style={{ height: 34, borderBottom: "1px solid " + t.border }}>
+                      {/* A layover reads S———P: the bus Stops where its run finished and Parks
+                          there until the next one. A plain coloured rail said "something is
+                          happening here" without saying what, and on 97 rows that is noise. The
+                          two ends are what carry the meaning, so they are what is drawn. */}
+                      {(layovers.get(row.veh) || []).map((l, i) => {
+                        const c = l.kind === "overnight" ? t.watch : t.good;
+                        const cap = (letter, side) => (
+                          <span key={side} className="absolute flex items-center justify-center"
+                            style={{ [side]: -6, top: -4.5, width: 12, height: 12, borderRadius: 3,
+                                     background: c, color: "#fff", fontSize: 8, fontWeight: 800,
+                                     lineHeight: 1, letterSpacing: 0 }}>{letter}</span>
+                        );
+                        return (
+                          <div key={"lay" + i}
+                            title={`${row.veh} · S → P\nStops at ${l.a.to.name || "its last stop"} ${fmtClock(l.a.end)} after the ${l.a.label}\n` +
+                                   `Parks at ${l.park.name} for ${Math.floor(l.gap / 60)}h${l.gap % 60 ? String(l.gap % 60).padStart(2, "0") : ""}\n` +
+                                   `Leaves ${fmtClock(l.b.start)} on the ${l.b.label}` +
+                                   (l.clippedEnd ? " — past the end of this chart" : "") + "\n" +
+                                   `Saves ${l.saveKm} km of empty running (₹${l.saveRs}/day)${l.assumed ? "\n(depends on an assumed release time)" : ""}`}
+                            className="absolute"
+                            style={{ top: 26, height: 3, left: pct(l.s) + "%",
+                                     width: Math.max(pct(l.e) - pct(l.s), 0.5) + "%",
+                                     background: c, opacity: 0.9, borderRadius: 2 }}>
+                            {!l.clippedStart && cap("S", "left")}
+                            {!l.clippedEnd && cap("P", "right")}
+                          </div>
+                        );
+                      })}
+                      {/* Drop runs — the second half of the bus's day, which this board never drew. */}
+                      {(dropsByVeh.get(row.veh) || []).map((d, i) => {
+                        const c = (SERVICES.find((s) => s.id === d.svcId) || {}).color || t.faint;
+                        return (
+                          <div key={"drop" + i}
+                            title={`${row.veh} · ${d.label}\n${fmtClock(d.start)}–${fmtClock(d.end)} · ${d.stops} stops · ${d.riders} riders${d.assumedOff ? "\n(release time assumed — the ERP carries no `off` for this service)" : ""}`}
+                            className="absolute rounded-md"
+                            style={{
+                              top: 6, height: 14,
+                              left: pct(d.s) + "%", width: Math.max(pct(d.e) - pct(d.s), 0.6) + "%",
+                              // hollow + dashed when the timing is assumed rather than measured
+                              background: c + (d.assumedOff ? "18" : "33"),
+                              border: (d.assumedOff ? "1px dashed " : "1px solid ") + c,
+                            }} />
+                        );
+                      })}
                       {row.runs.map((r, i) => (
                         <div key={i}
                           title={`${row.veh} · ${r.svc.name}\n${fmtClock(r.start)}–${fmtClock(r.end)} · ${r.km} km · ${r.stops} stops · ${r.riders} riders${r.clash ? "\n⚠ overlaps the previous run" : ""}`}
@@ -344,7 +483,23 @@ export function TimingsView({ t, shifts }) {
               {sl.name} {fmtClock(sl.from)}–{fmtClock(sl.to % 1440)}
             </span>
           ))}
-          <span style={{ color: t.faint }}>Hatched = the bus is double-booked · scroll on the chart (or the +/− buttons) to stretch the clock · the crosshair reads the exact time</span>
+          {conn && showLayovers && (
+            <>
+              <span className="inline-flex items-center gap-1.5">
+                <b style={{ color: t.good }}>S</b>—<b style={{ color: t.good }}>P</b>
+                <span>Stops, then Parks there between shifts</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <b style={{ color: t.watch }}>S</b>—<b style={{ color: t.watch }}>P</b>
+                <span>…and stands out overnight</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <i className="inline-block w-3 h-2.5 rounded-sm" style={{ border: "1px dashed " + t.muted }} />
+                Drop run on an assumed release time
+              </span>
+            </>
+          )}
+          <span style={{ color: t.faint }}>Solid blocks are pickup runs, thin blocks the drops · hatched = the bus is double-booked · scroll on the chart (or the +/− buttons) to stretch the clock · the crosshair reads the exact time</span>
         </div>
       </Card>
 

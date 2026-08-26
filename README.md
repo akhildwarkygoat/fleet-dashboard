@@ -88,7 +88,7 @@ Without a key the app falls back to the cached matrix (or straight-line estimate
 | Tab | What it shows |
 |---|---|
 | **Live** | Operational overview |
-| **Optimiser** | *Stops* (view/edit the stop network), *Fleet plan* (the OR-Tools plan — Combined / Owned / Rental toggle + per-bus list + map), *Planner* (open a saved plan or build one on the map) |
+| **Optimiser** | *Stops* (view/edit the stop network), *Fleet plan* (the OR-Tools plan — Combined / Owned / Rental toggle + per-bus list + map), *Planner* (open a saved plan or build one on the map; set where each bus parks), *Timings* (every bus on one 24-hour clock, with its layovers) |
 | **Bus-wise** | Per-bus breakdown |
 | **Compare** | Compare plans / scenarios |
 | **Equations** | The cost & demand formulas, editable |
@@ -109,6 +109,10 @@ Without a key the app falls back to the cached matrix (or straight-line estimate
 | `src/optimiser/google.js` | Google Maps loader + road matrix/route (no key in source) |
 | `src/optimiser/GMap.jsx` | Map with marker clustering |
 | `src/optimiser/PlanGallery.jsx` / `NewPlanBoard.jsx` | Saved-plan gallery + on-map plan editor |
+| `src/optimiser/layover.js` | Park points, the run timeline, and the link/saving arithmetic (pure — runs in Node and the browser) |
+| `src/optimiser/parkPrefs.js` | Which park each service/bus is assigned, in `localStorage`, with export/import |
+| `src/optimiser/ParkPicker.jsx` | The place chooser used by the Planner's per-bus `Parks: …` button |
+| `build_bus_connections.mjs` | Builds `public/bus_connections.json` + `park_points.json` from the finalised plans |
 | `optimize.py` | Global OR-Tools fleet optimiser (owned + rental, packs buses, farthest-first) |
 | `zones_report.py` | Per-zone breakdown of the global plan |
 | `public/solver_result.json` | The plan the Fleet-plan tab fetches at runtime |
@@ -163,6 +167,87 @@ afterwards with the formula above.
 
 ---
 
+## Parking and connecting runs
+
+Every plan here is built one service at a time, and each one assumes its buses start and end
+at the factory. Across the fleet that is not true. A bus finishing the Rotational Day drop in
+a village at 14:50 is wanted back in the same village at 21:00 for the Full-night pickup — so
+it can **stay there** instead of driving home empty and driving out again.
+
+Three ideas, kept separate:
+
+| | |
+|---|---|
+| **Park point** | Where a bus stands between runs. Candidates are the **road-matrix nodes** — the only places with measured Google driving distances, so a choice can be priced rather than estimated. |
+| **Run** | One leg of one service. Each service produces **two** per bus per day: the *pickup* that must reach the gate, and the *drop* that leaves it. Only a drop can strand a bus somewhere worth waiting. |
+| **Link** | Two runs the same bus does back-to-back, waiting at a park point in between. |
+
+```bash
+node build_bus_connections.mjs
+```
+
+Reads every finalised plan, rebuilds the fleet's day as a run timeline, and writes
+`public/bus_connections.json` (what the Parking board draws) and `public/park_points.json`
+(the picker's catalogue). Needs no ERP call and no Google quota — only the cached matrix.
+
+```bash
+node build_bus_connections.mjs --off s9=1080 --off s7=930   # real release times, in minutes
+node build_bus_connections.mjs --min-save 10 --park-radius 5 --max-layover 600
+```
+
+### Where the choice is made
+
+**Per bus, in the Planner.** Pick a bus and its card gains two small chips — **S** where the
+run starts, **P** where it ends and the bus waits. Each opens the same picker:
+
+| Choice | Meaning |
+|---|---|
+| **Factory** / **Where it ends** | the default for that end — today's behaviour, and the zero line |
+| **Pick on map** | click any stop; it becomes that end. The click does *not* add or remove it from the route |
+| a named place | any road-matrix node, for when the village has nowhere a bus can stand |
+
+The map pins both ends of the selected bus's run. They swap with the Evening/Morning toggle,
+because the same two points are the start and the end depending on which way the route is read.
+Choices are stored per service *and* per bus, so one registration can start and park differently
+on its Day run and its night one.
+
+**The numbers follow the pins.** `scorePlan` measures each run between its own two ends, so
+moving either one immediately re-costs that bus — distance, cost/head and, for the start, ride
+time. Leaving both alone reproduces the old figures to the last decimal; `layover.test.js`
+asserts that, along with the fact that moving the *park* must not change the ride (a passenger's
+trip ends at the last rider, not at the depot the bus goes to afterwards).
+
+The plan's road matrix only covers the depot and that plan's stops, so those — and any stop you
+click — are measured. A place picked from the wider catalogue that isn't one of them falls back
+to a straight-line estimate, and the card says so rather than passing it off as measured.
+
+The **Timings** clock then draws each layover as `S———P` on the bus's row — green when the bus
+waits between shifts, amber when it stands out overnight — and its search matches a bus, a
+service, or the village a bus parks in.
+
+**What is saved, and what is not.** A link saves **diesel only**, over kilometres not driven.
+Loan, driver and maintenance are unchanged — the bus and the driver exist whether it waits in
+a village or at the factory — and those are `fleetCost.js`'s question. The baseline is what
+the plans assume today, so pinning every bus to *Factory* makes the total come out at exactly
+₹0. That identity is asserted in `layover.test.js`.
+
+**Gate times are known; release times are not.** The ERP carries `gate` for every service but
+`off` only for the three Rotational slots, whose windows tile the day. The other three fall
+back to an assumed 8-hour shift and **every figure that depended on it is flagged `assumed`**
+— on the clock a drop run drawn on an assumed release time is dashed rather than solid. Set
+the real ones in `services.js` or pass `--off <id>=<minutes>` when rebuilding.
+
+A layover is an operational commitment, not just an arithmetic one — the driver has to be
+relieved or wait, and the village needs somewhere a bus can safely stand. So the board ranks
+and explains candidates; it never applies one. Overnight stand-outs are counted separately
+from between-shift waits for exactly that reason.
+
+`build_service_plans.mjs --park far` records the decision per route in the plan file. It
+deliberately does **not** adjust that file's `km` or `cost`: those reconcile to the dashboard
+and to `fleetCost.js`, and the default (`--park depot`) reproduces existing plans byte for byte.
+
+---
+
 ## Model integrity
 
 Most "the optimiser is wrong" moments are a bad **input**, not a math bug —
@@ -206,5 +291,7 @@ its key (`opt-stops-*`, `opt-fleet-*`, `opt-depot-*`) or clear it in the console
 ## Tests
 
 ```bash
-npm test          # engine invariant checks
+npm test                                # engine invariant checks
+node src/optimiser/layover.test.js      # parking / connection arithmetic
+node src/optimiser/fleetCost.test.js    # shared-bus costing invariant
 ```
