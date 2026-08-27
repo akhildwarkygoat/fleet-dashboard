@@ -22,9 +22,9 @@ import { MotionPathPlugin } from "gsap/MotionPathPlugin";
 import { SpotlightNav } from "./components/ui/spotlight-button.jsx";
 import {
   Card, Btn, Pill, Tile, Field, TextInput, SelectInput, Switch, Segmented,
-  Empty, Modal, Reveal, makeTooltip,
+  Empty, Modal, Reveal, makeTooltip, withAlpha,
 } from "./ui/kit.jsx";
-import { prefersReduced, canEntrance, fxLift, fxDrop, fxPress } from "./ui/motion.js";
+import { prefersReduced, canEntrance, fxLift, fxDrop, fxPress, springTween, FX_CLEAR } from "./ui/motion.js";
 
 /* ERP shift strings that one service alone no longer identifies — "ROTATIONAL SHIFT" is
    shared by the three slots, which are told apart by the rider's punch slot. Derived from
@@ -474,11 +474,11 @@ function UnitDropdown({ t, value, onChange }) {
         style={{ background: t.surface, border: "1px solid " + (open ? t.primary : t.border), color: t.text, boxShadow: open ? `0 0 0 3px ${t.primarySoft}` : "none", transition: "border-color .18s ease, box-shadow .18s ease" }}>
         <span className="w-2.5 h-2.5 rounded-sm" style={{ background: cur[2], transition: "background .2s ease" }} />
         <span>{cur[1]}</span>
-        <ChevronDown size={16} className="ml-auto" style={{ color: t.muted, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform .22s cubic-bezier(.4,0,.2,1)" }} />
+        <ChevronDown size={16} className="ml-auto" style={{ color: t.muted, transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform var(--dur-spring-rotate, .22s) var(--ease-spring-rotate, cubic-bezier(.4,0,.2,1))" }} />
       </button>
       <div className="absolute right-0 mt-2 w-full rounded-xl p-1 z-40"
         style={{ background: t.surface, border: "1px solid " + t.border, boxShadow: "0 14px 34px rgba(0,0,0,.28)", transformOrigin: "top right",
-          transition: "opacity .2s ease, transform .2s cubic-bezier(.4,0,.2,1)", opacity: open ? 1 : 0,
+          transition: "opacity .2s ease, transform var(--dur-spring-snap, .2s) var(--ease-spring-snap, cubic-bezier(.4,0,.2,1))", opacity: open ? 1 : 0,
           transform: open ? "translateY(0) scale(1)" : "translateY(-8px) scale(.96)", pointerEvents: open ? "auto" : "none" }}>
         {opts.map(([val, label, color]) => {
           const on = val === value;
@@ -2419,13 +2419,13 @@ export default function App() {
   const mainRef = useRef(null);
   const visitedTabs = useRef(new Set()); // full entrance runs once per tab; revisits get a quick fade
   const erpDotRef = useRef(null);
-  const FX_CLEAR = "transform,opacity,visibility";
   useGSAP(() => { // one-time header entrance
     if (!canEntrance()) return;
-    gsap.timeline({ defaults: { ease: "power2.out" } })
-      .from('[data-fx="logo"]', { scale: 0.5, rotation: -12, autoAlpha: 0, duration: 0.45, ease: "back.out(1.7)", clearProps: FX_CLEAR })
-      .from('[data-fx="brand"]', { x: -10, autoAlpha: 0, duration: 0.35, clearProps: FX_CLEAR }, "-=0.25")
-      .from('[data-fx="tab"]', { y: -8, autoAlpha: 0, duration: 0.3, stagger: 0.05, clearProps: FX_CLEAR }, "-=0.2");
+    // the mark rotates in on the rotation spring; text and tabs ride the move spring
+    gsap.timeline({ defaults: springTween("move") })
+      .from('[data-fx="logo"]', { scale: 0.5, rotation: -12, autoAlpha: 0, ...springTween("rotate"), clearProps: FX_CLEAR })
+      .from('[data-fx="brand"]', { x: -10, autoAlpha: 0, clearProps: FX_CLEAR }, "-=0.35")
+      .from('[data-fx="tab"]', { y: -8, autoAlpha: 0, stagger: 0.05, clearProps: FX_CLEAR }, "-=0.35");
   }, { scope: headerRef });
   useGSAP(() => { // per-tab content entrance: title → KPI tiles → cards → bus grid
     if (!loaded) return;
@@ -2438,14 +2438,14 @@ export default function App() {
       // returning to an already-seen tab: keep flipping snappy — quick fade of headers/tiles only,
       // and never re-stagger the (potentially dozens of) bus tiles.
       gsap.from('[data-fx="page-title"], [data-fx="tile"], [data-fx="card"]',
-        { autoAlpha: 0, y: 6, duration: 0.22, ease: "power2.out", stagger: 0.02, clearProps: FX_CLEAR });
+        { autoAlpha: 0, y: 6, ...springTween("snap"), stagger: 0.02, clearProps: FX_CLEAR });
       return;
     }
-    gsap.timeline({ defaults: { ease: "power2.out" } })
-      .from('[data-fx="page-title"]', { y: 10, autoAlpha: 0, duration: 0.35, clearProps: FX_CLEAR })
-      .from('[data-fx="tile"]', { y: 18, autoAlpha: 0, duration: 0.45, stagger: { amount: 0.25 }, clearProps: FX_CLEAR }, "-=0.2")
-      .from('[data-fx="card"]', { y: 22, autoAlpha: 0, duration: 0.5, stagger: { amount: 0.3 }, clearProps: FX_CLEAR }, "-=0.3")
-      .from('[data-fx="swatch"]', { y: 14, scale: 0.9, autoAlpha: 0, duration: 0.4, ease: "back.out(1.6)", stagger: 0.06, clearProps: FX_CLEAR }, "-=0.35")
+    gsap.timeline({ defaults: springTween("move") })
+      .from('[data-fx="page-title"]', { y: 10, autoAlpha: 0, clearProps: FX_CLEAR })
+      .from('[data-fx="tile"]', { y: 18, autoAlpha: 0, stagger: { amount: 0.25 }, clearProps: FX_CLEAR }, "-=0.45")
+      .from('[data-fx="card"]', { y: 22, autoAlpha: 0, stagger: { amount: 0.3 }, clearProps: FX_CLEAR }, "-=0.5")
+      .from('[data-fx="swatch"]', { y: 14, scale: 0.9, autoAlpha: 0, ...springTween("drawer"), stagger: 0.06, clearProps: FX_CLEAR }, "-=0.5")
       .from('[data-fx="bus"]', { scale: 0.92, autoAlpha: 0, duration: 0.35, stagger: { amount: 0.4, grid: "auto", from: "start" }, clearProps: FX_CLEAR }, "-=0.35");
   }, { dependencies: [tab, loaded], scope: mainRef });
 
@@ -2474,6 +2474,19 @@ export default function App() {
     const id = setTimeout(() => el.classList.remove("theme-switching"), 480);
     return () => clearTimeout(id);
   }, [themeName]);
+
+  /* Scroll edge effect: the header is a translucent material that content passes
+     under, so its divider is only drawn while something is actually beneath it.
+     A permanent hairline separates the chrome from a page that isn't there yet. */
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    let frame = 0;
+    const read = () => { frame = 0; setScrolled(window.scrollY > 4); };
+    const onScroll = () => { if (!frame) frame = requestAnimationFrame(read); };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    read();
+    return () => { window.removeEventListener("scroll", onScroll); if (frame) cancelAnimationFrame(frame); };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -2734,8 +2747,16 @@ export default function App() {
   const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", costs: "Cost report", compare: "Compare", optimiser: "", settings: "Settings" };
 
   return (
-    <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "'Inter Variable', Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)" }}>
-      <div ref={headerRef} className="sticky top-0 z-20" style={{ background: t.surface, borderBottom: "1px solid " + t.border }}>
+    <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "'Inter Variable', Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)",
+      /* the floating-chrome material, derived from the active theme's surface so it
+         follows the theme rather than being hard-coded three times */
+      /* 0.80, not 0.65: a large surface should read as a thicker material than a
+         small chip, and the timeline chips scrolling under this one were legible
+         enough through a thinner mix to compete with the nav labels. */
+      "--chrome-bg": withAlpha(t.surface, 0.8), "--chrome-solid": t.surface,
+      "--chrome-sheen": t.dark ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.7)",
+      "--chrome-edge": t.border, "--chrome-shadow": t.dark ? "rgba(0,0,0,.35)" : "rgba(15,23,42,.07)" }}>
+      <div ref={headerRef} className="app-chrome sticky top-0 z-20" data-scrolled={scrolled ? "true" : undefined}>
         <div className="w-full px-6 flex items-center gap-4">
           <div className="flex items-center gap-3 py-2 min-w-0 shrink-0 sm:flex-1 sm:overflow-hidden">
             <div data-fx="logo" className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: t.primary }}><Bus size={20} color={t.onPrimary || "#fff"} /></div>
@@ -2766,7 +2787,7 @@ export default function App() {
 
       <div ref={mainRef} className="w-full px-6 py-6">
         {titleMap[tab] && <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-          <h2 data-fx="page-title" className="text-2xl font-bold tracking-tight">{titleMap[tab]}</h2>
+          <h2 data-fx="page-title" className="text-2xl font-bold type-display">{titleMap[tab]}</h2>
           {["compare"].includes(tab) && <UnitDropdown t={t} value={unit} onChange={setUnit} />}
         </div>}
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (

@@ -36,8 +36,8 @@ A dense operations console read at a desk, not a marketing page. Concretely:
   always means something.
 - **Calm surfaces, loud status.** Neutral greys carry the layout; `good`/`watch`/`poor` are
   the only saturated colours in the chrome.
-- **Motion confirms, never announces.** Entrances are 0.22–0.5s, transform+opacity only.
-  Returning to a seen tab uses the short 0.22s path, not the full stagger.
+- **Motion confirms, never announces.** Everything moves on a spring, transform+opacity only.
+  Returning to a seen tab uses the short `snap` path, not the full stagger.
 - **Numbers are typographic objects.** Every figure is `tabular-nums` so columns of digits
   line up and don't jitter while `CountUp` tweens them.
 
@@ -74,6 +74,35 @@ carry 12–14px white text; `primary` (`#2186eb`) reaches only 3.7:1 there and f
 `*Soft` variants (`primarySoft`, `goodSoft`, `watchSoft`, `poorSoft`) are the translucent
 tint used behind pills, so the pill picks up whatever surface is beneath it.
 
+### Materials & depth
+
+Floating chrome is a **material**, not a strip of background colour: content passes *under*
+it, so the page reads as one continuous surface with a layer above it. The header is the only
+material surface in the app.
+
+| Token | Role | Value |
+| --- | --- | --- |
+| `--chrome-bg` | the material itself | `t.surface` at **0.80** alpha |
+| `--chrome-solid` | opaque fallback | `t.surface` |
+| `--chrome-sheen` | light catching the top lip | white at `.06` dark / `.7` light |
+| `--chrome-edge` | scroll-edge divider | `t.border` |
+| `--chrome-shadow` | separation once content is beneath | black `.35` dark / slate `.07` light |
+
+Blur is `blur(20px) saturate(180%)`. Alpha is 0.80 rather than the ~0.65 that reads as
+"obviously glass": a **larger surface should read as a thicker material**, and at a thinner
+mix the coloured timeline chips scrolling underneath competed with the nav labels.
+
+**Scroll edge effect, not a permanent hairline.** The divider under the header is transparent
+at rest and fades in only while content is actually passing beneath it (`data-scrolled` on
+`.app-chrome`, driven by an rAF-throttled passive scroll listener). A hairline that is always
+drawn separates the chrome from a page that isn't there yet.
+
+**Dim to focus.** A blocking task pairs its surface with a scrim (`.fx-scrim`,
+`blur(12px) saturate(120%)`) that pushes the page back. The blur radius is *fixed* and the
+layer is composited in from zero opacity, so the material appears to arrive without
+re-blurring the whole viewport at a new radius every frame — which is the expensive way to
+do it and would jank on the floor machines.
+
 ### Typography
 
 Single family: **Inter Variable**, self-hosted from `public/fonts` (see the comment at the
@@ -81,10 +110,15 @@ top of [src/index.css](../src/index.css) — the factory-floor launcher may have
 so the font must not need installing). Stack:
 `'Inter Variable', Inter, system-ui, sans-serif`.
 
+**Tracking is size-specific — one `letter-spacing` for every size is wrong somewhere.** Text
+reads too loose as it grows, so large text tightens; small and uppercase text needs the extra
+air to stay legible. Two helper classes carry this: `.type-display` (−0.025em, leading 1.1)
+and `.type-metric` (−0.02em, leading 1.05, tabular figures).
+
 | Use | Spec | Tailwind |
 | --- | --- | --- |
-| Page title | 30px / bold | `text-3xl font-bold` |
-| Tile value | 30px / bold / tabular | `text-3xl font-bold tabular-nums` |
+| Page title | 24px / bold / −0.025em | `text-2xl font-bold type-display` |
+| Tile value | 30px / bold / tabular / −0.02em | `text-3xl font-bold tabular-nums type-metric` |
 | Card title | 14px / semibold / uppercase / wide | `font-semibold tracking-wide uppercase text-sm` |
 | Tile label | 12px / uppercase / widest | `text-xs uppercase tracking-widest` |
 | Body + controls | 14px | `text-sm` |
@@ -115,22 +149,80 @@ so the font must not need installing). Stack:
 - Grid gap `gap-4`; section rhythm `mb-5`.
 - Borders are always exactly `1px solid t.border`.
 
-## 4. Motion
+## 4. Motion — springs, not curves
 
-Defined at [src/Dashboard.jsx:39](../src/Dashboard.jsx:39). GSAP, transform+opacity only.
+Defined in [src/ui/motion.js](../src/ui/motion.js). GSAP, transform + opacity only.
+
+Every easing in the app is a **real spring**, sampled from the analytic step response of a
+second-order system — not a hand-picked bezier. The reason is Apple's (WWDC 2018, *Designing
+Fluid Interfaces*): a fixed-duration curve has already decided how it will end, so it cannot
+respond to new input. A spring has no fixed duration — its settle time falls out of the
+physics, and a new target just changes where it is heading. Anything a user can touch
+should move on one.
+
+Two designer-facing parameters, not the physics triplet:
+
+- **damping** — `1.0` is critically damped and settles with no overshoot; `< 1.0` overshoots.
+- **response** — how quickly it reaches the target, in seconds. *Not* a duration.
+
+| Spring | damping | response | settle | overshoot | Used for |
+| --- | --- | --- | --- | --- | --- |
+| `move` | `1.0` | `0.4` | 0.592s | 0% | The default. Repositioning, page entrances, hover lift. |
+| `rotate` | `0.8` | `0.4` | 0.542s | 1.52% | Rotation, button press, the logo mark. |
+| `drawer` | `0.8` | `0.3` | 0.408s | 1.52% | Sheets, modals, popovers, `Reveal`, segmented thumb. |
+| `snap` | `1.0` | `0.28` | 0.412s | 0% | Small frequent changes; reversible transitions. |
+
+Overshoot is verified against the closed form `e^(−πζ/√(1−ζ²))` — `rotate` and `drawer`
+hit 1.52% to two decimal places.
+
+> **Rule:** add bounce only when the gesture itself carried momentum. Overshoot on a menu
+> that merely faded in feels wrong; on something flicked or pressed it feels right. That is
+> why `move` — the default — is critically damped, and why reversible transitions use `snap`:
+> an overshooting curve run backwards dips *past* the closed state on the way out.
+
+**CSS gets the same curves.** `springTween(name)` spreads into a GSAP tween; the identical
+springs are also sampled into CSS `linear()` easings and published as custom properties on
+the root element at module load:
+
+```css
+transition: transform var(--dur-spring-drawer) var(--ease-spring-drawer);
+```
+
+`--ease-spring-{move,rotate,drawer,snap}` and `--dur-spring-*`. Browsers without `linear()`
+discard the declaration and fall back to the preceding one, so always write a plain fallback
+first. This is what keeps CSS transitions and GSAP tweens one motion vocabulary rather than
+two that merely resemble each other.
 
 | Name | Trigger | Spec |
 | --- | --- | --- |
-| `fxPress` | `onMouseDown` of any button | scale 0.96 → 1, 0.4s `elastic.out(1,0.55)` |
-| `fxLift` / `fxDrop` | hover enter/leave of a selectable card | y −3 / scale 1.02, 0.22s |
-| Page entrance | tab change, first visit | title → tiles → cards → swatches → bus grid |
-| Page re-entrance | tab change, seen before | 0.22s fade of title/tiles/cards only |
-| Modal | mount | overlay fade 0.25s; card y24 + scale 0.96, `back.out(1.6)` |
+| `fxPress` | `onMouseDown` of any button | scale 0.96 → 1 on `rotate` |
+| `fxLift` / `fxDrop` | hover enter/leave of a selectable card | y −3 / scale 1.02 on `move` |
+| CSS `:active` | any button GSAP does not own | scale 0.97 on `snap` |
+| Page entrance | tab change, first visit | title → tiles → cards → swatches → bus grid, on `move` |
+| Page re-entrance | tab change, seen before | short `snap` fade of title/tiles/cards only |
+| Modal | mount | scrim composites in on `move`; card y24 + scale 0.96 on `drawer` |
 | Theme switch | `.theme-switching` for ~0.5s | 0.4s colour crossfade, transforms excluded |
+
+**Response is the foundation.** Press feedback fires on pointer-**down**, never on release —
+the moment feedback waits for touch-up, directness falls off a cliff. The CSS `:active` rule
+is the floor for every button GSAP does not already own; GSAP's inline transform wins where
+it does.
+
+### Momentum
+
+Two helpers exist for gesture work, both from Apple's sample code:
+
+- `project(velocity, deceleration = 0.998)` — where a flick would come to rest. Snap to the
+  target nearest the **projected** point, not the one nearest where the finger let go. Note
+  this is exponential decay, **not** the textbook `v²/(2a)`.
+- `rubberband(overshoot, dimension, constant = 0.55)` — progressive resistance past a
+  boundary. A hard stop reads as frozen; resistance reads as "responsive, but there is
+  nothing more here."
 
 **Two hard guards, both mandatory:**
 
-1. `prefersReduced()` — every micro-interaction returns early.
+1. `prefersReduced()` — every micro-interaction returns early, and `springTween()` collapses
+   to a 0.15s non-overshooting tween.
 2. `canEntrance()` — an entrance `from()` tween must not run while the tab is backgrounded.
    rAF is paused there, so the tween would hide content and never reveal it. The page
    timeline also wipes stale hidden state via `clearProps` on the non-entrance path.
@@ -197,15 +289,20 @@ Always inside a `Card`. Centred, `py-10`, 20px semibold title + 14px muted sub, 
 action slot beneath.
 
 ### Modal
-Centred over `rgba(0,0,0,.55)`, `max-w-md`, `rounded-2xl`, header row with a `rounded-lg`
-bordered close button. Backdrop click closes; content click stops propagation.
+Centred over a `.fx-scrim` (`rgba(0,0,0,.45)` + `blur(12px)`), `max-w-md`, `rounded-2xl`,
+header row with a `rounded-lg` bordered close button. Backdrop click closes, `Escape` closes,
+content click stops propagation — a modal you can only leave with the mouse is a trap.
+Carries `role="dialog"` + `aria-modal`. The scrim composites in on `move` while the card
+springs up on `drawer`, so the surface reads as a material arriving rather than a rectangle
+whose opacity went up.
 
 ## 6. Implementation Map
 
 | Rule | Encoded in |
 | --- | --- |
 | Theme tokens | `THEMES`, [src/Dashboard.jsx:89](../src/Dashboard.jsx:89) |
-| Motion helpers + guards | [src/Dashboard.jsx:39](../src/Dashboard.jsx:39) |
+| Springs, guards, momentum helpers | [src/ui/motion.js](../src/ui/motion.js) |
+| Materials, type classes, a11y media queries | [src/index.css](../src/index.css) |
 | **Shared primitives** | [src/ui/kit.jsx](../src/ui/kit.jsx) |
 | Optimiser re-export shim | [src/optimiser/ui.jsx](../src/optimiser/ui.jsx) |
 | Focus ring, scrollbars, fonts | [src/index.css](../src/index.css) |
@@ -249,6 +346,19 @@ stayed in step; everything else had diverged.
 | Loading | Branded overlay — `RouteBusLoader` / `ErpLoading` with phase + progress |
 | Empty | `Empty` in a Card, with an action when one exists |
 | Error | `phase === "error"` → offline copy + **Try again** |
+
+### Accessibility preferences
+
+Three independent OS signals, all honoured. Reduced motion does **not** mean no feedback — it
+means a gentler, non-vestibular equivalent.
+
+| Signal | Response |
+| --- | --- |
+| `prefers-reduced-motion: reduce` | `springTween()` collapses to a 0.15s non-overshooting tween; entrances skip entirely (with `clearProps` so nothing is left hidden); the CSS `:active` scale becomes a colour transition. |
+| `prefers-reduced-transparency: reduce` | Chrome and scrim go opaque, blur dropped, divider drawn permanently. Leaflet's glass controls go solid too. |
+| `prefers-contrast: more` | Chrome goes opaque behind a `currentColor` border; focus ring widens to 3px. |
+
+All three were verified present in the CSSOM at runtime, not just written.
 
 ## 9. Responsive
 

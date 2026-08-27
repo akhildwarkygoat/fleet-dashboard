@@ -12,11 +12,11 @@
  *
  * See docs/ui-design-system.md.
  * ==========================================================================*/
-import React, { useRef } from "react";
+import React, { useRef, useEffect } from "react";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { CheckCircle2, AlertTriangle, XCircle, X } from "lucide-react";
-import { canEntrance, fxPress } from "./motion.js";
+import { canEntrance, fxPress, springTween } from "./motion.js";
 
 /* ---------------------------------------------------------------- contrast --
  * Small controls fill themselves with a caller-supplied colour (a company hue,
@@ -35,6 +35,17 @@ function luminance(hex) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 const INK = "#0f172a";
+
+/** `#rrggbb` → `rgba(r,g,b,a)`. Used to build the translucent chrome material
+ *  from whatever surface colour the active theme supplies, so the material
+ *  follows the theme instead of being hard-coded per theme. */
+export function withAlpha(hex, a) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+  if (!m) return hex;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
 /** Readable text colour for a filled swatch. Falls back to white for anything
  *  we can't parse (rgba(), a CSS var), which is the pre-existing behaviour. */
 export function readableOn(bg, white = "#ffffff") {
@@ -82,7 +93,7 @@ export function Reveal({ children, y = 10, ...rest }) {
   const ref = useRef(null);
   useGSAP(() => {
     if (!canEntrance()) return;
-    gsap.from(ref.current, { autoAlpha: 0, y, duration: 0.35, ease: "power2.out", clearProps: "transform,opacity,visibility" });
+    gsap.from(ref.current, { autoAlpha: 0, y, ...springTween("drawer"), clearProps: "transform,opacity,visibility" });
   }, { scope: ref });
   return <div ref={ref} {...rest}>{children}</div>;
 }
@@ -115,7 +126,9 @@ export function Tile({ t, label, value, sub, accent, deltaColor }) {
           derived from the value, so a coloured tile always means something */}
       {accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent }} />}
       <div className="text-xs uppercase tracking-widest" style={{ color: t.muted }}>{label}</div>
-      <div className="text-3xl font-bold mt-2 tabular-nums" style={{ color: t.text }}>{typeof value === "string" || typeof value === "number" ? <CountUp value={value} /> : value}</div>
+      {/* type-metric: negative tracking + tight leading. Figures at 30px read too
+          loose at body tracking — large text tightens as it grows. */}
+      <div className="text-3xl font-bold mt-2 tabular-nums type-metric" style={{ color: t.text }}>{typeof value === "string" || typeof value === "number" ? <CountUp value={value} /> : value}</div>
       {sub && <div className="text-xs mt-1" style={{ color: deltaColor || t.muted }}>{sub}</div>}
     </div>
   );
@@ -137,11 +150,26 @@ export function Modal({ t, title, onClose, children }) {
   const overlayRef = useRef(null);
   useGSAP(() => {
     if (!canEntrance()) return;
-    gsap.from(overlayRef.current, { autoAlpha: 0, duration: 0.25, ease: "power1.out" });
-    gsap.from(".fx-modal-card", { autoAlpha: 0, y: 24, scale: 0.96, duration: 0.35, ease: "back.out(1.6)", clearProps: "transform" });
+    /* Materialize rather than fade: the scrim carries a fixed backdrop blur, and
+       compositing that layer in from zero opacity ramps the blur up with it — so
+       the surface reads as a real material arriving, without re-blurring the whole
+       viewport at a new radius on every frame (which is the expensive way to do
+       this, and would jank on the floor machines). The card springs up alongside. */
+    gsap.from(overlayRef.current, { autoAlpha: 0, ...springTween("move") });
+    gsap.from(".fx-modal-card", { autoAlpha: 0, y: 24, scale: 0.96, ...springTween("drawer"), clearProps: "transform" });
   }, { scope: overlayRef });
+
+  // Esc closes. A modal you can only leave with the mouse is a trap (wayfinding:
+  // every screen must answer "how do I get out?").
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
-    <div ref={overlayRef} className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
+    <div ref={overlayRef} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 fx-scrim" style={{ background: "rgba(0,0,0,.45)" }} onClick={onClose}>
       <div className="fx-modal-card w-full max-w-md rounded-2xl border" style={{ background: t.surface, borderColor: t.border }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid " + t.border }}>
           <div className="font-semibold" style={{ color: t.text }}>{title}</div>
@@ -232,7 +260,8 @@ export function Segmented({ t, value, onChange, options, small }) {
               color: on ? (color ? readableOn(fill, t.onPrimary || "#fff") : t.onPrimary || "#fff") : hot ? t.text : t.muted,
               boxShadow: on ? `0 1px 2px rgba(15,23,42,.16), 0 3px 8px ${t.primarySoft}` : "none",
               transform: on ? "translateY(-0.5px)" : "none",
-              transition: "background .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease",
+              // the same drawer spring the sheets use, sampled into a CSS linear() curve
+              transition: "background .18s ease, color .18s ease, box-shadow .18s ease, transform var(--dur-spring-drawer, .18s) var(--ease-spring-drawer, ease)",
               letterSpacing: "0.01em",
               cursor: "pointer",
             }}>
