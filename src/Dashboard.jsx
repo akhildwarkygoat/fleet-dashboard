@@ -20,6 +20,11 @@ import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import { MotionPathPlugin } from "gsap/MotionPathPlugin";
 import { SpotlightNav } from "./components/ui/spotlight-button.jsx";
+import {
+  Card, Btn, Pill, Tile, Field, TextInput, SelectInput, Switch, Segmented,
+  Empty, Modal, Reveal, makeTooltip,
+} from "./ui/kit.jsx";
+import { prefersReduced, canEntrance, fxLift, fxDrop, fxPress } from "./ui/motion.js";
 
 /* ERP shift strings that one service alone no longer identifies — "ROTATIONAL SHIFT" is
    shared by the three slots, which are told apart by the rider's punch slot. Derived from
@@ -28,62 +33,10 @@ import { SpotlightNav } from "./components/ui/spotlight-button.jsx";
 const SLOT_SHIFTS = new Set(SERVICES.filter((s) => s.erpSlot && s.erpShift).map((s) => s.erpShift));
 
 /* ============================ MOTION (GSAP) ============================ */
+/* The shared vocabulary — reduced-motion/visibility guards and the press/lift
+   micro-interactions — lives in ui/motion.js so every tab moves the same way.
+   MotionPathPlugin is registered here: RouteBusLoader is its only user. */
 gsap.registerPlugin(useGSAP, MotionPathPlugin);
-gsap.config({ nullTargetWarn: false }); // page timeline selectors may legitimately match nothing on some tabs
-const prefersReduced = () =>
-  typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-/* Entrance ("from") animations set an invisible start-state and rely on GSAP's rAF ticker to
-   tween back to visible. While a browser tab is backgrounded rAF is paused, so a from-tween would
-   hide content and never reveal it. Only run entrances when the tab is actually visible; otherwise
-   render content in its natural (visible) state. */
-const canEntrance = () =>
-  !prefersReduced() && (typeof document === "undefined" || document.visibilityState === "visible");
-
-/* micro-interactions (transform-only → compositor-friendly) */
-const fxLift = (e) => { if (prefersReduced()) return; gsap.to(e.currentTarget, { y: -3, scale: 1.02, duration: 0.22, ease: "power2.out", overwrite: "auto" }); };
-const fxDrop = (e) => { if (prefersReduced()) return; gsap.to(e.currentTarget, { y: 0, scale: 1, duration: 0.28, ease: "power2.out", overwrite: "auto" }); };
-const fxPress = (e) => { if (prefersReduced()) return; gsap.fromTo(e.currentTarget, { scale: 0.96 }, { scale: 1, duration: 0.4, ease: "elastic.out(1, 0.55)", overwrite: "auto" }); };
-
-/* animated number — tweens from the previously shown value; keeps prefix/suffix (₹, %, L, /yr…) */
-function CountUp({ value }) {
-  const ref = useRef(null);
-  const prevRef = useRef(null);
-  const tweenRef = useRef(null);
-  const str = String(value);
-  useGSAP(() => {
-    const m = str.match(/^([^0-9-]*)(-?[\d,]+(?:\.\d+)?)(.*)$/);
-    // No tween unless the tab is actually visible. GSAP's ticker is paused on a backgrounded
-    // tab, so the count-up below would set the text to its START value and never reach the
-    // target — freezing the tile on a number that was never real. React has already rendered
-    // the correct string, so bailing out here leaves it right.
-    if (!m || !canEntrance()) {
-      prevRef.current = m ? parseFloat(m[2].replace(/,/g, "")) : null;
-      return;
-    }
-    const target = parseFloat(m[2].replace(/,/g, ""));
-    const dec = (m[2].split(".")[1] || "").length;
-    const obj = { v: prevRef.current == null ? 0 : prevRef.current };
-    prevRef.current = target;
-    const fmt = (n) => m[1] + n.toLocaleString("en-IN", { minimumFractionDigits: dec, maximumFractionDigits: dec }) + m[3];
-    if (ref.current) ref.current.textContent = fmt(obj.v); // avoid a first-paint flash of the final value
-    tweenRef.current?.kill();
-    tweenRef.current = gsap.to(obj, {
-      v: target, duration: 0.8, ease: "power2.out",
-      onUpdate: () => { if (ref.current) ref.current.textContent = fmt(obj.v); },
-    });
-  }, [str]);
-  return <span ref={ref}>{str}</span>;
-}
-
-/* fade+rise wrapper for conditionally-mounted panels */
-function Reveal({ children, y = 10, ...rest }) {
-  const ref = useRef(null);
-  useGSAP(() => {
-    if (!canEntrance()) return;
-    gsap.from(ref.current, { autoAlpha: 0, y, duration: 0.35, ease: "power2.out", clearProps: "transform,opacity,visibility" });
-  }, { scope: ref });
-  return <div ref={ref} {...rest}>{children}</div>;
-}
 
 /* ============================ THEME ============================ */
 const THEMES = {
@@ -502,98 +455,7 @@ function sampleData() {
   return { buses, employees, attendance, records, formulas, variables, settings, erp };
 }
 
-/* ============================ UI PRIMITIVES ============================ */
-function Card({ t, children, className = "", title, hint, right }) {
-  return (
-    <div data-fx="card" className={"rounded-2xl border " + className} style={{ background: t.surface, borderColor: t.border }}>
-      {(title || right) && (
-        <div className="flex items-center justify-between px-5 pt-4 pb-1 gap-3">
-          <div>
-            {title && <h3 className="font-semibold tracking-wide uppercase text-sm" style={{ color: t.text }}>{title}</h3>}
-            {hint && <p className="text-xs mt-1" style={{ color: t.muted }}>{hint}</p>}
-          </div>
-          {right}
-        </div>
-      )}
-      <div className="p-5 pt-3">{children}</div>
-    </div>
-  );
-}
-function Btn({ t, children, onClick, variant = "primary", className = "", disabled, title }) {
-  const base = "inline-flex items-center gap-2 rounded-xl font-semibold px-4 py-2.5 text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
-  const style = variant === "primary" ? { background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" } :
-    variant === "danger" ? { background: "transparent", color: t.poor, border: "1px solid " + t.poor } :
-    { background: "transparent", color: t.text, border: "1px solid " + t.border };
-  return <button title={title} disabled={disabled} onClick={onClick} onMouseDown={fxPress} className={base + " " + className} style={style}>{children}</button>;
-}
-function Pill({ t, kind }) {
-  // shape + label reinforce colour so status is legible with colour-vision deficiency
-  const map = { good: [t.good, t.goodSoft, "Good", CheckCircle2], watch: [t.watch, t.watchSoft, "Watch", AlertTriangle], poor: [t.poor, t.poorSoft, "Poor", XCircle] };
-  const [c, bg, label, Icon] = map[kind];
-  return <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wider" style={{ color: c, background: bg }}><Icon size={12} strokeWidth={2.5} />{label}</span>;
-}
-function Tile({ t, label, value, sub, accent, deltaColor }) {
-  return (
-    <div data-fx="tile" className="rounded-2xl border p-4 relative overflow-hidden" style={{ background: t.surface, borderColor: t.border }}>
-      {/* the rail is a status channel, not trim: it renders only when the caller passed a colour
-          derived from the value, so a coloured tile always means something */}
-      {accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: accent }} />}
-      <div className="text-xs uppercase tracking-widest" style={{ color: t.muted }}>{label}</div>
-      <div className="text-3xl font-bold mt-2 tabular-nums" style={{ color: t.text }}>{typeof value === "string" || typeof value === "number" ? <CountUp value={value} /> : value}</div>
-      {sub && <div className="text-xs mt-1" style={{ color: deltaColor || t.muted }}>{sub}</div>}
-    </div>
-  );
-}
-function Field({ t, label, children, strong }) {
-  // `strong` = higher-stakes inputs (money, formula) get a more legible label
-  return <label className="block"><span className="block mb-1.5" style={{ color: strong ? t.text : t.muted, fontSize: strong ? 13 : 12, fontWeight: strong ? 600 : 400 }}>{label}</span>{children}</label>;
-}
-function inputStyle(t) { return { background: t.inputBg, border: "1px solid " + t.border, color: t.text }; }
-const TextInput = React.forwardRef(function TextInput({ t, ...p }, ref) {
-  return <input ref={ref} {...p} className="w-full rounded-xl px-3 py-2.5 text-sm outline-none" style={inputStyle(t)}
-    onFocus={(e) => (e.target.style.borderColor = t.primary)} onBlur={(e) => (e.target.style.borderColor = t.border)} />;
-});
-function SelectInput({ t, children, ...p }) {
-  return <select {...p} className="w-full rounded-xl px-3 py-2.5 text-sm outline-none" style={inputStyle(t)}>{children}</select>;
-}
-function Switch({ t, checked, onChange, label }) {
-  return <button role="switch" aria-checked={checked} aria-label={label} onClick={() => onChange(!checked)} className="relative w-12 h-7 rounded-full transition" style={{ background: checked ? t.good : t.border }}>
-    <span className="absolute top-1 w-5 h-5 rounded-full bg-white transition-all" style={{ left: checked ? 26 : 4 }} /></button>;
-}
-function Segmented({ t, value, onChange, options, small }) {
-  return (
-    <div className="inline-flex rounded-xl p-1 gap-1" style={{ background: t.surface2, border: "1px solid " + t.border }}>
-      {options.map(([val, label, color]) => {
-        const on = value === val;
-        return <button key={val} onClick={() => onChange(val)} className={(small ? "px-2.5 py-1 text-xs" : "px-3.5 py-1.5 text-sm") + " rounded-lg font-semibold transition"}
-          style={{ background: on ? t.raised : "transparent", color: on ? t.text : t.muted, boxShadow: on ? `inset 0 -2px 0 ${color || t.primary}` : "none" }}>{label}</button>;
-      })}
-    </div>
-  );
-}
 const UnitDot = ({ t, unit }) => <span className="inline-block w-2 h-2 rounded-sm mr-2 align-middle" style={{ background: unitColor(t, unit) }} />;
-function Empty({ t, title, sub }) {
-  return <Card t={t}><div className="text-center py-10"><div className="text-xl font-semibold" style={{ color: t.text }}>{title}</div><div className="text-sm mt-1" style={{ color: t.muted }}>{sub}</div></div></Card>;
-}
-function Modal({ t, title, onClose, children }) {
-  const overlayRef = useRef(null);
-  useGSAP(() => {
-    if (!canEntrance()) return;
-    gsap.from(overlayRef.current, { autoAlpha: 0, duration: 0.25, ease: "power1.out" });
-    gsap.from(".fx-modal-card", { autoAlpha: 0, y: 24, scale: 0.96, duration: 0.35, ease: "back.out(1.6)", clearProps: "transform" });
-  }, { scope: overlayRef });
-  return (
-    <div ref={overlayRef} className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
-      <div className="fx-modal-card w-full max-w-md rounded-2xl border" style={{ background: t.surface, borderColor: t.border }} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid " + t.border }}>
-          <div className="font-semibold" style={{ color: t.text }}>{title}</div>
-          <button onClick={onClose} title="Close" aria-label="Close" className="rounded-lg p-1.5" style={{ border: "1px solid " + t.border, color: t.muted }}><X size={15} /></button>
-        </div>
-        <div className="p-5">{children}</div>
-      </div>
-    </div>
-  );
-}
 
 /* ============================ ANIMATED UNIT DROPDOWN ============================ */
 function UnitDropdown({ t, value, onChange }) {
@@ -678,18 +540,6 @@ function HolidayCalendar({ t, holidays, setHolidays }) {
   );
 }
 
-/* ============================ CHART TOOLTIP ============================ */
-function makeTooltip(t) {
-  return function TT({ active, payload, label }) {
-    if (!active || !payload || !payload.length) return null;
-    return (
-      <div className="rounded-lg px-3 py-2 text-xs" style={{ background: t.raised, border: "1px solid " + t.border, color: t.text }}>
-        {label != null && <div className="font-semibold mb-1">{label}</div>}
-        {payload.map((p, i) => <div key={i} style={{ color: p.color || p.fill }}>{p.name}: {typeof p.value === "number" ? Math.round(p.value).toLocaleString("en-IN") : p.value}</div>)}
-      </div>
-    );
-  };
-}
 function TrendChart({ t, data, unit }) {
   const TT = makeTooltip(t);
   return (
@@ -871,7 +721,7 @@ function ErpLoading({ t, phase, progress, onSync }) {
             <span className="w-14 h-14 rounded-2xl inline-flex items-center justify-center mb-2" style={{ background: t.poor + "1a", color: t.poor }}><WifiOff size={26} /></span>
             <div className="font-extrabold" style={{ color: t.text, fontSize: 16, letterSpacing: "-0.01em" }}>Can't reach the ERP</div>
             <div className="text-xs mt-1.5" style={{ color: t.muted }}>The transport feed didn't respond. This dashboard shows live data only — check the factory network, then retry.</div>
-            <button onClick={onSync} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold mt-4" style={{ background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" }}>Try again</button>
+            <Btn t={t} onClick={onSync} className="mt-4">Try again</Btn>
           </>
         ) : (
           <>

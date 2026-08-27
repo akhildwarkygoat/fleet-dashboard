@@ -489,7 +489,7 @@ export function TimingsView({ t, shifts }) {
                         return (
                           <div key={"drop" + i}
                             title={`${row.veh} · ${d.label}\n${fmtClock(d.start)}–${fmtClock(d.end)} · ${d.stops} stops · ${d.riders} riders${d.assumedOff ? "\n(release time assumed — the ERP carries no `off` for this service)" : ""}`}
-                            className="absolute rounded-md"
+                            className="absolute rounded-lg"
                             style={{
                               top: ROW_MID - 7, height: 14,
                               left: pct(d.s) + "%", width: Math.max(pct(d.e) - pct(d.s), 0.6) + "%",
@@ -502,7 +502,7 @@ export function TimingsView({ t, shifts }) {
                       {row.runs.map((r, i) => (
                         <div key={i}
                           title={`${row.veh} · ${r.svc.name}\n${fmtClock(r.start)}–${fmtClock(r.end)} · ${r.km} km · ${r.stops} stops · ${r.riders} riders${r.clash ? "\n⚠ overlaps the previous run" : ""}`}
-                          className="absolute rounded-md"
+                          className="absolute rounded-lg"
                           style={{
                             top: ROW_MID - 11, height: 22,
                             left: pct(r.start) + "%", width: Math.max(pct(r.end) - pct(r.start), 0.6) + "%",

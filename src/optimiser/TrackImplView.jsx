@@ -539,14 +539,14 @@ function RunRow({ t, run, entry, save, onClear, date }) {
         <button type="button" aria-pressed={!!notRun}
           title={notRun ? "Mark this bus as having run" : "Mark this bus as not run today"}
           onClick={() => save(run, notRun ? { status: STATUS.RAN } : { status: STATUS.NOT_RUN, actualStart: null, actualEnd: null })}
-          className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold"
+          className="rounded-lg px-1.5 py-0.5 text-[10px] font-semibold"
           style={{ background: notRun ? t.watchSoft : "transparent", color: notRun ? t.watch : t.faint,
                    border: "1px solid " + (notRun ? t.watch : t.border), cursor: "pointer" }}>
           {notRun ? "did not run" : "no-run"}
         </button>
         {entry && (
           <button type="button" onClick={onClear} title="Clear this record"
-            className="rounded-md px-1.5 py-0.5 text-[10px] ml-1" style={{ color: t.faint, cursor: "pointer" }}>
+            className="rounded-lg px-1.5 py-0.5 text-[10px] ml-1" style={{ color: t.faint, cursor: "pointer" }}>
             clear
           </button>
         )}

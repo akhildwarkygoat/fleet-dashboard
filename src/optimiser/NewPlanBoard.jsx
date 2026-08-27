@@ -418,7 +418,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                       <span className="flex-1" />
                       <button type="button" title="Auto-sequence" onClick={(e) => { e.stopPropagation(); editor.autoSequence(r.bus.id); }} style={{ color: t.muted, cursor: "pointer" }}><Wand2 size={12} /></button>
                       <button type="button" title="Clear this bus — removes all its stops" aria-label={`Clear all stops from ${r.bus.name}`} onClick={(e) => { e.stopPropagation(); editor.clearBus(r.bus.id); }}
-                        className="rounded-md p-0.5 transition-colors" style={{ color: t.poor, cursor: "pointer" }}
+                        className="rounded-lg p-0.5 transition-colors" style={{ color: t.poor, cursor: "pointer" }}
                         onMouseEnter={(e) => (e.currentTarget.style.background = t.poor + "1f")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}><Trash2 size={12} /></button>
                     </div>
                     {/* The two ends of this bus's run, as two small chips. They read S and P to
@@ -436,7 +436,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                             title={`${r.bus.name} ${which === "start" ? "starts from" : "parks at"}: ` +
                                    `${parkLabel(spec, which)}. Click to change.`}
                             onClick={(e) => { e.stopPropagation(); setPicking(open ? null : { busId: r.bus.id, which }); }}
-                            className="flex-1 min-w-0 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[9px] font-bold transition"
+                            className="flex-1 min-w-0 inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[9px] font-bold transition"
                             style={{ background: open ? col : set ? col + "22" : glassBtn,
                                      color: open ? "#fff" : set ? col : t.muted,
                                      border: "1px solid " + (open || set ? col : glassInnerBorder), cursor: "pointer" }}>

@@ -64,3 +64,6 @@ jobB_run*.log
 data/bus_stops_*.csv
 data/new_stops_*.csv
 data/merge_jobB_audit.json
+
+# local restore points
+.backups/

@@ -331,7 +331,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
                       )}
                     </td>
                     <td className="py-2 px-2">{vehFor(s)
-                      ? <span className="inline-block rounded-md px-2 py-1 text-xs font-semibold tabular-nums"
+                      ? <span className="inline-block rounded-lg px-2 py-1 text-xs font-semibold tabular-nums"
                           title={s.buses && s.buses.length ? s.buses.map(([b, n]) => `${b}: ${n} rider${n === 1 ? "" : "s"}`).join("\n") : undefined}
                           style={{ background: t.primarySoft, color: t.primary, border: "1px solid " + t.border }}>{vehFor(s)}</span>
                       : <span className="text-xs" style={{ color: t.muted }}>—</span>}</td>
@@ -1711,7 +1711,7 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
                   <div className="relative inline-flex items-center gap-1.5">
                     <span>Company</span>
                     <button type="button" onClick={() => setCompanyMenuOpen((o) => !o)} title="Filter by company"
-                      className="inline-flex items-center justify-center rounded-md p-1 transition-colors"
+                      className="inline-flex items-center justify-center rounded-lg p-1 transition-colors"
                       style={{ color: companyFilter ? (t.onPrimary || "#fff") : t.muted, background: companyFilter ? t.primary : "transparent", border: "1px solid " + (companyFilter ? t.primary : t.border), cursor: "pointer" }}>
                       <ListFilter size={12} />
                     </button>
