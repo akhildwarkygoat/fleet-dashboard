@@ -26,8 +26,8 @@
  *   - driver name / phone                     -> NEEDS_ERP
  *   - diesel and driver salary                -> absent from BOTH feeds (see ERP_COST_HEADS)
  * ==========================================================================*/
-import FROZEN_ROTA from "./rotationalRoster.json";
-import NON_ROTATING from "./nonRotatingRiders.json";
+import FROZEN_ROTA from "./rotationalRoster.json" with { type: "json" };
+import NON_ROTATING from "./nonRotatingRiders.json" with { type: "json" };
 
 export const RUN_OPTIMISER = "Run optimiser to find out";
 export const NEEDS_ERP = "Needs to be added to the ERP";

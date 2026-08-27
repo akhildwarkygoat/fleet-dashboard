@@ -23,7 +23,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Card, Btn, Field, TextInput, SelectInput, Tile, Empty, StatusPill, Segmented, makeTooltip, routeColorMap, PALETTE } from "./ui.jsx";
 import { ServiceBoard, TimingsView } from "./TimingsView.jsx";
-import RotaHistoryView from "./RotaHistoryView.jsx";
+import TrackImplView from "./TrackImplView.jsx";
 import { stopsForRiders, coverageOf } from "./serviceStops.js";
 import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js";
 import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
@@ -2004,7 +2004,7 @@ function SimulatorView({ t }) {
   );
 }
 
-export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShifts, erpShiftDate, rotaHistory }) {
+export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShifts, erpShiftDate }) {
   const [sub, setSub] = useState("stops");
   // Which service is being planned (or Overall). Asked on every entry to the tab (state
   // only, deliberately not persisted) — the board IS the switcher, so no header toggles.
@@ -2090,9 +2090,11 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
         {/* No Parking tab: where a bus waits is decided per bus, on the Planner's map, next to
             the route that put it there — not on a separate board you have to hold in your head. */}
         <Segmented t={t} value={sub} onChange={setSub} options={[["stops", "Stops"], ["plan", "Fleet plan"], ["new", "Planner"], ["timings", "Timings"],
-          /* Rotational is the only shift that moves, so it is the only one with an
-             "as operated" record worth reading a day at a time. */
-          ...(svc && svc.slot ? [["ran", "As operated"]] : [])]} />
+          /* T.I — Track Implementation. Every other subtab plans; this one records what the
+             fleet actually did and measures it against the plan that was in force. It is
+             offered on every service, and on Overall, because the question "is the estimate
+             any good" is asked per service and across the fleet. */
+          ["ti", "T.I"]]} />
         {(sub === "plan" || sub === "new") && planOpts && planOpts.length > 1 && (
           <div className="inline-flex items-center gap-1 rounded-xl p-1" style={{ background: t.surface2, border: "1px solid " + t.border }}>
             <span className="text-[10px] font-bold uppercase tracking-wider px-2" style={{ color: t.faint }}>Plan</span>
@@ -2141,7 +2143,7 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
       {sub === "new" && <NewPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} toast={toast}
         erpBuses={svcErpBuses} svc={svc && !svc.overall ? svc : null} svcStops={svcStops} />}
       {sub === "timings" && <TimingsView t={t} shifts={erpShifts} />}
-      {sub === "ran" && <RotaHistoryView t={t} rotaHistory={rotaHistory} employees={erpEmployees} depot={svc && svc.depot} />}
+      {sub === "ti" && <TrackImplView key={svc ? svc.id : "all"} t={t} toast={toast} svc={svc} />}
     </div>
   );
 }
