@@ -24,11 +24,65 @@ LOG="$LOG_DIR/weekly-refresh.log"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }
 
+PY_BIN="$(command -v python3 || command -v python || true)"
+
+# The dashboard reads the roster for WHO is on which shift and the routes for WHAT each bus
+# carries. If those two describe different weeks the board is quietly wrong, and every
+# individual step can still have reported success — which is exactly what happened on
+# 2026-08-31. So assert it at the end of every run, whichever way the run went.
+check_consistency() {
+  [ -n "$PY_BIN" ] || return 0
+  OUT="$("$PY_BIN" - <<'PYEOF' 2>/dev/null
+import json
+try:
+    a = json.load(open("src/rotationalRoster.json")).get("_rotaWeek", "?")
+    b = json.load(open("public/current_routes.json"))["meta"].get("rota_week", "?")
+except Exception as e:
+    print("SKIP could not read both files (%s)" % e.__class__.__name__); raise SystemExit
+print(("OK %s" % a) if a == b else ("MISMATCH roster=%s routes=%s" % (a, b)))
+PYEOF
+)"
+  case "$OUT" in
+    OK\ *)       log "  Consistent: roster and routes are both week ${OUT#OK }." ;;
+    MISMATCH*)   log "  *** INCONSISTENT: ${OUT#MISMATCH }."
+                 log "      The shift list and the route map describe DIFFERENT weeks. The Rotational"
+                 log "      split on the board is not trustworthy until this is re-run successfully."
+                 log "      Fix: $(basename "$0") again, or re-cut just the roster with"
+                 log "           python3 build_rotational_roster.py" ;;
+    *)           log "  (consistency check skipped: ${OUT:-no output})" ;;
+  esac
+}
+
 # Keep the log from growing without bound — one trim a week costs nothing.
 if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 1048576 ]; then
   tail -n 2000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
   log "(log trimmed to the last 2000 lines)"
 fi
+
+# ── one run at a time ───────────────────────────────────────────────────────────────
+# Two overlapping runs corrupt each other, and it is not theoretical: on 2026-08-31 two were
+# started 5 s apart. They shared one ERP staging file, so the first to finish moved it out
+# from under the second; the second then died and its failure handler rolled the roster back
+# over the fresh cut the first had just written. The result was routes for one week and a
+# roster for another, with "refresh OK" in the log.
+#
+# mkdir is atomic on every filesystem this runs on, so it is the lock. A lock left behind by
+# a killed run is reclaimed only after checking the recorded PID is really gone.
+LOCK="$REPO/automation/.refresh.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  OLDPID="$(cat "$LOCK/pid" 2>/dev/null || echo '')"
+  if [ -n "$OLDPID" ] && kill -0 "$OLDPID" 2>/dev/null; then
+    log "=== another refresh (pid $OLDPID) is already running — this one will not start ==="
+    log "    Wait for it to finish. Starting two at once is what broke 2026-08-31."
+    exit 75          # EX_TEMPFAIL: try again later, nothing was touched
+  fi
+  log "Clearing a stale lock from pid ${OLDPID:-unknown} (no such process)."
+  rm -rf "$LOCK"
+  mkdir "$LOCK" || { log "FAILED: could not take the lock at $LOCK"; exit 75; }
+fi
+echo $$ > "$LOCK/pid"
+# Released however this script exits, including on Ctrl-C.
+trap 'rm -rf "$LOCK"' EXIT INT TERM
 
 log "=== weekly refresh starting (host $(hostname -s)) ==="
 
@@ -80,6 +134,7 @@ try:
 except Exception as e:
     print("    (could not read back current_routes.json: %s)" % e)
 PY
+  check_consistency
   log "=== done ==="
   exit 0
 fi
@@ -123,5 +178,6 @@ else
   log "      Do not trust the Rotational split until this has been re-run successfully."
   log "      Copies are in automation/last-good/ (newest dated folder)."
 fi
+check_consistency
 log "=== done (failed) ==="
 exit "$RC"

@@ -189,7 +189,10 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Fetching live ERP → data/erp_live.json"
 # connection failure or an HTTP error, but a transfer that DROPS midway through the ~30 MB body
 # writes a truncated file — which is still valid on disk and fails much later, inside the route
 # build. Staging makes the replacement atomic: a bad pull leaves last week's dump untouched.
-ERP_TMP="data/.erp_live.json.part"
+# Per-process, NOT a fixed name. Two runs sharing one staging file is how 2026-08-31 broke:
+# the first to finish moved it into place, the second found it gone and died — and the EXIT
+# trap of either would happily delete the other's download.
+ERP_TMP="data/.erp_live.json.$$.part"
 trap 'rm -f "$ERP_TMP"' EXIT
 # -m 120 was too short: the feed has grown to ~48 MB and a real run timed out at 136 s with
 # 17 MB received. Use a generous overall cap plus a stall detector, so a genuinely dead

@@ -236,6 +236,37 @@ not the same as seen. Run it once by hand and read
 `automation\logs\weekly-refresh.log` before trusting the schedule — and keep this caveat here
 until someone has pasted back a green log line from the actual factory PC.
 
+## Only one run at a time
+
+`weekly-refresh.sh` takes a lock (`automation/.refresh.lock`) and refuses to start if another
+run holds it, exiting 75 without touching anything. A lock left by a killed run is reclaimed
+after checking its recorded PID is really gone.
+
+This is not a precaution, it is a repair. On 2026-08-31 two runs were started five seconds
+apart and destroyed each other:
+
+| time | |
+| --- | --- |
+| 14:54:57 | run A starts, downloads the ERP into the shared staging file |
+| 14:55:02 | run B starts, downloads into **the same** staging file |
+| 14:55:41 | B wins, re-cuts the roster to week 2026-08-31, begins the route build |
+| 14:55:44 | A finds its staging file gone, dies — and rolls the roster **back** to 08-24 |
+| 14:58:57 | B finishes and writes routes for 08-31, having already read the roster |
+
+The result was a roster for one week and routes for another, with `refresh OK` in the log.
+Three things changed: the lock above; the ERP staging file is now per-process
+(`data/.erp_live.json.$$.part`) rather than one shared name; and **every run now ends by
+asserting that the roster and the routes describe the same week**, on the success and the
+failure path alike. That last check is what turns this class of fault from silent into loud:
+
+```
+*** INCONSISTENT: roster=2026-08-24 routes=2026-08-31.
+    The shift list and the route map describe DIFFERENT weeks.
+```
+
+If you see that, re-run the job, or re-cut just the roster with
+`python3 build_rotational_roster.py`.
+
 ## When it fails
 
 The log names the cause. The usual ones:
