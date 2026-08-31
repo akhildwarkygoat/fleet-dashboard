@@ -485,6 +485,12 @@ const payload = {
   method: "optimiser — capacity sweep, cheapest cost/head with ride-time penalty",
   service: { id: svc.id, name: svc.name, depot: { name: depot.name, lat: depot.lat, lng: depot.lng } },
   generated: new Date().toISOString().slice(0, 10),
+  /* The rota week whose MEMBERSHIP this plan was built from. The roster moves every Monday
+     and the plans do not, so without this stamp "are these plans still the right cohort?"
+     can only be asked of rider COUNTS — and a plan's total is counted after stop matching,
+     so it differs from the roster's by a rider or two even in perfect sync. A week string
+     compares exactly. refresh_routes.sh reads it. */
+  rotaWeek: FROZEN_ROTA._rotaWeek,
   matrix: { file: matrixFile, stops_matched: matched, stops_total: stops.length },
   /* How this plan's ₹/head was charged. Recorded because it is NOT comparable across
      plans that used a different basis: finalised_plan.json bills its buses in full, so

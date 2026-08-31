@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 
 /* ── ERP login ────────────────────────────────────────────────────────────────────
  * The ERP is no longer open: POST /api/login with a username and password returns a
@@ -23,7 +24,46 @@ import fs from "node:fs";
  *
  * PRODUCTION: the backend passthrough has to do this same login. The browser cannot,
  * for the same reason it cannot hold the password. */
-const ERP_BASE = process.env.ERP_BASE || "http://life.gainup.in:8089";
+/* The ERP has SPLIT-HORIZON DNS. On the office LAN, life.gainup.in resolves to the internal
+   172.16.10.169; from anywhere else it resolves to the public 203.101.97.26. The old comment
+   here claimed the hostname "works from either side" — it does not. A machine on a different
+   office subnet (e.g. 172.16.97.x) is handed the internal address and cannot route to it, so
+   the dashboard dies with ETIMEDOUT on the office wifi while working fine on a phone hotspot.
+
+   So don't trust one address: try each candidate's TCP port and use the first that answers.
+   ERP_BASE still wins outright when set, for a site whose ERP lives somewhere else. */
+let ERP_BASE = process.env.ERP_BASE || "http://life.gainup.in:8089";
+
+const ERP_CANDIDATES = [
+  process.env.ERP_BASE,
+  "http://life.gainup.in:8089",   // correct on the hotspot / from home; internal-only in some offices
+  "http://203.101.97.26:8089",    // the public address the hostname resolves to outside
+].filter(Boolean);
+
+/** Resolves once at dev-server startup. ~2.5 s worst case per dead candidate. */
+function tcpProbe(host, port, ms = 2500) {
+  return new Promise((resolve) => {
+    const sock = new net.Socket();
+    const done = (ok) => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(ms);
+    sock.once("connect", () => done(true));
+    sock.once("timeout", () => done(false));
+    sock.once("error", () => done(false));
+    sock.connect(port, host);
+  });
+}
+
+async function resolveErpBase(logger) {
+  for (const base of ERP_CANDIDATES) {
+    const u = new URL(base);
+    if (await tcpProbe(u.hostname, Number(u.port) || 80)) {
+      if (base !== ERP_CANDIDATES[0] || ERP_CANDIDATES.length === 1) { /* fallthrough */ }
+      return base;
+    }
+    logger && logger.info(`  ERP   ${u.hostname}:${u.port} did not answer — trying the next address`);
+  }
+  return ERP_CANDIDATES[0];
+}
 
 function erpCredentials() {
   if (process.env.ERP_USER && process.env.ERP_PASS)
@@ -95,6 +135,7 @@ function erpAuthPlugin() {
       server.config.logger.info(has
         ? "  ERP   login configured — requests will carry a bearer token"
         : "  ERP   no credentials (.erp_key or ERP_USER/ERP_PASS) — calling the ERP unauthenticated");
+      server.config.logger.info(`  ERP   using ${ERP_BASE}`);
       // Log in at startup rather than waiting for the first request. It means the token is
       // already warm when the dashboard opens, and — the reason it matters — a wrong password
       // is reported here, in the window the user is looking at, instead of surfacing later as
@@ -163,7 +204,11 @@ function routesRebuildPlugin() {
   };
 }
 
-export default defineConfig({
+/* async: the proxy's `target` is read once when this object is built, so the reachable ERP
+   address has to be settled before that — not inside configureServer, which runs later. */
+export default defineConfig(async () => {
+  ERP_BASE = await resolveErpBase(console);
+  return {
   plugins: [react(), routesRebuildPlugin(), erpAuthPlugin()],
   server: {
     host: true,
@@ -199,4 +244,5 @@ export default defineConfig({
       },
     },
   },
+  };
 });

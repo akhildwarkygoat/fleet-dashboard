@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Monday refresh of the rotational roster + Prev-route map.
+
+  Install:   automation/install-macos.sh
+  Check:     launchctl list | grep fleet-dashboard
+  Logs:      automation/logs/weekly-refresh.log
+
+  __REPO__ is substituted with the absolute repo path at install time — launchd does
+  not expand ~ or relative paths, so the installer writes them out in full.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gainup.fleet-dashboard.weekly-refresh</string>
+
+    <!-- caffeinate, not bare bash: launchd STARTS the job on wake, but nothing kept the Mac
+         awake once it had. -i no idle sleep, -m no disk sleep, -s no system sleep on AC.
+         Measured 2026-08-31: the job began 04:04:45 and did not reach its failure line until
+         04:51:06 — 46 minutes for a login with a 60 s timeout, because the machine slept
+         through it. caffeinate holds the assertion for exactly as long as the job runs. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>-m</string>
+        <string>-s</string>
+        <string>/bin/bash</string>
+        <string>__REPO__/automation/weekly-refresh.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <!-- launchd starts jobs with a bare PATH; refresh_routes.sh needs python3 and curl. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PYDIR__:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Monday (Weekday 1) at 04:00. The rebuild takes 30-45 min at --merge-m 0 and
+         Rotational Day gates at 06:00, so 05:30 would still be running when the first
+         shift needs the board. If the Mac is asleep launchd STARTS the job once it wakes —
+         but starting is not finishing, which is why the job is wrapped in caffeinate below.
+         A Mac that is fully shut down at 04:00 runs it at the next login. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Never on load: installing the job should not fire a 30-45 min OSRM rebuild. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/automation/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/automation/logs/launchd.err.log</string>
+
+    <!-- No ProcessType: "Background" opts the job into CPU/IO throttling and makes it the
+         first thing the scheduler starves. It is a 30-45 min network job on a timer, not
+         housekeeping. -->
+</dict>
+</plist>

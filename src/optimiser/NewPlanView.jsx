@@ -67,13 +67,26 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
         const own = new Set((erpBuses || []).map((b) => b.id || b.vehicle));
         const buses = own.size ? d.buses.filter((b) => own.has(b.name)) : d.buses;
         if (!buses.length) { setPrevRoutes(null); return; }
-        // The card reads meta.riders / meta.vehicles, so filtering the buses alone still
-        // advertised the whole fleet's 3,097 riders on a service that has 786.
-        const meta = { ...(d.meta || {}), vehicles: buses.length,
-          riders: buses.reduce((s, b) => s + (+b.riders || 0), 0) };
-        setPrevRoutes({ ...d, buses, meta });
+        /* A vehicle is not a service. The same bus runs a Rotational trip and a General trip on
+           the same day, and eleven of them carry more than one Rotational slot — so summing each
+           kept bus's TOTAL rider count charged this service for everyone who ever boarded that
+           vehicle. Rotational Day read 1,121 against a real 244 (4.6x); 7 am Morning read 1,027
+           against 155 (6.6x). build_erp_routes.py now emits per-service counts; use them.
+
+           Falls back to the old vehicle total when by_service is absent, so a current_routes.json
+           built before this change still renders instead of reading zero. */
+        const sid = svc && svc.id;
+        const ridersOf = (b) => (sid && b.by_service ? (+b.by_service[sid] || 0) : (+b.riders || 0));
+        const forService = sid && buses.some((b) => b.by_service)
+          ? buses.filter((b) => ridersOf(b) > 0)
+          : buses;
+        if (!forService.length) { setPrevRoutes(null); return; }
+        const meta = { ...(d.meta || {}), vehicles: forService.length,
+          riders: forService.reduce((s, b) => s + ridersOf(b), 0),
+          service: sid || null };
+        setPrevRoutes({ ...d, buses: forService, meta });
       }).catch(() => {});
-  }, [erpBuses]);
+  }, [erpBuses, svc]);
   // set on import: stops carried over from the plan file that aren't in the store, plus the
   // plan's own per-stop rider counts — so the editor presents the plan exactly as solved
   const [importedPlan, setImportedPlan] = useState(null);   // { extras: stop[], demand: Map } | null
@@ -208,10 +221,23 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   // Reshape to the solver_result form so the same faithful-import path handles it.
   const importPrevRoutes = () => {
     if (!prevRoutes) { toast && toast("Previous routes aren't loaded yet"); return; }
+    /* `s.hc` is the stop's WHOLE-VEHICLE headcount — every rider who boards there on any
+       service. A pickup point is shared: the same corner serves General riders and Rotational
+       riders, so seeding a Rotational Day plan from `hc` loaded 1,166 people onto a service
+       that carries 250. Take this service's share of each stop, and drop stops that carry
+       none of its riders — they belong to another service's run, not this one.
+
+       Falls back to `s.hc` when by_service is absent (a current_routes.json built before the
+       split existed), which is the pre-existing behaviour rather than an empty plan. */
+    const sid = svc && svc.id;
+    const perSvc = sid && prevRoutes.buses.some((b) => (b.stops || []).some((s) => s.by_service));
+    const hcOf = (s) => (perSvc ? (+(s.by_service || {})[sid] || 0) : (+s.hc || 0));
     const shaped = { routes: prevRoutes.buses.map((b) => ({
       name: b.name, type: b.type === "owned" ? "own" : b.type, cap: b.seat,
-      seq: (b.stops || []).map((s) => ({ name: s.name, lat: s.lat, lng: s.lng, hc: s.hc })),
-    })) };
+      seq: (b.stops || [])
+        .map((s) => ({ name: s.name, lat: s.lat, lng: s.lng, hc: hcOf(s) }))
+        .filter((s) => s.hc > 0),
+    })).filter((r) => r.seq.length) };
     const { seed, extras, demand } = seedFromSolver(shaped, fleet, storeStops);
     let placed = 0; for (const ids of seed.values()) placed += ids.length;
     if (!placed) { toast && toast("Previous routes didn't match this fleet"); return; }

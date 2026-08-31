@@ -67,3 +67,8 @@ data/merge_jobB_audit.json
 
 # local restore points
 .backups/
+
+# weekly-refresh runtime output
+automation/logs/
+automation/last-good/
+data/.erp_live.json.part

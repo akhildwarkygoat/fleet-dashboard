@@ -102,12 +102,36 @@ def main():
     ap.add_argument("--week", help="target rota week (any date in it); default = today's week")
     ap.add_argument("--snapshots", nargs="*", default=DEFAULT_SNAPSHOTS)
     ap.add_argument("--dry-run", action="store_true")
+    # Escape hatches. Neither is ever passed by the automation: refresh_routes.sh runs this
+    # script bare, so a run that needs one of these is a run a person has to think about.
+    ap.add_argument("--no-nonrotating", action="store_true",
+                    help="step the never-rotate riders too (they are HELD by default)")
+    ap.add_argument("--accept-large-change", action="store_true",
+                    help="allow a cut that drops riders present in the previous roster")
     args = ap.parse_args()
 
     rows, used = load(args.snapshots)
     target = week_of(args.week) if args.week else week_of(datetime.date.today().isoformat())
 
-    non_rotating = set(json.load(open(NONROT_PATH))["riders"]) if os.path.exists(NONROT_PATH) else set()
+    # The never-rotate list is NOT optional. Losing it does not fail — it silently steps the
+    # 104 riders the whole exception exists for, and the log still reads normal. Measured on
+    # the 2026-08-31 cut: with the file, 701 riders move; without it, 801, and 100 of the 104
+    # pinned riders land in the wrong slot. That is invisible in every number this script
+    # prints, which is exactly why it has to stop here instead.
+    if args.no_nonrotating:
+        non_rotating = set()
+        print("WARNING: --no-nonrotating — the never-rotate riders will be STEPPED like everyone else.")
+    else:
+        if not os.path.exists(NONROT_PATH):
+            sys.exit(f"ERROR: {NONROT_PATH} is missing.\n"
+                     f"       104 riders never rotate and must be HELD, not stepped. Without this file\n"
+                     f"       ~100 of them are put in the wrong slot and nothing in the output says so.\n"
+                     f"       Restore it:  git checkout -- {NONROT_PATH}\n"
+                     f"       (or pass --no-nonrotating if you really mean to step everyone)")
+        non_rotating = set(json.load(open(NONROT_PATH))["riders"])
+        if len(non_rotating) < 50:
+            sys.exit(f"ERROR: {NONROT_PATH} lists only {len(non_rotating)} riders; expected ~104.\n"
+                     f"       A truncated list steps the riders it lost. Restore it from git.")
     previous = json.load(open(ROSTER_PATH))["slots"] if os.path.exists(ROSTER_PATH) else {}
 
     votes = collections.defaultdict(collections.Counter)   # (emp, week) -> Counter(slot)
@@ -124,6 +148,14 @@ def main():
             votes[(e, week_of(d))][s] += 1
 
     rotational = sorted(e for e, s in shift.items() if s == "ROTATIONAL SHIFT")
+    # `Shift` is free ERP text matched here as a literal. If the ERP ever renames it, this
+    # matches nobody and the script writes an EMPTY roster stamped with the CORRECT week —
+    # which sails through build_erp_routes.py's week gate and ships a fleet-wide zero split.
+    if not rotational:
+        seen = collections.Counter(shift.values()).most_common(8)
+        sys.exit("ERROR: no rider has Shift == 'ROTATIONAL SHIFT' — the ERP's shift string has changed.\n"
+                 "       Shift values in this feed: "
+                 + ", ".join(f"{k!r} ({n})" for k, n in seen))
     weeks_desc = sorted({w for _, w in votes}, reverse=True)
     tgt = datetime.date.fromisoformat(target)
 
@@ -147,7 +179,11 @@ def main():
 
     counts = collections.Counter(slots.values())
     by_source = collections.Counter(source.values())
+    # Diff BOTH ways. Iterating only the new map means a cut that loses riders reports
+    # "0 changes" — the reassuring number a broken input produces.
     changed = {e: (previous.get(e), slots[e]) for e in slots if previous.get(e) != slots[e]}
+    dropped = sorted(set(previous) - set(slots))
+    added = sorted(set(slots) - set(previous))
 
     print(f"snapshots read      : {', '.join(used)}")
     print(f"target rota week    : {target} (Monday)")
@@ -172,6 +208,18 @@ def main():
     move = collections.Counter((NAME.get(a, "unplaced"), NAME[b]) for a, b in changed.values())
     for (a, b), n in sorted(move.items(), key=lambda x: -x[1]):
         print(f"   {a:11} -> {b:11} {n}")
+    if added:
+        print(f"   new to the roster        {len(added)}")
+    if dropped:
+        print(f"   DROPPED from the roster  {len(dropped)}  -> in NO rotational service")
+
+    # A cut that loses riders is either a truncated feed or a changed ERP field, and either
+    # way those riders vanish from all three slots without appearing in any "moved" tally.
+    if (dropped or len(slots) < 0.9 * len(previous)) and not args.accept_large_change:
+        sys.exit(f"\nERROR: this cut drops {len(dropped)} rider(s) that the previous roster placed"
+                 f" ({len(previous)} -> {len(slots)}).\n"
+                 f"       They would be in NO rotational service. Usual cause: a short or stale ERP pull.\n"
+                 f"       Re-run with --accept-large-change if this is genuinely intended.")
 
     if args.dry_run:
         print("\n--dry-run: nothing written")

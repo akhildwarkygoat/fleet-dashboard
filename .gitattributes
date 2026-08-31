@@ -3,3 +3,5 @@
 *.cmd text eol=crlf
 # Shell scripts must keep LF even when checked out on Windows.
 *.sh text eol=lf
+# PowerShell tolerates either, but CRLF keeps it readable in Notepad on the factory PC.
+*.ps1 text eol=crlf
