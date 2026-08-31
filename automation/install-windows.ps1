@@ -6,8 +6,9 @@
     The Rotational shift runs three slots and every rider steps one place each Monday
     (Day -> Full night -> Half night -> Day). From Monday morning, last week's roster
     mislabels roughly everyone who rotates. This job re-cuts the roster from the fresh
-    ERP punch feed and rebuilds the route map against it, at 04:00 every Monday, so the
-    board is right before the 06:00 Day gate.
+    ERP punch feed and rebuilds the route map against it, at 15:30 every Monday.
+    Note: Day gates at 06:00 and Half night at 14:00, so on Monday itself those two run on
+    last week's roster; the fresh split is in place from Full night (22:00) onwards.
 
     It writes files only. It never touches git, so a bad ERP pull cannot land in the repo.
 
@@ -15,7 +16,7 @@
 
     Nothing is scheduled until every preflight check below has passed - including a real
     probe run through Task Scheduler itself. A job that cannot run is not worth a schedule;
-    it just fails at 04:00 into a log nobody is reading.
+    it just fails at 15:30 into a log nobody is reading.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File .\automation\install-windows.ps1
@@ -376,7 +377,7 @@ if (-not $SkipLoginTest) {
 
 # ---------------------------------------------------------------- register
 $action = New-ScheduledTaskAction -Execute (Join-Path $Repo 'automation\weekly-refresh.bat') -WorkingDirectory $Repo
-$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At '04:00'
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At '15:30'
 # StartWhenAvailable is the whole point: it is the Windows equivalent of launchd running a
 # missed job on wake. schtasks.exe cannot express it, which is why this script exists rather
 # than a one-line schtasks command. The battery switches are not optional either - both
@@ -398,7 +399,7 @@ try {
 try {
     $wt = (& powercfg /waketimers) 2>$null | Out-String
     if ($wt -match 'disabled|are not enabled') {
-        Say-Warn "Wake timers are disabled on this PC, so it will not wake itself at 04:00."
+        Say-Warn "Wake timers are disabled on this PC, so it will not wake itself at 15:30."
         Say-Info "It will still run at the next start-up. To allow waking (needs Administrator):"
         Say-Info "  powercfg /SETACVALUEINDEX SCHEME_CURRENT SUB_SLEEP RTCWAKE 1"
         Say-Info "  powercfg /SETACTIVE SCHEME_CURRENT"
@@ -412,14 +413,14 @@ Write-Host ""
 Write-Host "Installed: $TaskName" -ForegroundColor Green
 Write-Host "  repo    : $Repo"
 Write-Host "  bash    : $bashShown"
-Write-Host "  schedule: Mondays 04:00 (runs at the next start-up if the PC was off)"
+Write-Host "  schedule: Mondays 15:30 (runs at the next start-up if the PC was off)"
 Write-Host "  next run: $($info.NextRunTime)"
 Write-Host "  log     : $LogPath"
 Write-Host ""
 Write-Host "This job runs as YOU, so:" -ForegroundColor Cyan
-Write-Host "  - Leave the PC signed in on Sunday night. Locking the screen is fine."
+Write-Host "  - The PC must be signed in on Monday afternoon. Locking the screen is fine."
 Write-Host "  - Do not sign out, and do not shut down."
-Write-Host "  - A black window opens at 04:00 and stays for 30-45 minutes. That is the"
+Write-Host "  - A black window opens at 15:30 and stays for 30-45 minutes. That is the"
 Write-Host "    refresh working. It is NOT the dashboard window - leave both alone."
 Write-Host ""
 Write-Host "Run it once now, to prove it end to end (takes 30-45 minutes):" -ForegroundColor Cyan

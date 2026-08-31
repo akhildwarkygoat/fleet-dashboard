@@ -9,6 +9,16 @@ Day  ->  Full night  ->  Half night  ->  Day
 So from Monday morning, last week's roster mislabels roughly everyone who rotates. Everything
 below exists to make that one fact safe to forget.
 
+**The job runs Mondays at 15:30** (set by the transport manager), finishing about 16:15. Note what
+that means: Day gates at 06:00 and Half night at 14:00, so on Monday itself those two shifts run
+on last week's roster. Full night (22:00) is the first to see the fresh split, and the board is
+right for all three from Tuesday. If a particular week has to be correct from the Day gate, run it
+by hand on Monday morning:
+
+```bash
+cd ~/fleet-dashboard && caffeinate -i -m -s automation/weekly-refresh.sh
+```
+
 ## What was wrong
 
 The "Previous routes" card was charging each service for **every rider who boarded its
@@ -73,8 +83,8 @@ automation/weekly-refresh.sh        # the Monday job: fetch ERP -> re-cut roster
 The roster moves every Monday. The three plans (`public/plan_rot-*.json`) do not, and that is
 deliberate. They are a different artefact — the routes the fleet actually runs — and the builder
 does not reproduce them: re-solving `rot-day` from the same feed returns **9 buses, 171 min worst
-ride** against the operating **12 buses, 119 min**. Silently swapping that in at 04:00, two hours
-before the 06:00 Day gate, is not a refresh.
+ride** against the operating **12 buses, 119 min**. Silently swapping that in on a timer, with
+nobody looking at the result, is not a refresh.
 
 So the default run leaves them alone and prints a note when they have fallen behind the roster.
 Plans now carry `rotaWeek`, so that check is an exact week-string comparison — never a headcount,
@@ -106,8 +116,8 @@ and its own sentence.
 
 Takes **30-45 minutes**, almost all of it OSRM road-path lookups. The pipeline runs at
 `--merge-m 0` (every distinct home GPS stays its own stop, so the real routes can be compared
-stop-for-stop), which leaves some vehicles with 100+ waypoints per request. Scheduling it for 04:00 leaves it
-finished before Rotational Day gates at 06:00. It writes
+stop-for-stop), which leaves some vehicles with 100+ waypoints per request. It is scheduled for
+**Mondays 15:30**, so it lands about 16:15. It writes
 files only; it never touches git, so a bad ERP pull cannot land in the repo. The previous
 `current_routes.json` and `rotationalRoster.json` are copied to `automation/last-good/` first.
 
@@ -119,12 +129,12 @@ Logs: `automation/logs/weekly-refresh.log`.
 ## Scheduling — macOS
 
 ```bash
-automation/install-macos.sh              # install (Mondays 04:00)
+automation/install-macos.sh              # install (Mondays 15:30)
 automation/install-macos.sh --status
 automation/install-macos.sh --uninstall
 ```
 
-If the Mac is asleep at 04:00 launchd **starts** the job on wake. Starting is not finishing: the
+If the Mac is asleep at 15:30 launchd **starts** the job on wake. Starting is not finishing: the
 run of 2026-08-31 began at 04:04:45 and had not got past the login by 04:51:06, because the
 machine kept sleeping underneath it — 46 minutes for a step with a 60-second timeout. `urlopen`'s
 timeout is a monotonic clock that does not tick across sleep, and does not cover DNS at all.
@@ -132,7 +142,7 @@ timeout is a monotonic clock that does not tick across sleep, and does not cover
 The job is therefore launched through `caffeinate -i -m -s`, which holds the machine awake for
 exactly as long as the run takes, and `ProcessType Background` has been removed (it opted a
 45-minute network job into the throttling meant for housekeeping). A Mac that is fully shut down
-at 04:00 still runs it at the next login.
+at 15:30 still runs it at the next login.
 
 ### Why the repo lives at `~/fleet-dashboard`
 
@@ -150,7 +160,7 @@ Measured from a launchd agent against a repo inside `~/Documents`:
 | run a script in the repo | **blocked** (exit 126) |
 
 `access()` succeeding while `open()` fails is the trap: a preflight built on `-r` reports a
-cheerful pass and the job still dies at 04:00 into a log nobody reads. `install-macos.sh`
+cheerful pass and the job still dies at 15:30 into a log nobody reads. `install-macos.sh`
 therefore probes a real content read, and refuses to claim success if it fails.
 
 **So the working copy was moved out of `~/Documents`.** Nothing in the repo depended on the old
@@ -218,7 +228,7 @@ If you ever need the raw form anyway — **Command Prompt only, and without wake
 that cmd's `^` line-continuation breaks in PowerShell, so it has to be one line:
 
 ```
-schtasks.exe /Create /TN "Fleet dashboard weekly refresh" /SC WEEKLY /D MON /ST 04:00 /TR "\"C:\fleet-dashboard\automation\weekly-refresh.bat\"" /RL LIMITED /IT /F
+schtasks.exe /Create /TN "Fleet dashboard weekly refresh" /SC WEEKLY /D MON /ST 15:30 /TR "\"C:\fleet-dashboard\automation\weekly-refresh.bat\"" /RL LIMITED /IT /F
 ```
 
 ### If PowerShell refuses to run the script

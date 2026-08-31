@@ -53,14 +53,14 @@ launchctl bootstrap "gui/$(id -u)" "$PLIST_DST"
 echo "Installed $LABEL"
 echo "  repo    : $REPO"
 echo "  python  : $PY"
-echo "  schedule: Mondays 04:00 (started on wake if asleep; caffeinate keeps it awake to finish)"
+echo "  schedule: Mondays 15:30 (started on wake if asleep; caffeinate keeps it awake to finish)"
 echo "  logs    : $REPO/automation/logs/weekly-refresh.log"
 echo
 
 # ── TCC preflight ───────────────────────────────────────────────────────────────────
 # macOS protects ~/Documents, ~/Desktop and ~/Downloads. A launchd agent is NOT your
 # Terminal: it gets none of Terminal's granted access, so if the repo lives in one of
-# those folders the job dies with "Operation not permitted" — at 04:00 on a Monday,
+# those folders the job dies with "Operation not permitted" — at 15:30 on a Monday,
 # into a log nobody is watching. Prove it can actually reach the repo, now, instead.
 PROBE_LABEL="$LABEL.preflight"
 PROBE_SH="$(mktemp -t fdprobe)"

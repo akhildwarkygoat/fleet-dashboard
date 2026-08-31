@@ -40,19 +40,22 @@
         <string>__PYDIR__:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
-    <!-- Monday (Weekday 1) at 04:00. The rebuild takes 30-45 min at --merge-m 0 and
-         Rotational Day gates at 06:00, so 05:30 would still be running when the first
-         shift needs the board. If the Mac is asleep launchd STARTS the job once it wakes —
-         but starting is not finishing, which is why the job is wrapped in caffeinate below.
-         A Mac that is fully shut down at 04:00 runs it at the next login. -->
+    <!-- Monday (Weekday 1) at 15:30, set deliberately by the transport manager. The rebuild
+         takes 30-45 min at --merge-m 0, so it lands about 16:15.
+         NOTE what that means: Rotational Day gates at 06:00 and Half night at 14:00, so on
+         Monday itself those two shifts run on LAST week's roster; only Full night (22:00)
+         sees the fresh split that day. From Tuesday the board is correct for all three.
+         If the Mac is asleep launchd STARTS the job once it wakes — but starting is not
+         finishing, which is why the job is wrapped in caffeinate below. A Mac that is fully
+         shut down at 15:30 runs it at the next login. -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Weekday</key>
         <integer>1</integer>
         <key>Hour</key>
-        <integer>4</integer>
+        <integer>15</integer>
         <key>Minute</key>
-        <integer>0</integer>
+        <integer>30</integer>
     </dict>
 
     <!-- Never on load: installing the job should not fire a 30-45 min OSRM rebuild. -->
