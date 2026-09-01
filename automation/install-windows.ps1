@@ -314,6 +314,33 @@ if (-not (Test-Path $keyPath)) {
     }
 }
 
+# 6b. Shell scripts MUST have Unix line endings.
+# Git Bash cannot run a CRLF script: the heredocs in refresh_routes.sh never terminate
+# (the closing PYEOF becomes PYEOF\r and never matches), so bash reports a syntax error and
+# exits 2 having produced no output at all - which is exactly what the factory PC hit on
+# 2026-09-01, and what made the same two files show as permanently "modified" in git.
+# .gitattributes already asks for LF; this is the belt to that braces, because whatever put
+# the CR back - an editor, a copy through Windows, a git config - the job still has to run.
+$crFixed = @()
+foreach ($rel in @('refresh_routes.sh', 'automation/weekly-refresh.sh', 'automation/install-macos.sh')) {
+    $f = Join-Path $Repo $rel
+    if (-not (Test-Path $f)) { continue }
+    $bytes = [System.IO.File]::ReadAllBytes($f)
+    if ($bytes -contains 13) {
+        $text = ([System.Text.Encoding]::UTF8.GetString($bytes)) -replace "`r`n", "`n" -replace "`r", "`n"
+        [System.IO.File]::WriteAllText($f, $text, (New-Object System.Text.UTF8Encoding $false))
+        $crFixed += $rel
+    }
+}
+if ($crFixed.Count) {
+    Say-Warn ("Repaired Windows line endings in: " + ($crFixed -join ', '))
+    Say-Info "Git Bash cannot run those files with CRLF - it fails with a syntax error and no"
+    Say-Info "other message. They are back to Unix endings now, which also clears them from"
+    Say-Info "'git status' so the next 'git pull' will not be blocked."
+} else {
+    Say-Ok "Shell scripts have Unix line endings."
+}
+
 # 7. Folders and free space. The ERP dump is ~48 MB and is replaced via a staging swap,
 #    so the transient peak is roughly double.
 foreach ($d in @('automation\logs', 'automation\last-good', 'data')) {
