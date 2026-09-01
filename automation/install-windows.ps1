@@ -44,9 +44,29 @@ function Say-Info ($m) { Write-Host ("        " + $m) -ForegroundColor DarkGray 
 
 # One way to run a shell command, whichever shell this PC actually has. Every dependency
 # check goes through it, so a WSL-only PC is checked as thoroughly as a Git Bash one.
+#
+# The command goes into a FILE rather than being passed as an argument. Windows PowerShell
+# 5.1 re-quotes arguments to native commands, and it mangles any that contain quotes of
+# their own: on the factory PC 2026-09-01,
+#     '/c/.../python' -c 'import sys;print(sys.version_info[0])'
+# reached bash as several separate words and died with
+#     syntax error: unexpected end of file
+# A file has no argument layer to survive, so every quoting problem of this class goes away
+# at once. It is the same trick the Task Scheduler probe below already uses.
 function Invoke-Sh ($cmd) {
-    if ($script:useWsl) { return (& wsl.exe -e bash -lc $cmd 2>$null) }
-    return (& $script:bash -lc $cmd 2>$null)
+    $f = Join-Path $env:TEMP ("fleet-sh-" + [guid]::NewGuid().ToString("N") + ".sh")
+    # LF endings and no BOM: bash treats a CR as part of the command and chokes on a BOM.
+    [System.IO.File]::WriteAllText($f, (($cmd -replace "`r`n", "`n") + "`n"),
+        (New-Object System.Text.UTF8Encoding $false))
+    try {
+        if ($script:useWsl) {
+            $wf = (& wsl.exe wslpath -a "$f" 2>$null | Select-Object -First 1)
+            return (& wsl.exe -e bash -l "$wf" 2>$null)
+        }
+        return (& $script:bash -l "$f" 2>$null)
+    } finally {
+        Remove-Item $f -ErrorAction SilentlyContinue   # a cmdlet, so $LASTEXITCODE survives
+    }
 }
 
 function Explain-Result ($code) {
