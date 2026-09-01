@@ -132,7 +132,9 @@ def main():
         if len(non_rotating) < 50:
             sys.exit(f"ERROR: {NONROT_PATH} lists only {len(non_rotating)} riders; expected ~104.\n"
                      f"       A truncated list steps the riders it lost. Restore it from git.")
-    previous = json.load(open(ROSTER_PATH))["slots"] if os.path.exists(ROSTER_PATH) else {}
+    prev_doc = json.load(open(ROSTER_PATH)) if os.path.exists(ROSTER_PATH) else {}
+    previous = prev_doc.get("slots", {})
+    prev_week = prev_doc.get("_rotaWeek") or ""
 
     votes = collections.defaultdict(collections.Counter)   # (emp, week) -> Counter(slot)
     shift, name = {}, {}
@@ -177,6 +179,39 @@ def main():
         else:
             unplaced.append(e)
 
+    # ---- riders the FEED no longer reaches ------------------------------------------
+    # The ERP window is ~11 days. This machine may also hold older dumps, but those are 47 MB
+    # of names, home GPS and attendance — gitignored, and rightly never committed. So a fresh
+    # clone sees LESS history than the machine the roster was last cut on, and riders who last
+    # punched a fortnight ago simply vanish from it. Measured on the factory PC: 28 riders
+    # present here, absent there, from the same ERP.
+    #
+    # The previous roster is the portable history. It IS committed — employee numbers and
+    # slots only, no names, no GPS — so every machine has it. Carry those riders at their last
+    # known slot, stepped one Monday at a time, held if they never rotate, and mark them
+    # `carried` so the map shows the slot as inferred rather than read.
+    carried = []
+    if previous and prev_week:
+        gap = (tgt - datetime.date.fromisoformat(prev_week)).days // 7
+        if 0 <= gap <= 4:                       # older than a month is guesswork, not history
+            for e, v in previous.items():
+                if e in slots:
+                    continue
+                if not args.no_nonrotating and e in non_rotating:
+                    pass                        # held: their slot does not move
+                else:
+                    for _ in range(gap):
+                        v = STEP[v]
+                slots[e] = v
+                source[e] = "carried"
+                from_week[e] = prev_week
+                carried.append(e)
+        elif gap > 4:
+            print(f"NOTE: the previous roster is {gap} weeks old — too stale to carry riders forward from.")
+
+    # A rider just carried is no longer unplaced — count them once, in one place.
+    unplaced = [e for e in unplaced if e not in slots]
+
     counts = collections.Counter(slots.values())
     by_source = collections.Counter(source.values())
     # Diff BOTH ways. Iterating only the new map means a cut that loses riders reports
@@ -197,6 +232,8 @@ def main():
                     "projected": "stepped one Monday from last week",
                     "stale": "stepped from an older snapshot"}[k]
             print(f"   {by_source[k]:4}  {k:9} {note}")
+    if carried:
+        print(f"   {len(carried):4}  carried   absent from this ERP feed — slot brought forward from the previous roster")
     if unplaced:
         print(f"   {len(unplaced):4}  unplaced  no punch in any snapshot — in NO rotational service")
     print()
@@ -215,11 +252,17 @@ def main():
 
     # A cut that loses riders is either a truncated feed or a changed ERP field, and either
     # way those riders vanish from all three slots without appearing in any "moved" tally.
-    if (dropped or len(slots) < 0.9 * len(previous)) and not args.accept_large_change:
-        sys.exit(f"\nERROR: this cut drops {len(dropped)} rider(s) that the previous roster placed"
-                 f" ({len(previous)} -> {len(slots)}).\n"
-                 f"       They would be in NO rotational service. Usual cause: a short or stale ERP pull.\n"
-                 f"       Re-run with --accept-large-change if this is genuinely intended.")
+    # After carrying, a still-dropped rider is one no source can place — a genuinely short
+    # pull, not merely a machine with less history. A few is ordinary attrition; a lot is the
+    # truncated-feed case this guard was built for.
+    if dropped and not args.accept_large_change:
+        share = len(dropped) / max(len(previous), 1)
+        if share > 0.05:
+            sys.exit(f"\nERROR: this cut drops {len(dropped)} rider(s) that the previous roster placed"
+                     f" ({len(previous)} -> {len(slots)}, {share:.0%}).\n"
+                     f"       They would be in NO rotational service. Usual cause: a short or stale ERP pull.\n"
+                     f"       Re-run with --accept-large-change if this is genuinely intended.")
+        print(f"   ({len(dropped)} dropped rider(s), {share:.1%} — within normal attrition, continuing)")
 
     if args.dry_run:
         print("\n--dry-run: nothing written")
@@ -236,7 +279,8 @@ def main():
         "_snapshots": used,
         "_counts": {"rot-day": counts["1"], "rot-half": counts["2"], "rot-full": counts["3"],
                     "placed": len(slots), "rotationalRiders": len(rotational),
-                    "unplaced": len(unplaced), **{k: by_source[k] for k in ("observed", "projected", "stale")}},
+                    "unplaced": len(unplaced), "carried": len(carried),
+                   **{k: by_source[k] for k in ("observed", "projected", "stale")}},
         # per rider: where the slot came from, so the map can mark an inferred slot as inferred
         "source": {e: source[e] for e in sorted(source)},
         "fromWeek": {e: from_week[e] for e in sorted(from_week)},
