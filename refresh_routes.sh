@@ -51,7 +51,12 @@ mkdir -p data  # gitignored dump lives here; the folder may be empty on a fresh 
 # erp_address.py. Discover it rather than assume it, or the 04:00 Monday job dies with
 # ETIMEDOUT on whichever network the machine happens to be on. ERP_BASE skips discovery.
 if [ -z "${ERP_BASE:-}" ]; then
-  ERP_BASE="$("$PY" erp_address.py 2>/dev/null)"
+  # `|| true` is load-bearing: under `set -e` a failing command substitution in an
+  # assignment kills the script on the spot. python exits 2 when the file is missing, and
+  # 2>/dev/null hides why — so a checkout without erp_address.py died with a bare "exit 2"
+  # and no output at all, which is precisely what the factory PC did on 2026-09-01. The
+  # fallback on the next line exists for exactly this case; let it be reached.
+  ERP_BASE="$("$PY" erp_address.py 2>/dev/null || true)"
   [ -z "$ERP_BASE" ] && ERP_BASE="http://${ERP_HOST:-life.gainup.in}:${ERP_PORT:-8089}"
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERP address: $ERP_BASE"
 fi
