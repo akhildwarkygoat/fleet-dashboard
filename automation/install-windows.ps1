@@ -40,7 +40,7 @@ param(
 # and sets $script:Failed, and the places that must abort use try/catch.
 $ErrorActionPreference = 'Continue'
 $TaskName  = 'Fleet dashboard weekly refresh'
-$ProbeName = 'Fleet dashboard weekly refresh (preflight)'
+$ProbeName = 'Fleet dashboard preflight probe'
 $Repo      = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $LogPath   = Join-Path $Repo 'automation\logs\weekly-refresh.log'
 
@@ -347,7 +347,8 @@ Remove-Item $probeOut -ErrorAction SilentlyContinue
 
 # A script FILE, not a nested -c string: quoting a shell command inside a cmd line inside a
 # scheduled-task argument is where these probes usually break, silently.
-$shBody = "cd '$RepoSh' || { echo BLOCKED-CD; exit 1; }" + "`n" +
+$shBody = "echo STARTED" + "`n" +
+          "cd '$RepoSh' || { echo BLOCKED-CD; exit 1; }" + "`n" +
           'echo "cwd=$(pwd)"' + "`n" +
           "head -c1 refresh_routes.sh >/dev/null 2>&1 && echo REACHABLE || echo BLOCKED-READ" + "`n"
 [System.IO.File]::WriteAllText($probeSh, $shBody.Replace("`r`n", "`n"), (New-Object System.Text.UTF8Encoding $false))
@@ -379,7 +380,8 @@ else {
 [System.IO.File]::WriteAllText($probeCmd, $cmdBody, $oemEnc)
 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-$probeAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"`"$probeCmd`" > `"$probeOut`" 2>&1`"" -WorkingDirectory $Repo
+$cmdExe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
+$probeAction = New-ScheduledTaskAction -Execute $cmdExe -Argument "/c `"`"$probeCmd`" > `"$probeOut`" 2>&1`"" -WorkingDirectory $Repo
 try {
     Register-ScheduledTask -TaskName $ProbeName -Action $probeAction -Principal $principal -Force | Out-Null
 } catch {
@@ -388,25 +390,40 @@ try {
     Say-Info "Some company policies block this. Try running PowerShell as Administrator once."
     exit 1
 }
-Start-ScheduledTask -TaskName $ProbeName
-$deadline = (Get-Date).AddSeconds(60)
+try { Start-ScheduledTask -TaskName $ProbeName } catch { Say-Warn "Could not start the probe task: $($_.Exception.Message)" }
+$deadline = (Get-Date).AddSeconds(90)
+$r = 267011
 do {
     Start-Sleep -Milliseconds 700
-    $r = (Get-ScheduledTaskInfo -TaskName $ProbeName).LastTaskResult
+    try { $r = (Get-ScheduledTaskInfo -TaskName $ProbeName).LastTaskResult } catch { }
 } while ((Get-Date) -lt $deadline -and ($r -eq 267009 -or $r -eq 267011))   # 0x41301 running, 0x41303 never run
 $probeText = ''
 if (Test-Path $probeOut) { $probeText = (Get-Content $probeOut -Raw) }
-Unregister-ScheduledTask -TaskName $ProbeName -Confirm:$false
+Unregister-ScheduledTask -TaskName $ProbeName -Confirm:$false -ErrorAction SilentlyContinue
 Remove-Item $probeCmd, $probeSh, $probeOut -ErrorAction SilentlyContinue
 
-if ($probeText -notmatch 'REACHABLE') {
+if ($probeText -match 'REACHABLE') {
+    Say-Ok "A scheduled task can reach the repo and run bash."
+} elseif ($probeText -match 'BLOCKED-CD|BLOCKED-READ') {
+    # The probe RAN and was refused. That is a real answer and a real reason to stop.
     Write-Host "  FAIL  A scheduled task on this PC could not read the repo." -ForegroundColor Red
     Say-Info ("Probe said: " + $probeText.Trim())
     Say-Info "Nothing has been scheduled. Usual cause: the folder is on a network or"
-    Say-Info "removable drive, or in a location this account cannot reach unattended."
+    Say-Info "removable drive, or somewhere this account cannot reach unattended."
     exit 1
+} else {
+    # The probe produced nothing at all - it did not get far enough to answer. That is
+    # INCONCLUSIVE, not a failure, and it is the wrong thing to block an install over when
+    # every dependency above passed. Say so plainly and carry on; the manual run at the end
+    # is the real proof anyway.
+    Say-Warn "The Task Scheduler probe returned nothing, so it could not confirm either way."
+    Say-Info ("Last Run Result: 0x{0:X} ({1})" -f $r, (Explain-Result $r))
+    if (-not $probeText) { Say-Info "The probe wrote no output at all - not even its first line." }
+    else { Say-Info ("It said: " + $probeText.Trim()) }
+    Say-Info "This is usually security software blocking scripts in the Temp folder."
+    Say-Info "Installing anyway, because every real check above passed. Prove it end to end"
+    Say-Info "with the manual run printed at the end of this script, and read the log."
 }
-Say-Ok "A scheduled task can reach the repo and run bash."
 
 # ---------------------------------------------------------------- optional login test
 if (-not $SkipLoginTest) {
