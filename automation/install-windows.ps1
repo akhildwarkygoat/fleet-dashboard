@@ -30,7 +30,13 @@ param(
     [switch]$SkipLoginTest
 )
 
-$ErrorActionPreference = 'Stop'
+# NOT 'Stop'. Under 'Stop', Windows PowerShell 5.1 promotes anything a native command
+# writes to stderr into a TERMINATING error, and `2>$null` does not prevent it. This script
+# shells out constantly, so 'Stop' meant a program that merely printed a warning killed the
+# installer with a raw RemoteException - which is exactly what the Microsoft Store python
+# stub did on the factory PC, 2026-09-01. Every check here already reports its own result
+# and sets $script:Failed, and the places that must abort use try/catch.
+$ErrorActionPreference = 'Continue'
 $TaskName  = 'Fleet dashboard weekly refresh'
 $ProbeName = 'Fleet dashboard weekly refresh (preflight)'
 $Repo      = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -58,6 +64,8 @@ function Invoke-Sh ($cmd) {
     # LF endings and no BOM: bash treats a CR as part of the command and chokes on a BOM.
     [System.IO.File]::WriteAllText($f, (($cmd -replace "`r`n", "`n") + "`n"),
         (New-Object System.Text.UTF8Encoding $false))
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'    # native stderr must never be a terminating error
     try {
         if ($script:useWsl) {
             $wf = (& wsl.exe wslpath -a "$f" 2>$null | Select-Object -First 1)
@@ -65,6 +73,7 @@ function Invoke-Sh ($cmd) {
         }
         return (& $script:bash -l "$f" 2>$null)
     } finally {
+        $ErrorActionPreference = $prevEAP
         Remove-Item $f -ErrorAction SilentlyContinue   # a cmdlet, so $LASTEXITCODE survives
     }
 }
@@ -221,7 +230,19 @@ $RepoSh = $RepoSh -replace "'", "'\''"
 #      `command -v` in refresh_routes.sh would find exactly that.
 if ($bash -or $useWsl) {
     $py = (Invoke-Sh 'command -v python3 || command -v python' | Select-Object -First 1)
-    if (-not $py) {
+    if ($py -match 'WindowsApps') {
+        # The zero-byte Store alias. It is on PATH, so `command -v` finds it and
+        # refresh_routes.sh would find it too - then the Monday job would fail at 04:00
+        # having "found" a Python that only prints an advert.
+        Say-Fail "The only python on this PC is the Microsoft Store placeholder, not a real Python."
+        Say-Info "Two steps, both needed:"
+        Say-Info "  1. Install Python 3: https://www.python.org/downloads/windows/"
+        Say-Info "     On the FIRST screen of the installer, tick 'Add python.exe to PATH'."
+        Say-Info "  2. Turn the placeholder off so it stops shadowing the real one:"
+        Say-Info "     Settings > Apps > Advanced app settings > App execution aliases,"
+        Say-Info "     then switch OFF both 'python.exe' and 'python3.exe'."
+        Say-Info "Close and reopen PowerShell afterwards, then run this script again."
+    } elseif (-not $py) {
         Say-Fail "No python3 on this PC (as seen from Git Bash)."
         Say-Info "Install Python 3 from https://www.python.org/downloads/windows/ and TICK"
         Say-Info "'Add python.exe to PATH' on the first screen of the installer."
