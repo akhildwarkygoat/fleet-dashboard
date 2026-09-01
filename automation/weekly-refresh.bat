@@ -9,6 +9,10 @@ REM  rotates, and build_erp_routes.py refuses to emit a split it knows is stale.
 REM
 REM  Writes files only - it never touches git.
 REM
+REM  Any arguments are passed straight through to weekly-refresh.sh, so the
+REM  scheduled task can be registered with --roster-only (rotation in ~30 s,
+REM  no 30-45 min map rebuild).
+REM
 REM  DO NOT register this by hand. Run the installer instead - it checks that
 REM  the job can actually run before it schedules anything:
 REM
@@ -58,7 +62,7 @@ for /f "usebackq delims=" %%P in (`wsl.exe wslpath "%~dp0weekly-refresh.sh"`) do
 echo [%DATE% %TIME%] launching via WSL >> "%LOG%"
 REM -- `wsl -e bash <script>` needs neither the exec bit nor a shebang lookup,
 REM -- unlike invoking ./weekly-refresh.sh directly.
-wsl.exe -e bash "%WPATH%"
+wsl.exe -e bash "%WPATH%" %*
 set "RC=%ERRORLEVEL%"
 goto :done
 
@@ -70,7 +74,7 @@ exit /b 3
 
 :run
 echo [%DATE% %TIME%] launching via %BASH% >> "%LOG%"
-"%BASH%" "%~dp0weekly-refresh.sh"
+"%BASH%" "%~dp0weekly-refresh.sh" %*
 REM -- Capture ERRORLEVEL on the very next line. Do NOT switch to delayed
 REM -- expansion and !ERRORLEVEL! further down: by then the echoes below have
 REM -- overwritten it, so a failed log write would rewrite exit 4 as exit 1.

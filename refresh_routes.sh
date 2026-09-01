@@ -6,6 +6,7 @@
 #
 #   ./refresh_routes.sh                 # fetch live ERP + re-cut the rota roster + rebuild routes
 #   ./refresh_routes.sh --no-roster     # skip the roster re-cut (routes only)
+#   ./refresh_routes.sh --roster-only   # ONLY re-cut the roster: ~2 min, no map rebuild
 #   ./refresh_routes.sh --rebuild-plans # ALSO re-solve the three rotational plans (see below)
 #   ./refresh_routes.sh --check-login   # log in, report, exit. Fetches nothing, writes nothing.
 #
@@ -22,11 +23,13 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ROSTER=1
+ROSTER_ONLY=0
 REBUILD_PLANS=0
 CHECK_LOGIN=0
 for a in "$@"; do
   case "$a" in
     --no-roster) ROSTER=0 ;;
+    --roster-only) ROSTER_ONLY=1 ;;
     --rebuild-plans) REBUILD_PLANS=1 ;;
     --check-login) CHECK_LOGIN=1 ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
@@ -44,7 +47,14 @@ mkdir -p data  # gitignored dump lives here; the folder may be empty on a fresh 
 # — an RFC1918 address served by the factory's own resolver. It is INTERNAL ONLY. This machine
 # must be on the factory network (or its VPN); from anywhere else the login fails with exit 4,
 # which is not a credentials problem however much the old message said it was.
-ERP_BASE="${ERP_BASE:-http://life.gainup.in:8089}"
+# The ERP has split-horizon DNS and its reachable address differs per office subnet — see
+# erp_address.py. Discover it rather than assume it, or the 04:00 Monday job dies with
+# ETIMEDOUT on whichever network the machine happens to be on. ERP_BASE skips discovery.
+if [ -z "${ERP_BASE:-}" ]; then
+  ERP_BASE="$("$PY" erp_address.py 2>/dev/null)"
+  [ -z "$ERP_BASE" ] && ERP_BASE="http://${ERP_HOST:-life.gainup.in}:${ERP_PORT:-8089}"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERP address: $ERP_BASE"
+fi
 ERP_URL="${ERP_URL:-$ERP_BASE/api/general/VehicleEmpMapDetails}"
 
 # ── ERP login ───────────────────────────────────────────────────────────────────────
@@ -262,6 +272,19 @@ if stale or unknown:
     print("      The plans still describe the riders they were built for. That is deliberate:")
     print("      re-cut them when you mean to, with  ./refresh_routes.sh --rebuild-plans")
 PYEOF
+fi
+
+# The rotation and the map are two different jobs sharing one ERP pull. Re-cutting the
+# roster is the one that decides WHO is on which shift, and it takes seconds; rebuilding the
+# map is 30-45 minutes of OSRM lookups and only changes WHERE the buses drive. Splitting
+# them lets the shift board be brought up to date on a Monday without waiting for the map.
+if [ "$ROSTER_ONLY" = "1" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] --roster-only: skipping the route rebuild and the merge review."
+  echo "    The shift list is now current. public/current_routes.json still describes the"
+  echo "    week it was last built for, so the Prev-route map is one refresh behind until"
+  echo "    a full run is made. The Planner and the Stops board read the roster and are correct."
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Done (roster only)."
+  exit 0
 fi
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Rebuilding routes (OSRM road paths — 30-45 min at --merge-m 0)…"

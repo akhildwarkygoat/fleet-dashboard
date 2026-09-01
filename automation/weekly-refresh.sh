@@ -44,11 +44,17 @@ PYEOF
 )"
   case "$OUT" in
     OK\ *)       log "  Consistent: roster and routes are both week ${OUT#OK }." ;;
-    MISMATCH*)   log "  *** INCONSISTENT: ${OUT#MISMATCH }."
+    # In --roster-only mode the map is EXPECTED to lag, so a mismatch is the design, not a
+    # fault. Saying INCONSISTENT every time would teach whoever reads this log to ignore it.
+    MISMATCH*)   if [ "$ROSTER_ONLY_RUN" = "1" ]; then
+                   log "  Roster-only run: shift list is week ${OUT#MISMATCH } (map not rebuilt — expected)."
+                 else
+                   log "  *** INCONSISTENT: ${OUT#MISMATCH }."
                  log "      The shift list and the route map describe DIFFERENT weeks. The Rotational"
                  log "      split on the board is not trustworthy until this is re-run successfully."
                  log "      Fix: $(basename "$0") again, or re-cut just the roster with"
-                 log "           python3 build_rotational_roster.py" ;;
+                 log "           python3 build_rotational_roster.py"
+                 fi ;;
     *)           log "  (consistency check skipped: ${OUT:-no output})" ;;
   esac
 }
@@ -84,7 +90,10 @@ echo $$ > "$LOCK/pid"
 # Released however this script exits, including on Ctrl-C.
 trap 'rm -rf "$LOCK"' EXIT INT TERM
 
-log "=== weekly refresh starting (host $(hostname -s)) ==="
+ROSTER_ONLY_RUN=0
+for a in "$@"; do [ "$a" = "--roster-only" ] && ROSTER_ONLY_RUN=1; done
+
+log "=== weekly refresh starting (host $(hostname -s))$([ "$ROSTER_ONLY_RUN" = 1 ] && echo ' — roster only') ==="
 
 # Snapshot what we are about to replace, into a DATED directory.
 #
@@ -117,7 +126,7 @@ log "Pre-run snapshot: automation/last-good/$(basename "$BACKUP")"
 # Capture the status explicitly. After `if cmd; then ... fi` with no branch taken, `$?` is
 # the status of the *if statement* (0), not of cmd — so a failed refresh reported "exit 0"
 # and told launchd the job had succeeded.
-./refresh_routes.sh >> "$LOG" 2>&1
+./refresh_routes.sh "$@" >> "$LOG" 2>&1
 RC=$?
 
 if [ "$RC" -eq 0 ]; then

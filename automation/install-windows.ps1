@@ -21,13 +21,15 @@
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File .\automation\install-windows.ps1
     powershell -NoProfile -ExecutionPolicy Bypass -File .\automation\install-windows.ps1 -Status
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\automation\install-windows.ps1 -RosterOnly
     powershell -NoProfile -ExecutionPolicy Bypass -File .\automation\install-windows.ps1 -Uninstall
 #>
 [CmdletBinding()]
 param(
     [switch]$Status,
     [switch]$Uninstall,
-    [switch]$SkipLoginTest
+    [switch]$SkipLoginTest,
+    [switch]$RosterOnly
 )
 
 # NOT 'Stop'. Under 'Stop', Windows PowerShell 5.1 promotes anything a native command
@@ -230,35 +232,44 @@ $RepoSh = $RepoSh -replace "'", "'\''"
 #      `command -v` in refresh_routes.sh would find exactly that.
 if ($bash -or $useWsl) {
     $py = (Invoke-Sh 'command -v python3 || command -v python' | Select-Object -First 1)
-    if ($py -match 'WindowsApps') {
-        # The zero-byte Store alias. It is on PATH, so `command -v` finds it and
-        # refresh_routes.sh would find it too - then the Monday job would fail at 04:00
-        # having "found" a Python that only prints an advert.
-        Say-Fail "The only python on this PC is the Microsoft Store placeholder, not a real Python."
-        Say-Info "Two steps, both needed:"
-        Say-Info "  1. Install Python 3: https://www.python.org/downloads/windows/"
-        Say-Info "     On the FIRST screen of the installer, tick 'Add python.exe to PATH'."
-        Say-Info "  2. Turn the placeholder off so it stops shadowing the real one:"
-        Say-Info "     Settings > Apps > Advanced app settings > App execution aliases,"
-        Say-Info "     then switch OFF both 'python.exe' and 'python3.exe'."
-        Say-Info "Close and reopen PowerShell afterwards, then run this script again."
-    } elseif (-not $py) {
+    if (-not $py) {
         Say-Fail "No python3 on this PC (as seen from Git Bash)."
-        Say-Info "Install Python 3 from https://www.python.org/downloads/windows/ and TICK"
-        Say-Info "'Add python.exe to PATH' on the first screen of the installer."
+        Say-Info "NONE of these need Administrator rights:"
+        Say-Info "  a) Microsoft Store: search 'Python 3' and Get. Easiest, installs as you."
+        Say-Info "  b) https://www.python.org/downloads/windows/ - on the first screen TICK"
+        Say-Info "     'Add python.exe to PATH' and UNTICK 'Install launcher for all users',"
+        Say-Info "     which is the only box on that screen that asks for an admin password."
+        Say-Info "Then close and reopen PowerShell and run this script again."
     } else {
-        # Same apostrophe escape as $RepoSh: $py is usually under C:\Users\<name>\AppData.
+        # TEST IT, then explain a failure - do not judge by path. A REAL Store Python also
+        # lives under WindowsApps, so rejecting that folder outright would refuse the one
+        # install route that needs no Administrator rights.
         $pySh = $py -replace "'", "'\''"
         $ver = (Invoke-Sh "'$pySh' -c 'import sys;print(sys.version_info[0])'")
-        if ($ver -eq '3') { Say-Ok "Python 3: $py" }
-        else {
-            Say-Fail "'$py' is not a working Python 3 (it printed '$ver')."
-            Say-Info "This is usually the Microsoft Store placeholder. Install real Python 3."
+        if ($ver -eq '3') {
+            Say-Ok "Python 3: $py"
+        } elseif ($py -match 'WindowsApps') {
+            Say-Fail "That python is the Microsoft Store PLACEHOLDER - a stub that only opens the Store."
+            Say-Info "Install a real Python 3. No Administrator rights needed for either route:"
+            Say-Info "  a) Click Start, search 'Python 3', open the Microsoft Store entry, press Get."
+            Say-Info "  b) https://www.python.org/downloads/windows/ - TICK 'Add python.exe to PATH'"
+            Say-Info "     and UNTICK 'Install launcher for all users' (that box is the one that"
+            Say-Info "     asks for an admin password; without it the install is per-user)."
+            Say-Info "If the stub still wins afterwards, switch it off: Settings > Apps >"
+            Say-Info "Advanced app settings > App execution aliases > python.exe and python3.exe OFF."
+            Say-Info "Then close and reopen PowerShell and run this script again."
+        } else {
+            Say-Fail "'$py' did not report Python 3 (it printed '$ver')."
+            Say-Info "Install Python 3 from the Microsoft Store, or python.org with"
+            Say-Info "'Add python.exe to PATH' ticked."
         }
     }
     Invoke-Sh 'command -v curl' | Out-Null
     if ($LASTEXITCODE -eq 0) { Say-Ok "curl present." } else { Say-Fail "curl is missing; the ERP fetch needs it." }
 
+    # No pip install is ever needed: every script here imports only the standard library.
+    # (merge_suggestions.py wants openpyxl, but its failure is already non-fatal and it is
+    # skipped entirely in --roster-only mode.)
     # node is NOT used by the default Monday job - only by --rebuild-plans, which the
     # schedule does not pass. Never fail the install over it.
     Invoke-Sh 'command -v node' | Out-Null
@@ -417,7 +428,14 @@ if (-not $SkipLoginTest) {
 }
 
 # ---------------------------------------------------------------- register
-$action = New-ScheduledTaskAction -Execute (Join-Path $Repo 'automation\weekly-refresh.bat') -WorkingDirectory $Repo
+# -RosterOnly registers the fast job: re-cut the shift rota only, ~30 s, no map rebuild.
+# That is the half that decides who is on which shift, which is what the Planner reads.
+$bat = Join-Path $Repo 'automation\weekly-refresh.bat'
+$action = if ($RosterOnly) {
+    New-ScheduledTaskAction -Execute $bat -Argument '--roster-only' -WorkingDirectory $Repo
+} else {
+    New-ScheduledTaskAction -Execute $bat -WorkingDirectory $Repo
+}
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At '15:30'
 # StartWhenAvailable is the whole point: it is the Windows equivalent of launchd running a
 # missed job on wake. schtasks.exe cannot express it, which is why this script exists rather
@@ -455,14 +473,24 @@ Write-Host "Installed: $TaskName" -ForegroundColor Green
 Write-Host "  repo    : $Repo"
 Write-Host "  bash    : $bashShown"
 Write-Host "  schedule: Mondays 15:30 (runs at the next start-up if the PC was off)"
+if ($RosterOnly) {
+    Write-Host "  mode    : ROSTER ONLY - re-cuts the shift rota (~30 s). The route map is NOT"
+    Write-Host "            rebuilt; run the installer again without -RosterOnly to change that."
+} else {
+    Write-Host "  mode    : full - rota plus the route map rebuild (30-45 min)"
+}
 Write-Host "  next run: $($info.NextRunTime)"
 Write-Host "  log     : $LogPath"
 Write-Host ""
 Write-Host "This job runs as YOU, so:" -ForegroundColor Cyan
 Write-Host "  - The PC must be signed in on Monday afternoon. Locking the screen is fine."
 Write-Host "  - Do not sign out, and do not shut down."
-Write-Host "  - A black window opens at 15:30 and stays for 30-45 minutes. That is the"
-Write-Host "    refresh working. It is NOT the dashboard window - leave both alone."
+if ($RosterOnly) {
+    Write-Host "  - A black window opens at 15:30 for well under a minute. That is it working."
+} else {
+    Write-Host "  - A black window opens at 15:30 and stays for 30-45 minutes. That is the"
+    Write-Host "    refresh working. It is NOT the dashboard window - leave both alone."
+}
 Write-Host ""
 Write-Host "Run it once now, to prove it end to end (takes 30-45 minutes):" -ForegroundColor Cyan
 Write-Host "  Start-ScheduledTask -TaskName ""$TaskName"""
