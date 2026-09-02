@@ -329,7 +329,10 @@ export function fleetFromSolver(solver, storeFleet) {
  *  Plan stops with no free store match are carried over as synthetic stops so the import never
  *  silently drops a route's riders, and each stop's plan-time rider count (seq[].hc) is returned
  *  so the editor can present the plan exactly as solved — not re-derived from today's demand.
- *  @returns {{ seed: Map<string,string[]>, extras: object[], demand: Map<string,number> }} */
+ *  `dropped` lists any route whose bus is absent from today's ERP fleet: those are removed
+ *  whole, riders and all, and the caller must say so rather than quietly showing a smaller plan.
+ *  @returns {{ seed: Map<string,string[]>, extras: object[], demand: Map<string,number>,
+ *              dropped: {name:string,riders:number,stops:number,cost:number}[] }} */
 export function seedFromSolver(solver, fleet, stops) {
   const byCoord = new Map(), byName = new Map(), located = [];
   for (const s of stops) {
@@ -345,12 +348,19 @@ export function seedFromSolver(solver, fleet, stops) {
     return best;
   };
   const byBusName = new Map(fleet.map((b) => [b.name, b.id]));
-  const seed = new Map(), extras = [], demand = new Map(), used = new Set();
+  const seed = new Map(), extras = [], demand = new Map(), used = new Set(), dropped = [];
   for (const r of (solver.routes || [])) {
     // saved plans still carry pre-rename registrations, so canonicalise before matching —
     // otherwise the route finds no bus and the `continue` below silently drops it
     const busId = byBusName.get(canonVehicle(r.name));
-    if (!busId) continue;
+    if (!busId) {
+      /* The bus is not in today's ERP fleet, so the whole route goes — every rider and every
+         rupee of it. Silently: finalised_plan.json's TN57BM3636 carries 12 stops, 44 riders
+         and Rs2,726/day, and its disappearance is the entire gap between the plan's 2,997
+         riders and the Planner's 2,953. Record it so the board can say so. */
+      dropped.push({ name: r.name, riders: +r.riders || 0, stops: (r.seq || []).length, cost: +r.cost || 0 });
+      continue;
+    }
     const ids = [];
     for (const s of (r.seq || [])) {
       const pt = s.lat != null ? { lat: +s.lat, lng: +s.lng } : null;
@@ -379,7 +389,7 @@ export function seedFromSolver(solver, fleet, stops) {
     }
     seed.set(busId, ids);
   }
-  return { seed, extras, demand };
+  return { seed, extras, demand, dropped };
 }
 
 /* ---- helpers ---- */

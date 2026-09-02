@@ -38,6 +38,37 @@ export const standingPerDay = (p = STANDING) =>
 const num = (v) => (isFinite(+v) ? +v : 0);
 
 /**
+ * The cost basis THIS fleet actually reports, for use as `opts` below.
+ *
+ * STANDING/DIESEL_PER_KM above are notional: Rs2,426/day and Rs22/km. The fleet's own
+ * records say otherwise — all 29 owned buses carry loanMonth 0 (the loans are pooled and
+ * largely paid off), driver 692, maintenance 1,242 and diesel 16.8/km, i.e. Rs1,934/day.
+ * Deriving a standing cost from a plan file only works when that plan charged one; where it
+ * did not, falling back to an invented constant overstates the service by ~Rs500/bus/day.
+ * Ask the fleet instead.
+ *
+ * @param fleet [{ name, type, loanMonth, driverDay, maintDay, dieselPerKm }]
+ * @returns { standingOf(name), dieselPerKm } or null when the fleet says nothing useful
+ */
+export function fleetBasis(fleet, p = STANDING) {
+  const list = (fleet || []).filter((b) => b && b.type !== "rent");
+  if (!list.length) return null;
+  const byName = new Map();
+  const rates = [];
+  for (const b of list) {
+    const standing = num(b.loanMonth) / (p.workingDays || 26) + num(b.driverDay) + num(b.maintDay);
+    if (standing > 0) byName.set(canonVehicle(String(b.name || "").trim()), standing);
+    if (num(b.dieselPerKm) > 0) rates.push(num(b.dieselPerKm));
+  }
+  if (!byName.size) return null;
+  rates.sort((a, b) => a - b);
+  return {
+    standingOf: (name) => byName.get(name),          // undefined -> caller derives or falls back
+    dieselPerKm: rates.length ? rates[Math.floor(rates.length / 2)] : DIESEL_PER_KM,
+  };
+}
+
+/**
  * @param entries [{ svc, plan }] — the FINALISED plan per service. `runs(bus)` counts
  *        only what is in here, so changing what is finalised moves every adjusted figure.
  * @param opts   { standing, dieselPerKm } to override the cost constants
@@ -60,7 +91,13 @@ export function fleetCost(entries, opts = {}) {
       const b = perBus.get(name);
       // one rented row is enough to make the vehicle a hire — hires never share
       if (r.type === "rent") b.type = "rent";
-      b.runs.push({ svcId: svc.id, svcName: svc.name, route: r });
+      /* Carry the plan's own declaration of how it was costed. Without it the derivation
+         below silently mixes bases: plan_s7.json and plan_zen.json declare
+         costing.basis "running-only" (standing:false), plan_rot-*.json declare "full"
+         (standing:true), and finalised_plan.json declares nothing at all. */
+      b.runs.push({ svcId: svc.id, svcName: svc.name, route: r,
+                    basis: (plan.costing && plan.costing.basis) || null,
+                    hasStanding: plan.costing ? plan.costing.standing !== false : null });
     }
   }
 
@@ -90,11 +127,27 @@ export function fleetCost(entries, opts = {}) {
     for (const run of bus.runs) {
       const c = run.route.cost;
       if (c == null || !isFinite(+c)) continue;
+      // A plan that declares it charged NO standing cost reveals nothing about the vehicle's
+      // standing cost; reading one anyway is how a --no-standing plan's near-zero remainder
+      // used to compete in the MAX. Skip it explicitly rather than relying on MAX to lose.
+      if (run.hasStanding === false) continue;
       sawCost = true;
       best = Math.max(best, num(c) - diesel * num(run.route.km));
     }
-    // no plan states a cost at all -> fall back to the notional figure rather than free
-    return sawCost ? Math.max(0, best) : standing;
+    /* No plan charged this vehicle a standing cost, so nothing can be derived. Prefer the
+       fleet's own median over the notional constant — inventing Rs2,426 where the fleet
+       reports Rs1,934 overstates every such service by ~Rs500/bus/day. */
+    if (sawCost) return Math.max(0, best);
+    if (typeof opts.standingOf === "function") {
+      const vals = [];
+      for (const b of perBus.values()) {
+        if (b.type === "rent") continue;
+        const v = opts.standingOf(b.name);
+        if (isFinite(v) && v > 0) vals.push(v);
+      }
+      if (vals.length) { vals.sort((a, b) => a - b); return vals[Math.floor(vals.length / 2)]; }
+    }
+    return standing;
   };
   for (const bus of perBus.values()) bus.standing = impliedStanding(bus);
 
@@ -125,8 +178,25 @@ export function fleetCost(entries, opts = {}) {
     }
   }
 
+  /* Which declared bases are in play, and which vehicles straddle more than one. A service
+     whose plan charged no standing cost still gets charged standing here whenever one of its
+     buses also appears in a plan that did — that is what makes the column comparable, and it
+     is also why a view must be able to say so rather than implying every row was costed the
+     same way. */
+  const basesSeen = new Set();
+  for (const { plan } of list) basesSeen.add((plan.costing && plan.costing.basis) || "unstated");
+  const crossBasisBuses = [];
+  for (const bus of perBus.values()) {
+    if (bus.type === "rent") continue;
+    const b = new Set(bus.runs.map((r) => r.basis || "unstated"));
+    if (b.size > 1) crossBasisBuses.push({ name: bus.name, bases: [...b], svcIds: bus.runs.map((r) => r.svcId) });
+  }
+
   const services = [...bySvc.values()].map((s) => ({
     ...s,
+    /* true when this service's own plan charged no standing cost but at least one of its
+       buses inherited standing from another service's plan that did */
+    inheritedStanding: crossBasisBuses.some((c) => c.svcIds.includes(s.id)),
     standaloneHead: s.riders ? s.standalone / s.riders : 0,
     adjustedHead: s.riders ? s.adjusted / s.riders : 0,
   }));

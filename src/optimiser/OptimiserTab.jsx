@@ -27,7 +27,7 @@ import TrackImplView from "./TrackImplView.jsx";
 import { stopsForRiders, coverageOf } from "./serviceStops.js";
 import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js";
 import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
-import { fleetCost, runCostIndex } from "./fleetCost.js";
+import { fleetCost, runCostIndex, fleetBasis } from "./fleetCost.js";
 import { canonVehicle } from "../erp.js";
 import { resolveFinalised, clearFinalised, downloadFinalised, importFinalised } from "./finalisedPlans.js";
 
@@ -1143,12 +1143,27 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
       <div className="overflow-x-auto">
         <table className="w-full text-sm" style={{ borderCollapse: "collapse" }}>
           <thead><tr style={{ color: t.muted }}>
-            {["Service", "Running", "Buses", "Riders", "₹/head alone", "₹/head adjusted", ""].map((h, i) => (
-              <th key={i} className="py-2 px-2 text-left text-xs font-semibold uppercase tracking-wider"
+            {[["Service"], ["Running"], ["Buses"], ["Riders", "on a bus in this plan"],
+              ["₹/head alone", "this service charged the whole vehicle"],
+              ["₹/head adjusted", "its share of a bus that runs several services"], [""]].map(([h, tip], i) => (
+              <th key={i} title={tip || undefined} className="py-2 px-2 text-left text-xs font-semibold uppercase tracking-wider"
                 style={{ borderBottom: "1px solid " + t.border }}>{h}</th>
             ))}
           </tr></thead>
           <tbody>
+            {/* mixedBasis was computed here and never rendered. It matters: plan_s7.json and
+                plan_zen.json declare costing.basis "running-only" — they were generated with
+                --no-standing, so their own files charge diesel and nothing else. Costing them
+                that way put ₹40.6 (diesel only) in the same column as ₹59.8 (fully costed) and
+                invited a straight comparison. Both columns are now on the live fleet's basis;
+                say so, because it moves those two services a long way. */}
+            {mixedBasis && (
+              <tr><td colSpan={7} className="py-2 px-2 text-xs" style={{ color: t.watch, background: t.watch + "14" }}>
+                Some of these plans were generated without standing costs (7 am Morning and Zenwear declare
+                <b> running-only</b>). Both ₹/head columns re-cost every service on the live fleet&rsquo;s own figures
+                so the rows are comparable — those two therefore read far higher here than inside their own plan file.
+              </td></tr>
+            )}
             {rows.map(({ svc, fin, cost }) => (
               <tr key={svc.id} style={{ borderBottom: "1px solid " + t.border }}>
                 <td className="py-2 px-2" style={{ color: t.text }}>
@@ -1305,7 +1320,11 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
          standing cost to each, so the services summed to ~37% more than the fleet. Rewriting
          each route's `cost` here means every downstream aggregate — KPI tiles, routes table,
          ₹/head — is adjusted without any of them knowing about it. */
-      const fc = fleetCost(ok.map(({ x, d }) => ({ svc: x, plan: d })));
+      /* Cost on the LIVE FLEET's own figures where it has them (Rs1,934/bus/day, Rs16.8/km
+         today), not on the notional Rs2,426/Rs22 the module falls back to. Without this a
+         service whose plan was built --no-standing — 7 am Morning and Zenwear both are —
+         inherits a standing cost nobody charged, from a constant the fleet contradicts. */
+      const fc = fleetCost(ok.map(({ x, d }) => ({ svc: x, plan: d })), fleetBasis(store.getFleet()) || {});
       const idx = runCostIndex(fc);
       const routes = [];
       ok.forEach(({ x, d }) => d.routes.forEach((r) => {
@@ -1598,14 +1617,26 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
           cost: {
             title: `How ₹${m.cost_head.toFixed(1)} / head / day is calculated`,
             steps: [
-              view !== "rental" && <>Owned buses: <b>₹{a.own_driver_day}</b> driver + <b>₹{a.own_maint_day}</b> maintenance{a.own_insurance_day ? <> + <b>₹{a.own_insurance_day}</b> insurance &amp; taxes</> : null} per day (paid whether they run or not — the <b>loan is excluded</b> as capital) + <b>₹{a.own_diesel_per_km}/km</b> diesel. {ow.buses} owned → <b style={{ color: t.primary }}>{inr0(ow.cost)}/day</b>.</>,
-              view !== "owned" && <>Rental vans: flat tariff per trip ({a.rent_tariff}). {rt.buses} vans → <b style={{ color: t.primary }}>{inr0(rt.cost)}/day</b>.</>,
+              /* Every shipped plan file lacks an `assumptions` block — only solver_result.json
+                 carries one — so this used to render "₹undefined driver + ₹undefined
+                 maintenance" and "N stops × undefined". Say what the file actually records
+                 instead of printing the word undefined at a manager. */
+              !data.assumptions && <>This plan file does not record the cost assumptions it was built with{data.costing?.basis ? <>, only its basis: <b>{data.costing.basis}</b>{data.costing.standing === false ? <> (running costs only — no driver, maintenance or loan)</> : null}</> : null}. The breakdown below is therefore unavailable; the totals above are still the plan&rsquo;s own.</>,
+              data.assumptions && view !== "rental" && <>Owned buses: <b>₹{a.own_driver_day}</b> driver + <b>₹{a.own_maint_day}</b> maintenance{a.own_insurance_day ? <> + <b>₹{a.own_insurance_day}</b> insurance &amp; taxes</> : null} per day (paid whether they run or not — the <b>loan is excluded</b> as capital) + <b>₹{a.own_diesel_per_km}/km</b> diesel. {ow.buses} owned → <b style={{ color: t.primary }}>{inr0(ow.cost)}/day</b>.</>,
+              data.assumptions && view !== "owned" && <>Rental vans: flat tariff per trip ({a.rent_tariff}). {rt.buses} vans → <b style={{ color: t.primary }}>{inr0(rt.cost)}/day</b>.</>,
               <>Total {view === "overall" ? "fleet " : ""}cost = <b>{inr0(m.cost)}/day</b>.</>,
-              <>Riders carried = <b>{m.riders}</b> ({data.params.stops} stops × {a.demand_per_stop}; demand/stop = ceil(headcount × (1 − {a.absentee_pct}% absentee + {a.buffer_pct}% buffer))).</>,
+              data.assumptions
+                ? <>Riders carried = <b>{m.riders}</b> ({data.params.stops} stops × {a.demand_per_stop}; demand/stop = ceil(headcount × (1 − {a.absentee_pct}% absentee + {a.buffer_pct}% buffer))).</>
+                : <>Riders carried = <b>{m.riders}</b> across {data.params?.stops ?? "—"} stops.</>,
               <>Cost / head = total ÷ riders = {inr0(m.cost)} ÷ {m.riders} = <b style={{ color: t.primary, fontSize: "1.05em" }}>₹{m.cost_head.toFixed(1)}</b>.</>,
               <>Per month = ₹{m.cost_head.toFixed(1)} × {wd} working days = <b>{inr0(m.cost_head * wd)}</b>.</>,
             ].filter(Boolean),
-            chips: [`Diesel ₹${a.own_diesel_per_km}/km`, `Driver ₹${a.own_driver_day}/day`, `Maint ₹${a.own_maint_day}/day`, a.own_insurance_day ? `Insurance ₹${a.own_insurance_day}/day` : null, `Loan ${a.owned_loan}`, `Rental ${a.rent_tariff}`, `Absentee ${a.absentee_pct}%`, `Buffer ${a.buffer_pct}%`, `+${a.cap_leniency} leniency`, `${wd} days/mo`, a.road_source].filter(Boolean),
+            /* Only emit a chip whose value the file actually carries — a chip reading
+               "Diesel ₹undefined/km" is worse than no chip. */
+            chips: (data.assumptions
+              ? [`Diesel ₹${a.own_diesel_per_km}/km`, `Driver ₹${a.own_driver_day}/day`, `Maint ₹${a.own_maint_day}/day`, a.own_insurance_day ? `Insurance ₹${a.own_insurance_day}/day` : null, `Loan ${a.owned_loan}`, `Rental ${a.rent_tariff}`, `Absentee ${a.absentee_pct}%`, `Buffer ${a.buffer_pct}%`, `+${a.cap_leniency} leniency`, `${wd} days/mo`, a.road_source]
+              : [data.costing?.basis ? `Basis: ${data.costing.basis}` : null, data.costing?.standing === false ? "No standing costs" : null, `${wd} days/mo`, "Assumptions not recorded in this plan file"]
+            ).filter(Boolean),
           },
           buses: {
             title: `Why ${m.buses} buses`,

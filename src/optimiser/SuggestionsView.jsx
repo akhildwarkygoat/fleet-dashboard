@@ -60,8 +60,19 @@ function CountN({ value, decimals = 0, suffix = "", prefix = "" }) {
 function buildComparison(cur, opt) {
   if (!cur || !cur.buses || !opt || !opt.overall) return null;
   const a = opt.assumptions || {};
-  const FIX = (a.own_driver_day ?? 692) + (a.own_maint_day ?? 471) + (a.own_insurance_day ?? 676);
-  const perKm = a.own_diesel_per_km ?? 18;
+  /* `??` only falls back on null/undefined, and several of these fields are PROSE, not
+     numbers: solver_result.json stores own_diesel_per_km as
+       "per bus: Rs100/L / its ERP mileage (fallback 5.56 km/L -> Rs17.99/km)".
+     That string then propagated through `FIX + dayKm * perKm` and rendered every figure in
+     this view as RsNaN — cost/day, cost/head, the change column and the "saves RsNaN/day,
+     RsNaN lakh/year" banner. Take a value only when it is genuinely a finite number. */
+  const numOr = (v, d) => {
+    if (v == null || v === "") return d;
+    const n = typeof v === "string" ? Number(v.trim()) : Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+  const FIX = numOr(a.own_driver_day, 692) + numOr(a.own_maint_day, 463) + numOr(a.own_insurance_day, 676);
+  const perKm = numOr(a.own_diesel_per_km, 18);
   const rentCost = (km) => (km <= 80 ? 1700 : km <= 95 ? 1900 : Math.max(1900, 18.7 * km));
   const buses = cur.buses.filter((b) => b.riders > 0);
   let cost = 0, km = 0, riders = 0, seats = 0, noKm = 0;

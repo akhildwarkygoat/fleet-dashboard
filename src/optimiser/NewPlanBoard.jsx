@@ -192,13 +192,18 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   const tiles = row ? [
     { key: "people", label: `Riders · ${busName}`, value: `${row.heads} / ${row.cap}`, sub: row.overCap ? "over capacity" : row.overSeats ? "over seats" : "seats filled", accent: row.overCap ? t.poor : row.overSeats ? t.watch : null, dc: row.overCap ? t.poor : row.overSeats ? t.watch : t.muted },
     { key: "util", label: "Utilisation", value: `${Math.round(row.fill * 100)}%`, sub: `${row.stops.length} stops`, accent: row.fill >= 0.85 ? t.good : t.watch },
-    { key: "cost", label: "Cost / head / day", value: row.heads ? `₹${(row.cost / row.heads).toFixed(1)}` : dash, sub: `₹${Math.round(row.cost)} / day` },
+    { key: "cost", label: "Cost / head — this bus", value: row.heads ? `₹${(row.cost / row.heads).toFixed(1)}` : dash, sub: `₹${Math.round(row.cost)} / day` },
     { key: "ride", label: morning ? "Ride (first stop → factory)" : "Ride (to last stop)", value: `${Math.round(row.ride)} min`, sub: row.km ? `${row.km.toFixed(1)} km/day` : "", accent: row.ride < 100 ? t.good : t.poor },
     { key: "totdist", label: "Total dist", value: row.km ? `${row.km.toFixed(1)} km` : dash, sub: "this bus" },
     { key: "avgstops", label: "Stops", value: row.stopIds.length, sub: "on this bus" },
   ] : [
     { key: "people", label: "People", value: `${assignedHeads} / ${totalRiders}`, sub: `${progress.toFixed(0)}% assigned`, dc: progress >= 99.5 ? t.good : t.muted },
-    { key: "cost", label: "Cost / head / day", value: k && k.heads ? `₹${k.costPerHeadDay.toFixed(1)}` : dash, sub: k ? `₹${Math.round(k.totalCost).toLocaleString("en-IN")} / day` : "" },
+    /* Say WHICH question this answers. It is the board on screen, costed standalone — every
+       bus charged in full to this service. The Finalised-plans table answers two different
+       questions about a different plan (the finalised one, alone AND adjusted for buses shared
+       with other services), and the two were read as a contradiction because neither said so. */
+    { key: "cost", label: "Cost / head — this plan, alone", value: k && k.heads ? `₹${k.costPerHeadDay.toFixed(1)}` : dash,
+      sub: k ? `₹${Math.round(k.totalCost).toLocaleString("en-IN")} / day · ${k.heads} on a bus` : "" },
     { key: "util", label: "Avg util", value: k ? `${k.utilisation.toFixed(0)}%` : dash, sub: `${busesUsed} bus${busesUsed === 1 ? "" : "es"} used`, accent: k && k.utilisation >= 85 ? t.good : t.watch },
     { key: "avgride", label: "Avg ride", value: usedRows.length ? `${Math.round(avgRide)} min` : dash, sub: `${unassignedCount} stops left`, accent: usedRows.length && avgRide <= 60 ? t.good : t.poor },
     { key: "ride", label: "Max ride", value: usedRows.length ? `${Math.round(maxRide)} min` : dash, sub: "longest trip", accent: usedRows.length && maxRide <= 110 ? t.good : t.poor },

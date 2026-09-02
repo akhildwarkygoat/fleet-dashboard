@@ -207,11 +207,16 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
 
   // ---- gallery actions ----
   const openDraft = (d) => { setImportedPlan(null); setSeed(mapFrom(d.assignments)); setCurrent({ id: d.id, name: d.name }); setDraftName(d.name); setView("editor"); };
-  const newBlank = () => { setImportedPlan(null); setSeed(new Map(EMPTY)); setCurrent(null); setDraftName("Untitled plan"); setView("editor"); };
+  /* Routes the import could not place because their bus is no longer in the ERP fleet.
+     They are removed whole — riders, stops and cost — so the board must say so rather than
+     quietly showing a smaller, cheaper plan than the one that was finalised. */
+  const [droppedRoutes, setDroppedRoutes] = useState([]);
+  const newBlank = () => { setDroppedRoutes([]); setImportedPlan(null); setSeed(new Map(EMPTY)); setCurrent(null); setDraftName("Untitled plan"); setView("editor"); };
   const importPlan = () => {
     if (!solver) { toast && toast("No optimised plan to import"); return; }
     const label = planLabel;
-    const { seed, extras, demand } = seedFromSolver(solver, fleet, storeStops);
+    const { seed, extras, demand, dropped } = seedFromSolver(solver, fleet, storeStops);
+    setDroppedRoutes(dropped);
     setImportedPlan({ extras, demand });
     setSeed(seed); setCurrent(null); setDraftName(`Imported ${label} plan`); setView("editor");
     toast && toast(`Imported the ${label} optimised plan` + (extras.length ? ` (${extras.length} stops carried from the plan file)` : ""));
@@ -238,9 +243,10 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
         .map((s) => ({ name: s.name, lat: s.lat, lng: s.lng, hc: hcOf(s) }))
         .filter((s) => s.hc > 0),
     })).filter((r) => r.seq.length) };
-    const { seed, extras, demand } = seedFromSolver(shaped, fleet, storeStops);
+    const { seed, extras, demand, dropped } = seedFromSolver(shaped, fleet, storeStops);
     let placed = 0; for (const ids of seed.values()) placed += ids.length;
     if (!placed) { toast && toast("Previous routes didn't match this fleet"); return; }
+    setDroppedRoutes(dropped);
     setImportedPlan({ extras, demand });
     setSeed(seed); setCurrent(null); setDraftName("Previous routes (ERP)"); setView("editor");
     toast && toast(`Loaded the previously-ran routes${extras.length ? ` · ${extras.length} stops carried from the ERP feed` : ""}`);
@@ -252,10 +258,11 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
     if (!json || !Array.isArray(json.routes) || !json.routes.some((r) => Array.isArray(r.seq) && r.seq.length)) {
       toast && toast("That file isn't a plan export — expected the JSON the Planner's Export button writes"); return;
     }
-    const { seed, extras, demand } = seedFromSolver(json, fleet, storeStops);
+    const { seed, extras, demand, dropped } = seedFromSolver(json, fleet, storeStops);
     let placed = 0; for (const ids of seed.values()) placed += ids.length;
     if (!placed) { toast && toast("No routes in that file matched this fleet — is it from the same dashboard?"); return; }
     const skipped = json.routes.filter((r) => (r.seq || []).length && !seed.has(r.name)).length;
+    setDroppedRoutes(dropped);
     setImportedPlan({ extras, demand });
     setSeed(seed); setCurrent(null);
     setDraftName((fname || "Imported plan").replace(/\.solver_result\.json$|\.json$/i, ""));
@@ -283,7 +290,8 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   };
   const importIntoEditor = () => {
     if (!solver) { toast && toast("No optimised plan to import"); return; }
-    const { seed, extras, demand } = seedFromSolver(solver, fleet, storeStops);
+    const { seed, extras, demand, dropped } = seedFromSolver(solver, fleet, storeStops);
+    setDroppedRoutes(dropped);
     setImportedPlan({ extras, demand });
     setSeed(seed); toast && toast(`Imported the ${planLabel} plan into this editor`);
   };
@@ -326,6 +334,13 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
         <Btn t={t} onClick={save}><Save size={15} /> Save</Btn>
       </div>
       {estimated && <div className="text-xs rounded-xl px-3 py-2" style={{ background: t.watch + "22", color: t.watch }}>Using straight-line distance estimates — the road matrix cache didn't cover every stop.</div>}
+      {droppedRoutes.length > 0 && (
+        <div className="text-xs rounded-xl px-3 py-2" style={{ background: t.poor + "22", color: t.poor }}>
+          <b>{droppedRoutes.length} route{droppedRoutes.length > 1 ? "s" : ""} could not be loaded</b> — {droppedRoutes.map((d) => d.name).join(", ")} {droppedRoutes.length > 1 ? "are" : "is"} not in today&rsquo;s ERP fleet.
+          {" "}That removed <b>{droppedRoutes.reduce((n, d) => n + d.riders, 0)} rider{droppedRoutes.reduce((n, d) => n + d.riders, 0) === 1 ? "" : "s"}</b>
+          {" "}and <b>₹{Math.round(droppedRoutes.reduce((n, d) => n + d.cost, 0)).toLocaleString("en-IN")}/day</b> from every figure on this board, so it reads lower than the finalised plan.
+        </div>
+      )}
       <NewPlanBoard t={t} editor={editor} fleet={fleet} depot={depot} stopsById={stopsById} totalRiders={totalRiders} demandOf={demandOf} toast={toast} period={period} svcId={svcId} parkPrefs={endPrefs} setParkPrefs={setEndPrefs} />
     </div>
   );
