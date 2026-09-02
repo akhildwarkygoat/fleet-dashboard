@@ -151,8 +151,23 @@ export function fleetCost(entries, opts = {}) {
   };
   for (const bus of perBus.values()) bus.standing = impliedStanding(bus);
 
-  const runCost = (bus, r, shared) => {
+  /* STANDALONE means "what does this service cost if it pays for its buses in full?" — and a
+     plan that already charged full standing has ALREADY answered that, per bus, with the
+     fleet's own figures. Recomputing it here contradicted the plan the manager chose:
+     standing is derived as the MAX across every service a vehicle runs, so a 9 am bus that
+     also runs Rotational was re-charged at the Rotational files' Rs2,426/day (which bundles a
+     Rs1,346 loan the live fleet records as 0). Measured on the shipped plans: 9 am read
+     Rs60.3 against its own Rs58.7, and 7 am Rs136.9 against its own Rs118.7, entirely from
+     the 7 and 5 shared buses respectively. Zenwear, which shares nothing, was already exact.
+
+     So: honour the plan's own cost for standalone whenever that plan charged standing, and
+     only synthesise one when it did not (a --no-standing plan genuinely has no answer).
+     ADJUSTED is a different question — one vehicle's standing split across its runs — and
+     still needs the single per-vehicle figure, so it is unchanged. */
+  const chargedStanding = (run) => run.hasStanding !== false;
+  const runCost = (bus, r, shared, run) => {
     if (bus.type === "rent") return rentTariff(num(r.km));      // a hire is a hire, per run
+    if (!shared && run && chargedStanding(run) && r.cost != null && isFinite(+r.cost)) return num(r.cost);
     const share = shared ? bus.standing / bus.runs.length : bus.standing;
     return share + diesel * num(r.km);
   };
@@ -171,8 +186,8 @@ export function fleetCost(entries, opts = {}) {
       s.km += num(run.route.km);
       /* recorded on the run as well as summed, so a view can re-cost its own routes table
          from the same numbers instead of recomputing the split and drifting from it */
-      run.standalone = runCost(bus, run.route, false);
-      run.adjusted = runCost(bus, run.route, true);
+      run.standalone = runCost(bus, run.route, false, run);
+      run.adjusted = runCost(bus, run.route, true, run);
       s.standalone += run.standalone;
       s.adjusted += run.adjusted;
     }

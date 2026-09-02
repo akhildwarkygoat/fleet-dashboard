@@ -112,7 +112,24 @@ const STAND = standingPerDay();
     { standingOf: (n) => (n === "BUS9" ? 500 : null) }
   );
   ok(near(fc.perBus.get("BUS9").standing, 500), "standingOf override applied");
-  ok(near(fc.fleet.standalone, 500 + 22 * 50), "override flows into the totals");
+  /* STANDALONE deliberately does NOT take the override here: this plan states its own cost
+     and charged standing, so "what does this service cost paying for its buses in full?" is
+     already answered — 3000. Synthesising an answer over the top is what made the Finalised
+     table contradict the plan the manager had chosen (9 am read Rs60.3 against its own
+     Rs58.7). The override still drives the vehicle's standing figure and therefore the
+     ADJUSTED split, which is the question that genuinely needs one number per vehicle. */
+  ok(near(fc.fleet.standalone, 3000), "standalone honours the plan's own cost");
+  ok(near(fc.fleet.adjusted, 500 + 22 * 50), "override drives the adjusted basis");
+}
+
+/* ---- a --no-standing plan has no answer of its own, so one is synthesised ---- */
+{
+  const fc = fleetCost(
+    [{ svc: svc("a"), plan: { costing: { basis: "running-only", standing: false },
+                              routes: [{ name: "BUS10", km: 50, riders: 40, type: "own", cap: 54, cost: 22 * 50 }] } }],
+    { standingOf: (n) => (n === "BUS10" ? 500 : null) }
+  );
+  ok(near(fc.fleet.standalone, 500 + 22 * 50), "running-only plan gets a standing cost added");
 }
 
 console.log(`fleetCost tests: ${pass} passed, ${fail} failed`);
