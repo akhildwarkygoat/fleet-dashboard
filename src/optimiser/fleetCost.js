@@ -184,7 +184,12 @@ export function fleetCost(entries, opts = {}) {
      is also why a view must be able to say so rather than implying every row was costed the
      same way. */
   const basesSeen = new Set();
-  for (const { plan } of list) basesSeen.add((plan.costing && plan.costing.basis) || "unstated");
+  const svcBasis = new Map();
+  for (const { svc, plan } of list) {
+    const b = (plan.costing && plan.costing.basis) || null;
+    basesSeen.add(b || "unstated");
+    svcBasis.set(svc.id, b);
+  }
   const crossBasisBuses = [];
   for (const bus of perBus.values()) {
     if (bus.type === "rent") continue;
@@ -197,6 +202,10 @@ export function fleetCost(entries, opts = {}) {
     /* true when this service's own plan charged no standing cost but at least one of its
        buses inherited standing from another service's plan that did */
     inheritedStanding: crossBasisBuses.some((c) => c.svcIds.includes(s.id)),
+    /* What this service's own plan file says it was costed on — "running-only" means the
+       file charges diesel and nothing else, so its own Rs/head is not comparable with a
+       fully-costed one. Exposed so a view can name the services rather than hardcode them. */
+    declaredBasis: svcBasis.get(s.id) || null,
     standaloneHead: s.riders ? s.standalone / s.riders : 0,
     adjustedHead: s.riders ? s.adjusted / s.riders : 0,
   }));
@@ -209,6 +218,9 @@ export function fleetCost(entries, opts = {}) {
 
   return {
     services,
+    /* every declared basis in this run, and the vehicles that straddle more than one */
+    bases: [...basesSeen],
+    crossBasisBuses,
     perBus: perBus,
     vehicles: vehicles.length,
     runs: vehicles.reduce((n, b) => n + b.runs.length, 0),

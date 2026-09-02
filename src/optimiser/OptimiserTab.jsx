@@ -1094,6 +1094,11 @@ function KpiCell({ t, c }) {
    one somebody chose — and the difference is the whole point of finalising. */
 function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
   const [tick, setTick] = useState(0);
+  /* Derived here from fc, not passed in: this used to read a `mixedBasis` state that lived in
+     FleetPlanView and was never set, so the reference threw and took the whole Overall board
+     down with it. */
+  const noStandingSvcs = (fc && fc.services ? fc.services : []).filter((s) => s.declaredBasis === "running-only");
+  const mixedBasis = noStandingSvcs.length > 0 && (fc && fc.services ? fc.services : []).some((s) => s.declaredBasis !== "running-only");
   const fileRef = useRef(null);
   /* Not memoised on purpose: resolveFinalised reads localStorage, so the rows must be rebuilt
      on every render. `tick` exists only to force that render after Revert or Import — do not
@@ -1159,9 +1164,9 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
                 say so, because it moves those two services a long way. */}
             {mixedBasis && (
               <tr><td colSpan={7} className="py-2 px-2 text-xs" style={{ color: t.watch, background: t.watch + "14" }}>
-                Some of these plans were generated without standing costs (7 am Morning and Zenwear declare
+                Some of these plans were generated without standing costs ({noStandingSvcs.map((s) => s.name).join(", ")} declare
                 <b> running-only</b>). Both ₹/head columns re-cost every service on the live fleet&rsquo;s own figures
-                so the rows are comparable — those two therefore read far higher here than inside their own plan file.
+                so the rows are comparable — those read far higher here than inside their own plan file.
               </td></tr>
             )}
             {rows.map(({ svc, fin, cost }) => (
@@ -1284,7 +1289,6 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
   /* Overall means EVERY service that has a plan, merged — not 9 am's plan standing in for the
      fleet. Built from SERVICES at load time, so the day Rotational gets a planUrl it appears
      here with no further change. */
-  const [mixedBasis, setMixedBasis] = useState(false);
   const [drawn, setDrawn] = useState([]);
   const [fleetFc, setFleetFc] = useState(null);
   const load = () => {
@@ -1295,8 +1299,15 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
         .then((r) => (r.ok ? r.json() : Promise.reject()))
         .then((d) => {
           if (d && d.routes) for (const r of d.routes) r.seq = attachEffDemand(r.seq, r.riders);
-          setDrawn([svc.name]); setMixedBasis(false); setData(d);
-        }).catch(() => setErr(true));
+          setDrawn([svc.name]); setData(d);
+        }).catch((e) => {
+      /* Do not swallow this. Everything from the fetches through fleetCost to the roll-up
+         runs inside this chain, so a plain `catch(() => setErr(true))` turns any programming
+         error in there into "No solver plan yet" — a message about a missing file, blaming
+         the wrong thing and hiding the stack. */
+      console.error("[Fleet plan] load failed:", e);
+      setErr(true);
+    });
       return;
     }
     /* Each service contributes its FINALISED plan, not its optimised one — and where nobody
@@ -1354,8 +1365,10 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
           max_ride: list.reduce((m, r) => Math.max(m, +r.ride || 0), 0) };
       };
       const base = ok[0].d;
-      const bases = new Set(ok.map(({ d }) => (d.costing && d.costing.basis) || "full"));
-      setMixedBasis(bases.size > 1);
+      /* The mixed-basis warning is derived where it is shown, from fleetCost's own
+         per-service `declaredBasis` — this state was set here, read in a different
+         component that never received it, and defaulted "full" for a plan that declares
+         nothing (finalised_plan.json declares no costing block at all). */
       setDrawn(ok.map(({ x }) => x.name));
       setData({
         ...base, routes,
@@ -1368,7 +1381,14 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
         overall: roll(routes), owned: roll(routes.filter((r) => r.type === "own")),
         rental: roll(routes.filter((r) => r.type === "rent")),
       });
-    }).catch(() => setErr(true));
+    }).catch((e) => {
+      /* Do not swallow this. Everything from the fetches through fleetCost to the roll-up
+         runs inside this chain, so a plain `catch(() => setErr(true))` turns any programming
+         error in there into "No solver plan yet" — a message about a missing file, blaming
+         the wrong thing and hiding the stack. */
+      console.error("[Fleet plan] load failed:", e);
+      setErr(true);
+    });
   };
   useEffect(load, [planSrc, isOverall]);
   const inr0 = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
