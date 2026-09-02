@@ -2090,6 +2090,27 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
     return stopsForRiders(mine, stops, { depot: svc.depot });
   }, [svc, erpEmployees, stops]);
   const svcCoverage = useMemo(() => (svcStops ? coverageOf(svcStops) : null), [svcStops]);
+  /* OVERALL means the whole fleet, and it did not: with no `svc`, svcStops is null and the
+     Stops board fell back to store.getStops() — the curated 9 am network alone. It read 738
+     stops and 3,021 people on a fleet of ~4,500 across six services, with nothing saying it
+     was showing one of them.
+     The union is the curated 9 am network plus each other service's derived one. A rider
+     belongs to exactly one service (serviceIdFor is mutually exclusive), so nobody is counted
+     twice; two services picking up in the same village keep their own stop, which is right —
+     they are different runs at different hours. */
+  const overallStops = useMemo(() => {
+    if (!svc || !svc.overall) return null;
+    const out = stops.map((x) => ({ ...x, service: "9 am General" }));
+    for (const s of SERVICES) {
+      if (s.id === "s9") continue;                       // already covered by the curated set
+      const mine = (erpEmployees || []).filter((e) => serviceIdFor(e.unit, e.shift, e.slot) === s.id);
+      if (!mine.length) continue;
+      for (const st of stopsForRiders(mine, stops, { depot: s.depot })) {
+        out.push({ ...st, service: s.name, serviceColor: s.color });
+      }
+    }
+    return out;
+  }, [svc, erpEmployees, stops]);
   /* The buses THIS service actually runs — the vehicles its own riders are assigned to in the
      ERP. Without this the Planner offered all 110 vehicles whichever service was open, so a
      155-rider service could be "planned" onto Zenwear's vans. A bus serving more than one
@@ -2188,6 +2209,9 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
       {sub === "stops" && (svcStops
         ? <StopsView key={svc.id} t={t} toast={toast} stops={svcStops} viewStops={svcStops} routes={routes} refresh={refresh}
             depot={svc.depot} coverage={svcCoverage} calibrate={false} svc={svc} />
+        : overallStops
+        ? <StopsView key={"all:" + (planId || "d")} t={t} toast={toast} stops={overallStops} viewStops={overallStops}
+            routes={routes} refresh={refresh} depot={svc && svc.depot} calibrate={false} />
         : <StopsView key={planId || "d"} t={t} toast={toast} stops={stops} viewStops={stops} routes={routes} refresh={refresh} depot={svc && svc.depot} />)}
       {sub === "plan" && <FleetPlanView key={(svc ? svc.id : "all") + ":" + (planId || "d")} t={t} svc={svc}
         toast={toast} onOpenService={(s) => { pickSvc(s); setSub("new"); }} />}
