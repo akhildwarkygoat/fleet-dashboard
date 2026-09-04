@@ -99,7 +99,18 @@ dashboard at all.
 
 ### Nine trial files still on disk
 
-`public/plan_grp-*.json` — 9 files, untracked, nothing reads them. Safe to `rm`.
+Removed 2026-09-04 (see §4 *Resolved: 9 plans, not 3*). `public/plan_grp-*.json` were
+byte-identical triplets of `plan_rot-*.json`; `build_service_plans.mjs --group` now writes its
+trials to `_trials/` (gitignored), never into `public/`.
+
+The manager's nine operating plans are imported with
+
+```
+node scripts/import_rotation_plans.mjs --from _incoming/rotationalshiftdata --received YYYY-MM-DD --anchor <Monday>
+```
+
+which writes `public/plans/rot/g{1,2,3}-{day,half,full}.json` and `src/rotation.json`
+(idempotent). `_incoming/` is gitignored — the deliveries stay on the machine that received them.
 
 ---
 
@@ -169,15 +180,71 @@ Put to the transport manager, still unanswered:
 Also unanswered: his sheet gives **TN57BH3636** a full-night pickup; five weeks of ERP show it on
 Half night every single week, never Full. One of the two is wrong.
 
+### Resolved 2026-09-04: 9 plans, not 3
+
+The manager answered by delivering the plans. On 2026-09-03 nine finalised files arrived in
+`_incoming/rotationalshiftdata/` named `<N> <SHIFT> PLAN 0209.json` — **three fixed rider groups
+× three clocks**, built by him in the Planner. Verified against the ERP on 2026-09-04
+(everything below is measured, not assumed; the full write-up is [docs/rotation.md](docs/rotation.md)):
+
+- **Batch N is a group, and N is its ERP slot code in the week beginning 2026-08-31.** GPS-matching
+  each file's stops (60 m) to the riders the roster placed on each slot that week: batch 1 files
+  match the slot-1 cohort at 95–98%, batch 2 the slot-2 cohort at 89–97%, batch 3 the slot-3
+  cohort at 98%; every off-diagonal cell is 9–24% (shared villages). Rider totals agree too:
+  249 / 304 / 250 in the files against 249 / 305 / 251 on the slots.
+- **The three `plan_rot-*.finalised.json` committed on 2026-09-02 ("batch 1 of 3") were one
+  rotation step stale.** They read the same delivery as this week's Day / Half / Full, but were
+  built on the previous week's roster — the "Day" file held the riders who are on Full night
+  this week. Retired (`git rm`), along with the nine `plan_grp-*` trials.
+- **The dashboard now rotates the label, not the plan.** `src/rotation.json` (anchor
+  2026-08-31, cycle day → full → half) says which group is on which clock in any week;
+  `src/optimiser/rotation.js` does the arithmetic; `finalisedPlans.js` resolves a rotational
+  service to `public/plans/rot/g<group>-<clock>.json` for the week. Ground truth for the next
+  three Mondays: 09-07 Day=G2 Half=G3 Full=G1 · 09-14 Day=G3 Half=G1 Full=G2 · 09-21 back to
+  Day=G1 Half=G2 Full=G3.
+- **`src/rotationGroups.json` is the identity.** Cut once from the anchor-week roster minus the
+  104 never-rotators: Group 1 = 221, Group 2 = 235, Group 3 = 245 riders. From now on
+  `build_rotation_groups.py` (run by `refresh_routes.sh` straight after the roster) only adds
+  joiners — into the group the calendar puts on their roster slot — and removes nobody.
+- **The weekly self-check** is `build_rotational_roster.py`'s rotation check: per group, the
+  share of members who punched this week whose punch is the slot the calendar predicts. Checked
+  backwards on week 2026-08-24 (step 2): 94% / 90% / 85%. With the anchor deliberately moved one
+  week: 5% / 6% / 7%. A drop below 75% for all three groups means a skipped Monday; the fix is to
+  move `anchorWeek` forward 7 days. That closes the "does it compound" worry above from the
+  measuring side: the drift is visible every Monday, in the log.
+- **The 8 big MIXED buses question is answered by the files themselves**: the manager plans them
+  per group per clock, so their route does change with the group. That is why it has to be
+  nine files and not three plus a clock parameter.
+
+**Still open, now concrete: the never-rotate gap.** The manager's groups were cut from the
+anchor-week slots, so each carries the fixed riders who happened to be on that slot that week,
+and those riders then rotate with the plan although they do not rotate on the floor. Measured on
+the 71 fixed Half-night riders: Group 2's Off Night file carries 66 of them, groups 1 and 3 carry
+3 and 8. So those riders have a bus one week in three. Either they get a standing plan of their
+own (24 Day / 71 Half / 9 Full, as proposed above) or all three groups' files for a clock carry
+their stops. Put it to him with those numbers.
+
+`plan_rot-*.json` (the optimiser's own 2026-08-25 files, each service's `planUrl`) stay as the
+fallback when the manifest has no plan for a slot and as the "this service has a plan" flag.
+
 ---
 
 ## 5. How to re-run things
 
-Re-cut the roster (prints who moved and why), then rebuild all three plans. **Never one without
-the other** — a roster that moves without its plans is the original defect.
+Re-cut the roster (prints who moved and why, and the rotation check), then file the week's
+joiners into their group. The nine Rotational plans are **not** rebuilt — since 2026-09-04 they
+are built for fixed groups and the calendar in `src/rotation.json` picks which one each clock
+shows (see §4 and [docs/rotation.md](docs/rotation.md)). `refresh_routes.sh` runs both:
 
 ```bash
 python3 build_rotational_roster.py
+python3 build_rotation_groups.py
+```
+
+The optimiser's own baseline files (`public/plan_rot-*.json`, the fallback) can still be
+re-solved by hand, and the old warning stands — look at the result before trusting it:
+
+```bash
 for s in rot-day rot-half rot-full; do node build_service_plans.mjs --service $s --erp data/erp_audit.json; done
 ```
 
@@ -188,8 +255,9 @@ curl -s -m 600 -X POST http://localhost:5173/erp/general/VehicleEmpMapDetails \
   -H 'Content-Type: application/json' -d '{}' -o data/erp_live.json
 ```
 
-The dev server must be running (it holds the ERP login). Group mode also exists:
-`node build_service_plans.mjs --group day --shift full`.
+The dev server must be running (it holds the ERP login). Group mode also exists as an optimiser
+trial only — `node build_service_plans.mjs --group day --shift full` writes to `_trials/`, not
+`public/`; the operating group x clock plans come from `scripts/import_rotation_plans.mjs`.
 
 **Windows / the second machine:** needs `git pull` **and** its own `.erp_key`, created with
 `WriteAllText` (PowerShell's `Set-Content` adds a BOM that breaks JSON — the code strips it, but

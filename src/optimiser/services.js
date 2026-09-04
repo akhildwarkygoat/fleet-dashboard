@@ -39,16 +39,18 @@ export const ZENWEAR_DEPOT = { name: "Zenwear — Subbulapuram", lat: 9.6732711,
  * every Monday. That cycle is real — it is visible in the punch feed, where the three
  * commonest week-to-week moves are exactly those three.
  *
- * The dashboard deliberately does NOT follow it. Membership is FROZEN to the roster in
- * src/rotationalRoster.json (see the note there and in erp.js). Tracking the rotation live
- * meant re-cutting the three services every Monday against plans that stayed put, and filing
- * anyone who had not yet punched this week one slot behind. A plan is only worth costing if
- * the riders in it are the riders it was built for, so roster and plan are frozen together
- * and re-cut together.
+ * The dashboard follows it in two halves, deliberately kept apart:
+ *   - WHO is on each slot is still the frozen roster in src/rotationalRoster.json (see the
+ *     note there and in erp.js), re-cut every Monday. Tracking membership live from the punch
+ *     feed filed anyone who had not yet punched this week one slot behind, so nothing here
+ *     computes a RIDER's slot from the calendar.
+ *   - WHICH PLAN a slot draws does follow the calendar: the transport manager finalised nine
+ *     plans (three fixed rider groups x three clocks), and src/rotation.json + rotation.js pick
+ *     the group on each clock for the week. The plans are not rebuilt weekly; the lookup moves.
  *
  * These entries therefore describe the three slots as PLANNING BUCKETS — a name, a colour and
- * the window each one runs — not where any given rider is this week. Nothing here computes a
- * rider's slot from the calendar; that is exactly what was removed.
+ * the window each one runs. rotation.js imports ROTATION_SLOTS for the slot names, and the ids
+ * day / full / half are the keys of the manifest's cycle and plan tables — keep both as they are.
  */
 export const ROTATION_SLOTS = [
   { id: "day",   name: "Day",        from: 6 * 60,  to: 14 * 60, color: "#0d9488" },

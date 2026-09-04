@@ -4,8 +4,11 @@
 # WHY MONDAY: Rotational's three slots step one place every Monday
 #   (Day -> Full night -> Half night -> Day)
 # so from Monday morning last week's roster mislabels roughly everyone who rotates.
-# refresh_routes.sh re-cuts the roster from the fresh punch feed and then rebuilds the
-# Prev-route map against it, in that order.
+# refresh_routes.sh re-cuts the roster from the fresh punch feed, files the week's joiners
+# into their rotation group (src/rotationGroups.json — additive, the nine Rotational plans
+# are built for fixed groups and are never rebuilt here), and then rebuilds the Prev-route
+# map against the roster, in that order. The success line below names which group is on
+# which clock this week, from src/rotation.json. See docs/rotation.md.
 #
 # This writes files only. It never touches git — a bad ERP pull cannot land in the repo.
 #
@@ -106,7 +109,7 @@ log "=== weekly refresh starting (host $(hostname -s))$([ "$ROSTER_ONLY_RUN" = 1
 BACKUP="$REPO/automation/last-good/$(date '+%Y-%m-%d')"
 mkdir -p "$BACKUP"
 BACKED_UP=1
-for f in public/current_routes.json src/rotationalRoster.json; do
+for f in public/current_routes.json src/rotationalRoster.json src/rotationGroups.json; do
   if [ -f "$f" ]; then
     cp "$f" "$BACKUP/$(basename "$f")" || { log "WARNING: could not back up $f"; BACKED_UP=0; }
   fi
@@ -142,6 +145,27 @@ try:
         print("    %d rider(s) had no rotational slot and are in no slot's totals" % m["riders_unassigned"])
 except Exception as e:
     print("    (could not read back current_routes.json: %s)" % e)
+# Which group's plan each clock shows this week — the same line refresh_routes.sh printed,
+# repeated here so the one-line summary answers "which plans are up?" without scrolling.
+try:
+    r = json.load(open("src/rotationalRoster.json"))
+    rot = r.get("_rotation") or {}
+    if rot.get("week") == r.get("_rotaWeek") and rot.get("predicted"):
+        SLOT = {"day": "Day", "half": "Half night", "full": "Full night"}
+        p = rot["predicted"]
+        print("    rotation (step %s): %s" % (rot.get("step", "?"),
+              " · ".join("%s = Group %s" % (SLOT[k], p.get(k, "?")) for k in ("day", "half", "full"))))
+        agr = rot.get("agreement") or {}
+        low = [g for g, a in agr.items() if a.get("share") is not None and a["share"] < 0.75]
+        print("    punches agree with the calendar: " + ", ".join(
+              "Group %s %s" % (g, ("%.0f%%" % (100 * a["share"])) if a.get("share") is not None else "no punches")
+              for g, a in sorted(agr.items())))
+        if low:
+            print("    *** LOW agreement for Group %s — the calendar may be a step off the floor (docs/rotation.md)" % ", ".join(low))
+    else:
+        print("    rotation: no _rotation block for this week in the roster (cut with --no-roster, or before the check existed)")
+except Exception as e:
+    print("    (could not read back the rotation: %s)" % e)
 PY
   check_consistency
   log "=== done ==="
@@ -155,7 +179,7 @@ fi
 RESTORED=""
 if [ "$BACKED_UP" = "1" ]; then
   RESTORE_OK=1
-  for f in public/current_routes.json src/rotationalRoster.json; do
+  for f in public/current_routes.json src/rotationalRoster.json src/rotationGroups.json; do
     b="$BACKUP/$(basename "$f")"
     if [ -f "$b" ]; then
       if cmp -s "$b" "$f" 2>/dev/null; then continue; fi     # untouched by this run
@@ -171,7 +195,11 @@ case "$RC" in
   3)  log "  A required program is missing (python3, node or curl). Nothing was fetched." ;;
   4)  log "  Could not reach the ERP. This machine is probably not on the factory network,"
       log "  or it went to sleep mid-run. The password is NOT the problem." ;;
+  1)  log "  A build step stopped itself — usually the roster re-cut refusing its input"
+      log "  (the message above names the fix). Nothing after it ran." ;;
   5|6) log "  The route build refused the roster (unreadable, or cut for the wrong week)." ;;
+  7)  log "  The rotation-group cut refused: src/rotationGroups.json is missing and the roster is"
+      log "  not on the anchor week, or a file it needs is unreadable. The message above names the fix." ;;
   8)  log "  The ERP REFUSED the login. Call IT about the dashboard's ERP account." ;;
   9)  log "  The ERP login replied in an unrecognised shape — its API has changed. Call IT." ;;
   10) log "  .erp_key could not be read. See the error above for which part failed." ;;

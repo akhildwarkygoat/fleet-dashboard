@@ -327,13 +327,24 @@ export const snapshotOf = (run, planMeta, planBody) => ({
   planKind: (planMeta && planMeta.kind) || "unknown",
   planIsDefault: !!(planMeta && planMeta.isDefault),
   /* The NAME is not an identity. resolveFinalised() returns "Optimised" for every default
-     plan, so re-cutting plan_rot-day.json — which build_service_plans.mjs does routinely,
-     alongside a re-frozen roster — would leave every record before and after carrying an
-     identical label. The trend would then step by ten minutes on the day of the rebuild and
-     be indistinguishable from the fleet improving. The plan file stamps its own build date;
-     that is what tells two baselines apart. */
-  planGenerated: (planBody && planBody.generated) || null,
+     plan, so re-cutting plan_s7.json — which build_service_plans.mjs does routinely — would
+     leave every record before and after carrying an identical label. The trend would then
+     step by ten minutes on the day of the rebuild and be indistinguishable from the fleet
+     improving. The plan file stamps its own build date; that is what tells two baselines
+     apart. The manager's Rotational plans (kind "rotation") carry no `generated` — they
+     were finalised in the Planner, not built — so the date the batch was RECEIVED stands
+     in; it is the one date those nine files share and it changes when a new batch does.
+     Their name IS distinctive ("Group 2 · Half night · week of 7 Sep") and their file is
+     one of nine, so a rotation record never reads as "Optimised" and two groups on the
+     same clock in different weeks never share a baseline. */
+  planGenerated: (planBody && (planBody.generated || (planBody.source && planBody.source.received))) || null,
   planFile: (planMeta && planMeta.file) || null,
+  /* WHICH rider group was on this clock, and in which week. Records are filed by service id,
+     which for Rotational is the SLOT — "rot-day" carries three different groups over three
+     weeks — so without these two fields a by-bus history on a slot would silently pool three
+     different plans' buses under one name. Null on every non-rotation plan. */
+  planGroup: (planMeta && planMeta.group) || null,
+  planWeek: (planMeta && planMeta.week) || null,
 });
 
 /* ---------------------------------------------------------------- variance */

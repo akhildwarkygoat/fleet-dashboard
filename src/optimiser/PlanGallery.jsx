@@ -63,7 +63,7 @@ function PlanThumb({ t, assignments, stopsById, depot, busColor, lines }) {
   );
 }
 
-export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel, onImportFile, onImportPrev, prevPlan, finalised, onFinalise }) {
+export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel, planKind, onImportFile, onImportPrev, prevPlan, finalised, onFinalise }) {
   // hidden file input for "Import plan file" — reads a plan JSON exported by a teammate
   const fileRef = useRef(null);
   const prevMeta = prevPlan && prevPlan.meta;
@@ -105,7 +105,9 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
           className="flex items-center gap-3 rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5"
           style={{ border: "1.5px solid " + t.border, background: t.surface, cursor: canImport ? "pointer" : "not-allowed", opacity: canImport ? 1 : 0.5 }}>
           <span className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: t.techno + "22", color: t.techno }}><Sparkles size={20} /></span>
-          <span><span className="block font-semibold" style={{ color: t.text }}>From optimised plan{planLabel ? ` — ${planLabel}` : ""}</span><span className="block text-xs" style={{ color: t.muted }}>Import the optimiser's {planLabel ? `${planLabel} ` : ""}plan and tweak it</span></span>
+          {/* A Rotational slot seeds from the transport manager's group plan, not an optimiser
+              output — say whose plan it is (planKind "rotation" from finalisedPlans.planSourceFor). */}
+          <span><span className="block font-semibold" style={{ color: t.text }}>{planKind === "rotation" ? "From the finalised plan" : "From optimised plan"}{planLabel ? ` — ${planLabel}` : ""}</span><span className="block text-xs" style={{ color: t.muted }}>Import the {planKind === "rotation" ? "manager's" : "optimiser's"} {planLabel ? `${planLabel} ` : ""}plan and tweak it</span></span>
         </button>
         <button type="button" onClick={() => fileRef.current && fileRef.current.click()}
           className="flex items-center gap-3 rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5"

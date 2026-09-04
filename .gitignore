@@ -73,3 +73,11 @@ automation/logs/
 automation/last-good/
 data/.erp_live.json.*.part
 automation/.refresh.lock/
+
+# last-known-good ERP address, discovered per network
+automation/.erp-address
+
+# Raw manager deliveries (the "<N> <SHIFT> PLAN" files); the canonical copies live in public/plans/rot
+_incoming/
+# optimiser group x clock trials from build_service_plans.mjs --group (nothing reads them)
+_trials/

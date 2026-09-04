@@ -1,0 +1,39 @@
+{
+  "_comment": "Which rider group runs which Rotational clock, by calendar week. cycle[i] -> cycle[(i+1)%3] every Monday. Group N = the ERP slot code (Pun_Shift 1 = Day, 2 = Half night, 3 = Full night) of that group in anchorWeek — that is what the leading number on the manager's '<N> <SHIFT> PLAN' files means, and it is why atAnchor is 1 -> day, 2 -> half, 3 -> full. Built by scripts/import_rotation_plans.mjs; do not hand-edit.",
+  "cycle": [
+    "day",
+    "full",
+    "half"
+  ],
+  "anchorWeek": "2026-08-31",
+  "received": "2026-09-03",
+  "groups": {
+    "1": {
+      "label": "Group 1",
+      "atAnchor": "day",
+      "plans": {
+        "day": "/plans/rot/g1-day.json",
+        "half": "/plans/rot/g1-half.json",
+        "full": "/plans/rot/g1-full.json"
+      }
+    },
+    "2": {
+      "label": "Group 2",
+      "atAnchor": "half",
+      "plans": {
+        "day": "/plans/rot/g2-day.json",
+        "half": "/plans/rot/g2-half.json",
+        "full": "/plans/rot/g2-full.json"
+      }
+    },
+    "3": {
+      "label": "Group 3",
+      "atAnchor": "full",
+      "plans": {
+        "day": "/plans/rot/g3-day.json",
+        "half": "/plans/rot/g3-half.json",
+        "full": "/plans/rot/g3-full.json"
+      }
+    }
+  }
+}

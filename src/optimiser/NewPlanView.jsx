@@ -12,7 +12,8 @@ import { Btn, Empty, PALETTE } from "./ui.jsx";
 import NewPlanBoard from "./NewPlanBoard.jsx";
 import PlanGallery from "./PlanGallery.jsx";
 import { activePlanUrl, getActivePlanLabel } from "./planOptions.js";
-import { resolveFinalised, setFinalised, clearFinalised } from "./finalisedPlans.js";
+import { resolveFinalised, setFinalised, clearFinalised, planUrlFor, planSourceFor } from "./finalisedPlans.js";
+import { subscribeRotaWeek } from "./rotation.js";
 import { Save, Sparkles, RotateCcw, Download, Undo2, Redo2, Wand2, ArrowLeft, Sunset, Sunrise } from "lucide-react";
 import { downloadPlanJson, toSolverResult } from "./planExport.js";
 import { scorePlan } from "./engine.js";
@@ -35,12 +36,29 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
     [svcStops]
   );
 
-  // This service's optimised plan. `activePlanUrl()` is the 9 am plan-variant picker, so it
-  // is only the right source when no service-specific plan exists.
-  const planSrc = svc && svc.id !== "s9" ? (svc.planUrl || null) : activePlanUrl();
-  // "Balanced" is the name of a 9 am plan VARIANT. Reusing it on another service's board
-  // labels that service's own optimiser output with a plan it has nothing to do with.
-  const planLabel = svc && svc.id !== "s9" ? `${svc.name} optimised` : getActivePlanLabel();
+  /* The plan this board seeds from. For a Rotational slot that is no longer a fixed file:
+     it is the manager's plan for whichever rider group is on this clock in the week being
+     shown, and it changes when the week does (the Monday step, or the week picker). The
+     "rota-week" event is the one signal for that; bumping `rotaTick` re-asks the resolver,
+     which changes `planSrc`, which refetches. `activePlanUrl()` is the 9 am plan-variant
+     picker, so it is only the right source when no service-specific plan exists. */
+  const [rotaTick, setRotaTick] = useState(0);
+  useEffect(() => subscribeRotaWeek(() => setRotaTick((x) => x + 1)), []);
+  const planSrc = useMemo(
+    () => (svc && svc.id !== "s9" ? planUrlFor(svc) : activePlanUrl()),
+    [svc, rotaTick]                                                  // eslint-disable-line
+  );
+  /* "Balanced" is the name of a 9 am plan VARIANT. Reusing it on another service's board
+     labels that service's own optimiser output with a plan it has nothing to do with.
+     A rotation plan is named for what it is — "Group 2 · Half night · week of 7 Sep" — so
+     the gallery card says WHOSE plan is being imported, not just which slot's. */
+  const planSource = useMemo(
+    () => (svc && svc.id !== "s9" ? planSourceFor(svc) : null),
+    [svc, rotaTick]                                                  // eslint-disable-line
+  );
+  const planLabel = !svc || svc.id === "s9" ? getActivePlanLabel()
+    : planSource && planSource.kind === "rotation" ? planSource.label
+    : `${svc.name} optimised`;
   const [solver, setSolver] = useState(null);
   const [solverLoaded, setSolverLoaded] = useState(false);
   useEffect(() => {
@@ -116,8 +134,12 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   const [period, setPeriod] = useState("evening");       // "evening" | "morning"
   const [drafts, setDrafts] = useState(() => store.listPlanDrafts(svcId));
   /* Which plan this service actually runs. Absent -> the optimiser's output stands in,
-     flagged isDefault so "nobody decided" never reads as "somebody chose this". */
+     flagged isDefault so "nobody decided" never reads as "somebody chose this" — except on
+     a Rotational slot, where the manager's group plan for the week stands in (kind
+     "rotation") and is a decision, not a default. Re-resolved when the week changes, because
+     for a Rotational slot the answer does. */
   const [finalised, setFinal] = useState(() => (svc ? resolveFinalised(svc) : null));
+  useEffect(() => { setFinal(svc ? resolveFinalised(svc) : null); }, [svc, rotaTick]);
   /* Score a saved draft into the same solver_result shape a plan file has. Finalising stores
      that BODY, not just a pointer: a draft is a Map of bus -> stop ids, which means nothing
      without this service's fleet, depot, stops and road matrix. Without the body every reader
@@ -153,7 +175,13 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
     if (!svc) return;
     const cur = resolveFinalised(svc);
     const same = ref.kind === "draft" ? cur.draftId === ref.id : cur.kind === "plan" && !cur.isDefault;
-    if (same) { clearFinalised(svc.id); setFinal(resolveFinalised(svc)); toast && toast(`${svc.name} back to the optimised plan`); return; }
+    if (same) {
+      /* Un-finalising hands the slot back to whatever stands in — the rotation plan on a
+         Rotational slot, the optimised plan elsewhere — and the toast has to say which. */
+      clearFinalised(svc.id); setFinal(resolveFinalised(svc));
+      toast && toast(`${svc.name} back to the ${svc.slot ? "rotation" : "optimised"} plan`);
+      return;
+    }
     let body = null;
     if (ref.kind === "draft") {
       const d = store.getPlanDraft(ref.id);
@@ -300,10 +328,40 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
   if (!ready || !solverLoaded) return <Empty t={t} title="Loading road network…" sub="Building the distance matrix for live routing." />;
 
   if (view === "gallery") {
-    return <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={planLabel} finalised={finalised} onFinalise={finalise}
-      stopsById={stopsById} depot={depot} busColor={busColor}
-      onNewBlank={newBlank} onImport={importPlan} onOpen={openDraft} onDelete={deleteDraft} onImportFile={importFromFile}
-      onImportPrev={importPrevRoutes} prevPlan={prevRoutes} />;
+    return (
+      <div className="space-y-4">
+        {/* Which plan a Rotational slot is RUNNING is not visible from the draft cards alone:
+            with nothing finalised on top, none of them is marked, and the answer is one of the
+            manager's nine group plans. Say so, and say that finalising a card below overrides
+            it — for this week and every week after, since a choice is kept per slot. */}
+        {svc && svc.slot && finalised && (
+          <div className="rounded-xl px-4 py-2.5 text-sm flex flex-wrap items-baseline gap-x-2 gap-y-1"
+            style={{ background: t.primarySoft, border: "1px solid " + t.border, color: t.text }}>
+            <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: t.primary }}>Running</span>
+            {finalised.kind === "rotation" ? (
+              <>
+                <b>{finalised.name}</b>
+                <span style={{ color: t.muted }}>
+                  — the manager&rsquo;s finalised plan for the group on this clock. Finalise a saved plan below to override it.
+                </span>
+              </>
+            ) : (
+              <>
+                <b>{finalised.name}</b>
+                <span style={{ color: t.muted }}>
+                  — finalised by hand, so it is used in place of the rotation plan
+                  {planSource && planSource.kind === "rotation" ? ` (${planSource.label})` : ""} until it is un-finalised.
+                </span>
+              </>
+            )}
+          </div>
+        )}
+        <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={planLabel} planKind={planSource ? planSource.kind : null} finalised={finalised} onFinalise={finalise}
+          stopsById={stopsById} depot={depot} busColor={busColor}
+          onNewBlank={newBlank} onImport={importPlan} onOpen={openDraft} onDelete={deleteDraft} onImportFile={importFromFile}
+          onImportPrev={importPrevRoutes} prevPlan={prevRoutes} />
+      </div>
+    );
   }
 
   return (

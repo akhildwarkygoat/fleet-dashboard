@@ -29,7 +29,11 @@ import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js"
 import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
 import { fleetCost, runCostIndex, fleetBasis } from "./fleetCost.js";
 import { canonVehicle } from "../erp.js";
-import { resolveFinalised, clearFinalised, downloadFinalised, importFinalised } from "./finalisedPlans.js";
+import { resolveFinalised, clearFinalised, downloadFinalised, importFinalised, planUrlFor, planSourceFor } from "./finalisedPlans.js";
+/* The Rotational plan a slot shows depends on the rota week (src/rotation.json), which the
+   manager can pin from the header. The hook re-renders whatever reads it when the pin moves. */
+import RotaWeekPicker, { useRotaWeek, shiftWeek } from "./RotaWeekPicker.jsx";
+import { describeSlot, subscribeRotaWeek } from "./rotation.js";
 
 const inr = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
@@ -200,27 +204,41 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
   }, [stops]);
   const withEffHead = (arr) => arr.map((s) => ({ ...s, headcount: effHead.get(s.id) ?? s.headcount }));
 
-  // Which vehicle serves each stop, from the solver plan. Match by stop name, else by coords.
+  /* Which vehicle serves each stop, from THIS service's plan — for a Rotational slot that is
+     the plan of whichever group is on the clock in the rota week, so it is re-read when the
+     week changes; 9 am keeps its variant picker, and the Overall/no-service mounts (no svc)
+     read the picker's plan as they always did. Match by stop name, else by coords. */
   useEffect(() => {
-    fetch(activePlanUrl() + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null)).then((d) => {
-      if (!d || !d.routes) return;
-      if (d.params && d.params.demand != null) setPlanDemand(d.params.demand);
-      const m = {};
-      for (const rt of d.routes) for (const s of (rt.seq || [])) {
-        if (s.name) m["n:" + s.name.toLowerCase().trim()] = rt.name;
-        if (s.lat != null && s.lng != null) m["c:" + (+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4)] = rt.name;
-      }
-      setStopVeh(m);
-    }).catch(() => {});
-  }, []);
+    let gen = 0;
+    const load = () => {
+      const my = ++gen;
+      const url = svc && svc.id !== "s9" ? planUrlFor(svc) : activePlanUrl();
+      setStopVeh({});
+      if (!url) return;
+      fetch(url + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null)).then((d) => {
+        if (my !== gen || !d || !d.routes) return;
+        if (d.params && d.params.demand != null) setPlanDemand(d.params.demand);
+        const m = {};
+        for (const rt of d.routes) for (const s of (rt.seq || [])) {
+          if (s.name) m["n:" + s.name.toLowerCase().trim()] = rt.name;
+          if (s.lat != null && s.lng != null) m["c:" + (+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4)] = rt.name;
+        }
+        setStopVeh(m);
+      }).catch(() => {});
+    };
+    load();
+    const off = subscribeRotaWeek(load);
+    return () => { gen++; off(); };
+  }, [svc && svc.id]);
   /* Which vehicle to show against a stop.
      `s.busName` is the ERP's own answer for THIS service — the bus its riders are actually
      mapped to — and it wins whenever it exists. stopVeh is only a fallback for the curated 9 am
      network, whose stops carry no rider-derived bus.
-     It used to be the other way round, and the cost was severe: stopVeh is built from ONE
+     It used to be the other way round, and the cost was severe: stopVeh was built from ONE
      globally-selected plan (default /solver_result.json, the 9 am plan), matched on stop NAME,
      so any rotational or Zenwear stop sharing a name with a 9 am stop displayed the 9 am plan's
      bus — 519 of 788 stops showed a registration no rider standing there is assigned to.
+     (stopVeh now comes from the service's own plan, but the ERP answer still wins.)
      Coordinate before name, too: a village name covers many pickup points (Nilakottai spans 23),
      so the name key was last-write-wins across unrelated stops. */
   const vehFor = (s) => s.busName
@@ -1109,7 +1127,11 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
     const cost = (fc && fc.services.find((x) => x.id === svc.id)) || null;
     return { svc, fin, cost };
   });
-  const chosen = rows.filter((r) => !r.fin.isDefault).length;
+  /* A Rotational slot following the rota is neither "chosen" nor "default": nobody picked it
+     here, but it is the manager's finalised plan for the group on that clock this week. Count
+     it separately so the headline never claims a choice that was made in src/rotation.json. */
+  const onRota = rows.filter((r) => r.fin.kind === "rotation").length;
+  const chosen = rows.filter((r) => !r.fin.isDefault && r.fin.kind !== "rotation").length;
   const inr1 = (n) => "₹" + (Math.round((n || 0) * 10) / 10).toLocaleString("en-IN");
 
   const doImport = (e) => {
@@ -1133,7 +1155,9 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
       hint="Which plan each service actually runs. A service nobody has decided falls back to the optimiser's output, marked default. Changing any one of these moves every adjusted figure above, because a bus's standing cost is split across the runs it makes.">
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <span className="text-sm" style={{ color: t.muted }}>
-          <b style={{ color: t.text }}>{chosen}</b> of {SERVICES.length} chosen · {SERVICES.length - chosen} still on the optimised default
+          <b style={{ color: t.text }}>{chosen}</b> of {SERVICES.length} chosen
+          {onRota > 0 && <> · {onRota} following the rota</>}
+          {" · "}{SERVICES.length - chosen - onRota} still on the optimised default
         </span>
         <span className="ml-auto flex items-center gap-2">
           <Btn t={t} variant="ghost" onClick={() => { downloadFinalised(); toast && toast("Exported finalised_plans.json"); }}>
@@ -1177,9 +1201,15 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
                   </span>
                 </td>
                 <td className="py-2 px-2">
+                  {/* Three states, three tints: default (nobody decided), rota (the manager's
+                      finalised plan for whichever group is on this clock this week — the name
+                      says which), and a choice somebody made in the Planner. */}
                   <span className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                    title={fin.kind === "rotation" ? `Follows src/rotation.json · ${fin.file || ""}` : undefined}
                     style={fin.isDefault
                       ? { background: t.surface2, color: t.muted }
+                      : fin.kind === "rotation"
+                      ? { background: t.primarySoft, color: t.primary }
                       : { background: t.goodSoft, color: t.good }}>
                     {fin.isDefault ? "Optimised · default" : fin.name}
                   </span>
@@ -1201,7 +1231,9 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
                 <td className="py-2 px-2 text-right whitespace-nowrap">
                   {/* Undoing a choice has to be reachable from here: the alternative is hunting
                       for the finalised plan in that service's gallery and clicking it off. */}
-                  {!fin.isDefault && (
+                  {/* Nothing to revert on a rota row — there is no stored choice, the week
+                      picker in the header is what moves it. */}
+                  {!fin.isDefault && fin.kind !== "rotation" && (
                     <button type="button" onClick={() => { clearFinalised(svc.id); setTick((x) => x + 1); toast && toast(`${svc.name} back to the optimised plan`); }}
                       title="Go back to the optimised plan"
                       className="rounded-lg px-2 py-0.5 text-xs font-semibold mr-1.5"
@@ -1285,20 +1317,60 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
   const [err, setErr] = useState(false);
   const [hiddenKpis] = useState(getHiddenKpis);
   const isOverall = !svc || !!svc.overall;
-  const planSrc = isOverall ? null : (svc.id !== "s9" ? (svc.planUrl || null) : activePlanUrl());
+  /* The rota week is read here, not just inside planUrlFor, so a pin moved from the header
+     re-renders this view and re-runs the load: planUrlFor reads the pin from storage and
+     would otherwise be re-evaluated only when React happened to render for another reason. */
+  const week = useRotaWeek();
+  const isRota = !isOverall && !!svc.slot;
+  /* planUrlFor resolves a Rotational slot to the plan of whichever group is on that clock in
+     the rota week, and hands every other service its own planUrl back — the s9 variant picker
+     is the one exception, as before. */
+  const planSrc = isOverall ? null : (svc.id !== "s9" ? planUrlFor(svc) : activePlanUrl());
+  /* The file behind planSrc and what to call it, so the error state can name the group, week
+     and path that failed instead of blaming a missing optimiser run. */
+  const planSource = isOverall ? null : planSourceFor(svc);
   /* Overall means EVERY service that has a plan, merged — not 9 am's plan standing in for the
      fleet. Built from SERVICES at load time, so the day Rotational gets a planUrl it appears
      here with no further change. */
   const [drawn, setDrawn] = useState([]);
   const [fleetFc, setFleetFc] = useState(null);
+  /* Stepping the rota week twice quickly starts two loads; without this the earlier week's
+     fetch can resolve LAST and draw its group under the newer week's label. Every async
+     setter below checks it still owns the latest load. Bumped on cleanup too. */
+  const gen = useRef(0);
   const load = () => {
+    const my = ++gen.current;
+    const live = () => my === gen.current;
     setErr(false); setData(null);
     if (!isOverall) {
+      /* A Rotational slot with a draft finalised over the rota shows THAT draft, as Overall
+         and T.I do — planUrlFor has no file for a draft and would fall back to the stale
+         optimiser output. Other services keep reading their file, as they always have. */
+      const fin = isRota ? resolveFinalised(svc) : null;
+      if (fin && fin.kind === "draft" && fin.body && Array.isArray(fin.body.routes)) {
+        /* A scored draft (toSolverResult) carries params without a depot, and the map and the
+           Google-Maps links index params.depot — same fallback Overall applies below. */
+        const params = fin.body.params || {};
+        const d = { ...fin.body,
+          params: { ...params, depot: params.depot || (svc.depot ? [svc.depot.lat, svc.depot.lng] : undefined) },
+          routes: fin.body.routes.map((r) => ({ ...r, seq: attachEffDemand(r.seq, r.riders) })) };
+        setDrawn([svc.name]); setData(d);
+        return;
+      }
       if (!planSrc) { setErr(true); return; }      // no plan for this service yet
       fetch(planSrc + "?ts=" + Date.now())
         .then((r) => (r.ok ? r.json() : Promise.reject()))
         .then((d) => {
-          if (d && d.routes) for (const r of d.routes) r.seq = attachEffDemand(r.seq, r.riders);
+          if (!live()) return;
+          if (d && d.routes) {
+            for (const r of d.routes) r.seq = attachEffDemand(r.seq, r.riders);
+            /* The manager's nine group x clock plans (public/plans/rot/) carry params without a
+               depot, and the map and Google-Maps links index params.depot — same fallback the
+               draft branch above and Overall below apply. `||` keeps a file's own depot, so the
+               optimiser outputs (9 am / 7 am / Zenwear) draw exactly as before. */
+            d.params = { ...(d.params || {}),
+              depot: (d.params && d.params.depot) || (svc.depot ? [svc.depot.lat, svc.depot.lng] : undefined) };
+          }
           setDrawn([svc.name]); setData(d);
         }).catch((e) => {
       /* Do not swallow this. Everything from the fetches through fleetCost to the roll-up
@@ -1306,13 +1378,15 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
          error in there into "No solver plan yet" — a message about a missing file, blaming
          the wrong thing and hiding the stack. */
       console.error("[Fleet plan] load failed:", e);
-      setErr(true);
+      if (live()) setErr(true);
     });
       return;
     }
     /* Each service contributes its FINALISED plan, not its optimised one — and where nobody
-       has chosen, the optimised plan stands in (resolveFinalised flags that as a default). */
-    const withPlans = SERVICES.filter((x) => resolveFinalised(x).file || x.planUrl);
+       has chosen, the optimised plan stands in (resolveFinalised flags that as a default).
+       A Rotational slot resolves to kind "rotation": the manager's finalised plan for the
+       group on that clock in the rota week, which is a file like any other. */
+    const withPlans = SERVICES.filter((x) => planUrlFor(x));
     Promise.all(withPlans.map((x) => {
       const fin = resolveFinalised(x);
       // a finalised draft carries its own scored body — there is no file to fetch
@@ -1320,11 +1394,12 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
       /* The default for 9 am is its planUrl, not activePlanUrl(). The variant picker points at
          solver_result (75 buses) while the Live strip reads finalised_plan (70) — the two
          disagreed by 5 buses on every fleet total. One source for the default. */
-      const url = fin.file || x.planUrl;
+      const url = fin.file || planUrlFor(x);
       return fetch(url + "?ts=" + Date.now())
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => (d && Array.isArray(d.routes) ? { x, d, fin } : null)).catch(() => null);
     })).then((parts) => {
+      if (!live()) return;
       const ok = parts.filter(Boolean);
       if (!ok.length) { setErr(true); return; }
       /* Re-cost on the SHARED basis. A bus running five services was charged its whole
@@ -1387,16 +1462,27 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
          error in there into "No solver plan yet" — a message about a missing file, blaming
          the wrong thing and hiding the stack. */
       console.error("[Fleet plan] load failed:", e);
-      setErr(true);
+      if (live()) setErr(true);
     });
   };
-  useEffect(load, [planSrc, isOverall]);
+  /* `week` is a dependency only where the rota can change what is drawn: a Rotational slot,
+     or Overall (which merges all three). Re-fetching 9 am because the manager previewed next
+     Monday's rota would be a wasted round trip on a file the rota cannot move. */
+  const rotaDep = isOverall || isRota ? week : null;
+  useEffect(() => { load(); return () => { gen.current++; }; }, [planSrc, isOverall, rotaDep]);
   const inr0 = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
   if (err) return (
-    <Empty t={t} title={svc && !svc.overall && !svc.planUrl ? `${svc.name} — to be planned` : "No solver plan yet"}
+    <Empty t={t}
+      title={svc && !svc.overall && !svc.planUrl ? `${svc.name} — to be planned`
+        : isRota && planSource && planSource.kind === "rotation" ? `${svc.name} — no plan file for ${planSource.label}`
+        : "No solver plan yet"}
       sub={svc && !svc.overall && !svc.planUrl
         ? "This service has no finalised plan yet, so there are no routes, costs or ride times to show. Build one from the Planner tab, or run the optimiser for it."
+        : isRota && planSource && planSource.kind === "rotation"
+        /* Name the file: the rota says which group runs this clock in the chosen week, so the
+           only thing that can be wrong is that its plan is not on disk. */
+        ? `The rota puts ${planSource.label} on this clock, but ${planSource.url || "its plan file"} could not be loaded. Check public/plans/rot/, or pick another rota week in the header.`
         : "Run  python optimize.py  in the fleet-dashboard folder to generate the global fleet plan, then reload."}>
       {(!svc || svc.overall || svc.planUrl) && <Btn t={t} onClick={load}><RotateCcw size={15} /> Reload</Btn>}
     </Empty>);
@@ -1477,6 +1563,29 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
 
   return (
     <div className="space-y-4">
+      {/* Say WHOSE plan is on screen. A Rotational slot's figures belong to one rider group for
+          one week; without this line "Rotational · Day" reads as a fixed service and next
+          week's numbers look like a change in the plan rather than a change of people. */}
+      {isRota && (() => {
+        /* resolveFinalised, not planSourceFor: the latter names the file UNDER a finalised
+           draft (the rota plan), and this line has to name what is actually drawn. */
+        const running = resolveFinalised(svc);
+        return (
+          <div className="rounded-xl border px-3 py-2 text-xs flex flex-wrap items-center gap-x-3 gap-y-1"
+            style={{ background: t.surface2, borderColor: t.border, color: t.muted }}>
+            <span style={{ color: t.text, fontWeight: 600 }}>
+              {svc.name} is running {running.kind === "rotation" ? running.name : `“${running.name}”`}
+            </span>
+            {running.kind === "rotation" ? (
+              <span>manager-finalised · steps to {describeSlot(svc.slot, shiftWeek(week, 7))}</span>
+            ) : running.kind === "draft" ? (
+              <span>a Planner draft finalised over the rota — Revert it on the Overall Fleet plan to follow the rota again</span>
+            ) : (
+              <span>{running.isDefault ? "optimiser output — the rota has no plan for this slot this week" : "a chosen plan file, overriding the rota"}</span>
+            )}
+          </div>
+        );
+      })()}
       {/* Say WHAT is on screen. "Overall" silently meant 9 am General before, so a fleet-wide
           reading of these KPIs was wrong by three services. */}
       {isOverall && drawn.length > 0 && (
@@ -2167,6 +2276,10 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
              offered on every service, and on Overall, because the question "is the estimate
              any good" is asked per service and across the fleet. */
           ["ti", "T.I"]]} />
+        {/* The rota week is app-wide state, so the picker sits in the header rather than on any
+            one board: a Rotational slot (or Overall, which merges all three) is the only place
+            it changes what is drawn, so it is offered only there. */}
+        {(svc.slot || svc.overall) && <RotaWeekPicker t={t} toast={toast} />}
         {(sub === "plan" || sub === "new") && planOpts && planOpts.length > 1 && (
           <div className="inline-flex items-center gap-1 rounded-xl p-1" style={{ background: t.surface2, border: "1px solid " + t.border }}>
             <span className="text-[10px] font-bold uppercase tracking-wider px-2" style={{ color: t.faint }}>Plan</span>

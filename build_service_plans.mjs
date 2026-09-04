@@ -20,6 +20,7 @@
  *   node build_service_plans.mjs --service zen
  * ==========================================================================*/
 import fs from "node:fs";
+import path from "node:path";
 import { optimise, validatePlan, haversineKm, scorePlan } from "./src/optimiser/engine.js";
 import { stopsForRiders } from "./src/optimiser/serviceStops.js";
 import { SERVICES, FACTORY_DEPOT, ZENWEAR_DEPOT } from "./src/optimiser/services.js";
@@ -44,7 +45,13 @@ const SVC_ID = arg("--service");
  *     week 1  A=Day    B=Full   C=Half
  *     week 2  A=Full   B=Half   C=Day
  *     week 3  A=Half   B=Day    C=Full   (then it repeats)
- * Re-cut only when membership has actually drifted, which is ~10% a week. */
+ * Re-cut only when membership has actually drifted, which is ~10% a week.
+ *
+ * 2026-09-04: the OPERATING group x clock plans are now the transport manager's nine files,
+ * imported by scripts/import_rotation_plans.mjs into public/plans/rot/ and selected per week by
+ * src/rotation.json. This mode is kept only as an optimiser TRIAL and writes to
+ * `<out-dir>/../_trials/` (gitignored `_trials/` when out-dir is public/), never into public/,
+ * so a stray run cannot resurrect the dead public/plan_grp-*.json files nothing reads. */
 const GROUP = arg("--group");            // day | half | full  — which group (by this week's roster)
 const AT_SHIFT = arg("--shift");         // day | half | full  — which clock to plan them at
 const SLOT_CODE = { day: "1", half: "2", full: "3" };
@@ -525,7 +532,9 @@ const payload = {
   rental: agg(routes.filter((r) => r.type === "rent")),
   routes,
 };
-const out = GROUP ? `${OUT_DIR}/plan_grp-${GROUP}-at-${AT_SHIFT || GROUP}.json` : `${OUT_DIR}/plan_${svc.id}.json`;
+const TRIAL_DIR = path.join(OUT_DIR, "..", "_trials");   // trials never land in public/ (see header)
+if (GROUP) fs.mkdirSync(TRIAL_DIR, { recursive: true });
+const out = GROUP ? `${TRIAL_DIR}/plan_grp-${GROUP}-at-${AT_SHIFT || GROUP}.json` : `${OUT_DIR}/plan_${svc.id}.json`;
 fs.writeFileSync(out + ".tmp", JSON.stringify(payload, null, 1));
 fs.renameSync(out + ".tmp", out);
 log(`wrote ${out} — ${routes.length} routes, ${payload.overall.riders} riders, ₹${payload.overall.cost_head}/head`);

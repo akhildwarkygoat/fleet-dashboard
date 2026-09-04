@@ -1,0 +1,976 @@
+{
+  "generatedBy": "in-browser plan editor",
+  "method": "manual / edited (engine-scored)",
+  "params": {
+    "demand": 227,
+    "stops": 131,
+    "totalRiders": 249
+  },
+  "overall": {
+    "buses": 9,
+    "riders": 227,
+    "seats": 333,
+    "cost": 21142,
+    "km": 543.4,
+    "util": 68.2,
+    "cost_head": 93.1,
+    "avg_ride": 61.8,
+    "avg_stops": 14.6,
+    "max_ride": 84
+  },
+  "owned": {
+    "buses": 5,
+    "riders": 164,
+    "seats": 253,
+    "cost": 14142,
+    "km": 269.8,
+    "util": 64.8,
+    "cost_head": 86.2,
+    "avg_ride": 58.9,
+    "avg_stops": 16.2,
+    "max_ride": 82
+  },
+  "rental": {
+    "buses": 4,
+    "riders": 63,
+    "seats": 80,
+    "cost": 7000,
+    "km": 273.6,
+    "util": 78.8,
+    "cost_head": 111.1,
+    "avg_ride": 69.4,
+    "avg_stops": 12.5,
+    "max_ride": 84
+  },
+  "routes": [
+    {
+      "name": "TN58BS3434",
+      "type": "own",
+      "cap": 54,
+      "stops": 21,
+      "riders": 35,
+      "km": 61.1,
+      "ride": 73,
+      "km_to_last": 1.4,
+      "km_to_farthest": 22.7,
+      "cost": 2952,
+      "seq": [
+        {
+          "name": "Sitharevu",
+          "lat": 10.2168,
+          "lng": 77.8093,
+          "hc": 1
+        },
+        {
+          "name": "Sengattampatti",
+          "lat": 10.228,
+          "lng": 77.8144,
+          "hc": 1
+        },
+        {
+          "name": "Nilakkottai",
+          "lat": 10.2244,
+          "lng": 77.8166,
+          "hc": 1
+        },
+        {
+          "name": "Sengattampatti",
+          "lat": 10.2217,
+          "lng": 77.8186,
+          "hc": 1
+        },
+        {
+          "name": "Sengattampatti",
+          "lat": 10.2218,
+          "lng": 77.8187,
+          "hc": 1
+        },
+        {
+          "name": "Sengattampatti",
+          "lat": 10.2222,
+          "lng": 77.8188,
+          "hc": 1
+        },
+        {
+          "name": "Sengattampatti",
+          "lat": 10.2223,
+          "lng": 77.8192,
+          "hc": 4
+        },
+        {
+          "name": "Nuthulapuram",
+          "lat": 10.1983,
+          "lng": 77.8261,
+          "hc": 1
+        },
+        {
+          "name": "Nilakottai",
+          "lat": 10.1549,
+          "lng": 77.8513,
+          "hc": 2
+        },
+        {
+          "name": "Musuvanoothu",
+          "lat": 10.1325,
+          "lng": 77.8434,
+          "hc": 1
+        },
+        {
+          "name": "Musuvanoothu",
+          "lat": 10.1318,
+          "lng": 77.8468,
+          "hc": 2
+        },
+        {
+          "name": "Sitharkal Naththam",
+          "lat": 10.1093,
+          "lng": 77.8466,
+          "hc": 2
+        },
+        {
+          "name": "Sitharkal Naththam",
+          "lat": 10.1086,
+          "lng": 77.8464,
+          "hc": 1
+        },
+        {
+          "name": "Sirunayakkan patti",
+          "lat": 10.1052,
+          "lng": 77.8541,
+          "hc": 1
+        },
+        {
+          "name": "Sirunayakkan patti",
+          "lat": 10.1062,
+          "lng": 77.8541,
+          "hc": 1
+        },
+        {
+          "name": "Sirunayakkan patti",
+          "lat": 10.107,
+          "lng": 77.8543,
+          "hc": 5
+        },
+        {
+          "name": "Sirunayakkan patti",
+          "lat": 10.1083,
+          "lng": 77.8549,
+          "hc": 2
+        },
+        {
+          "name": "Pillaiyarnatham",
+          "lat": 10.0941,
+          "lng": 77.8533,
+          "hc": 1
+        },
+        {
+          "name": "Medipatti",
+          "lat": 10.0833,
+          "lng": 77.8513,
+          "hc": 3
+        },
+        {
+          "name": "Usilampatti",
+          "lat": 10.0564,
+          "lng": 77.8475,
+          "hc": 2
+        },
+        {
+          "name": "Kalluthu",
+          "lat": 10.0565,
+          "lng": 77.8493,
+          "hc": 1
+        }
+      ]
+    },
+    {
+      "name": "TN57BQ3636",
+      "type": "own",
+      "cap": 36,
+      "stops": 15,
+      "riders": 40,
+      "km": 48.8,
+      "ride": 53,
+      "km_to_last": 3.2,
+      "km_to_farthest": 15.5,
+      "cost": 2686,
+      "seq": [
+        {
+          "name": "Sengattampatti",
+          "lat": 10.2283,
+          "lng": 77.8143,
+          "hc": 2
+        },
+        {
+          "name": "Bodikamanvadi",
+          "lat": 10.2458,
+          "lng": 77.8348,
+          "hc": 1
+        },
+        {
+          "name": "Bodikamanvadi",
+          "lat": 10.2463,
+          "lng": 77.835,
+          "hc": 9
+        },
+        {
+          "name": "Sedapatti",
+          "lat": 10.2614,
+          "lng": 77.8433,
+          "hc": 2
+        },
+        {
+          "name": "Sedapatti",
+          "lat": 10.2631,
+          "lng": 77.8458,
+          "hc": 4
+        },
+        {
+          "name": "Palayamkottai",
+          "lat": 10.257599999999998,
+          "lng": 77.8523,
+          "hc": 6
+        },
+        {
+          "name": "Palayamkottai",
+          "lat": 10.2609,
+          "lng": 77.8531,
+          "hc": 2
+        },
+        {
+          "name": "Palayamkottai",
+          "lat": 10.2589,
+          "lng": 77.8563,
+          "hc": 3
+        },
+        {
+          "name": "Kamanpatti",
+          "lat": 10.2571,
+          "lng": 77.8601,
+          "hc": 1
+        },
+        {
+          "name": "Koolampatti",
+          "lat": 10.2625,
+          "lng": 77.8625,
+          "hc": 4
+        },
+        {
+          "name": "Koolampatti",
+          "lat": 10.2668,
+          "lng": 77.8642,
+          "hc": 1
+        },
+        {
+          "name": "Sempatty",
+          "lat": 10.2813,
+          "lng": 77.8712,
+          "hc": 2
+        },
+        {
+          "name": "Sempatty",
+          "lat": 10.2812,
+          "lng": 77.8711,
+          "hc": 1
+        },
+        {
+          "name": "Jambudurai Kottai",
+          "lat": 10.2332,
+          "lng": 77.8932,
+          "hc": 1
+        },
+        {
+          "name": "Kamalapuram",
+          "lat": 10.2397,
+          "lng": 77.9098,
+          "hc": 1
+        }
+      ]
+    },
+    {
+      "name": "TN58BQ3434",
+      "type": "own",
+      "cap": 54,
+      "stops": 20,
+      "riders": 46,
+      "km": 42.3,
+      "ride": 54,
+      "km_to_last": 6.8,
+      "km_to_farthest": 16.1,
+      "cost": 2664,
+      "seq": [
+        {
+          "name": "Bodikamanvadi",
+          "lat": 10.2525,
+          "lng": 77.8212,
+          "hc": 2
+        },
+        {
+          "name": "Narsingapuram",
+          "lat": 10.2643,
+          "lng": 77.832,
+          "hc": 2
+        },
+        {
+          "name": "Narsingapuram",
+          "lat": 10.2647,
+          "lng": 77.8322,
+          "hc": 2
+        },
+        {
+          "name": "Narsingapuram",
+          "lat": 10.2664,
+          "lng": 77.8297,
+          "hc": 1
+        },
+        {
+          "name": "Narsingapuram",
+          "lat": 10.2666,
+          "lng": 77.8295,
+          "hc": 1
+        },
+        {
+          "name": "Alagarnayakkanpatti",
+          "lat": 10.2675,
+          "lng": 77.8277,
+          "hc": 1
+        },
+        {
+          "name": "Alagarnayakkanpatti",
+          "lat": 10.2677,
+          "lng": 77.8273,
+          "hc": 3
+        },
+        {
+          "name": "Alagarnayakkanpatti",
+          "lat": 10.2675,
+          "lng": 77.82730000000001,
+          "hc": 11
+        },
+        {
+          "name": "Alagarnayakkanpatti",
+          "lat": 10.2674,
+          "lng": 77.827,
+          "hc": 2
+        },
+        {
+          "name": "Narsingapuram",
+          "lat": 10.2692,
+          "lng": 77.8302,
+          "hc": 1
+        },
+        {
+          "name": "Athoor",
+          "lat": 10.2854,
+          "lng": 77.8517,
+          "hc": 1
+        },
+        {
+          "name": "Athoor",
+          "lat": 10.287,
+          "lng": 77.8533,
+          "hc": 1
+        },
+        {
+          "name": "Athoor",
+          "lat": 10.2871,
+          "lng": 77.8533,
+          "hc": 1
+        },
+        {
+          "name": "Athoor",
+          "lat": 10.287,
+          "lng": 77.8532,
+          "hc": 7
+        },
+        {
+          "name": "Athoor",
+          "lat": 10.2869,
+          "lng": 77.8533,
+          "hc": 2
+        },
+        {
+          "name": "Parapatti",
+          "lat": 10.2923,
+          "lng": 77.8512,
+          "hc": 1
+        },
+        {
+          "name": "Parapatti",
+          "lat": 10.2922,
+          "lng": 77.8512,
+          "hc": 2
+        },
+        {
+          "name": "Parapatti",
+          "lat": 10.3018,
+          "lng": 77.8402,
+          "hc": 1
+        },
+        {
+          "name": "Parapatti",
+          "lat": 10.3039,
+          "lng": 77.8318,
+          "hc": 2
+        },
+        {
+          "name": "Chattirapatti",
+          "lat": 10.315,
+          "lng": 77.8351,
+          "hc": 2
+        }
+      ]
+    },
+    {
+      "name": "TN57D7999",
+      "type": "rent",
+      "cap": 20,
+      "stops": 12,
+      "riders": 16,
+      "km": 86.1,
+      "ride": 84,
+      "km_to_last": 9.5,
+      "km_to_farthest": 25.3,
+      "cost": 1900,
+      "seq": [
+        {
+          "name": "Narsingapuram",
+          "lat": 10.2676,
+          "lng": 77.8333,
+          "hc": 1
+        },
+        {
+          "name": "Sedapatti",
+          "lat": 10.2652,
+          "lng": 77.8381,
+          "hc": 1
+        },
+        {
+          "name": "Parapatti",
+          "lat": 10.3137,
+          "lng": 77.8608,
+          "hc": 1
+        },
+        {
+          "name": "Virakkal",
+          "lat": 10.3217,
+          "lng": 77.8787,
+          "hc": 1
+        },
+        {
+          "name": "Virakkal",
+          "lat": 10.3204,
+          "lng": 77.8748,
+          "hc": 1
+        },
+        {
+          "name": "RAMANATHAPURAM",
+          "lat": 10.323,
+          "lng": 77.8539,
+          "hc": 2
+        },
+        {
+          "name": "Dharmathupatti",
+          "lat": 10.3406,
+          "lng": 77.8533,
+          "hc": 1
+        },
+        {
+          "name": "Dharmathupatti",
+          "lat": 10.3421,
+          "lng": 77.8516,
+          "hc": 2
+        },
+        {
+          "name": "Kasavanampatti",
+          "lat": 10.3565,
+          "lng": 77.8442,
+          "hc": 1
+        },
+        {
+          "name": "Dharmathupatti",
+          "lat": 10.3533,
+          "lng": 77.8586,
+          "hc": 2
+        },
+        {
+          "name": "Kasavanampatti",
+          "lat": 10.3743,
+          "lng": 77.8631,
+          "hc": 1
+        },
+        {
+          "name": "Siringadu",
+          "lat": 10.3807,
+          "lng": 77.8299,
+          "hc": 2
+        }
+      ]
+    },
+    {
+      "name": "TN57CL3434",
+      "type": "own",
+      "cap": 54,
+      "stops": 13,
+      "riders": 25,
+      "km": 29.7,
+      "ride": 41,
+      "km_to_last": 3,
+      "km_to_farthest": 7,
+      "cost": 2429,
+      "seq": [
+        {
+          "name": "Piravanpatti",
+          "lat": 10.2283,
+          "lng": 77.8076,
+          "hc": 2
+        },
+        {
+          "name": "Sitharevu",
+          "lat": 10.2252,
+          "lng": 77.7937,
+          "hc": 1
+        },
+        {
+          "name": "Sitharevu",
+          "lat": 10.2257,
+          "lng": 77.7929,
+          "hc": 1
+        },
+        {
+          "name": "Sitharevu",
+          "lat": 10.2258,
+          "lng": 77.7928,
+          "hc": 4
+        },
+        {
+          "name": "Athur",
+          "lat": 10.2338,
+          "lng": 77.7826,
+          "hc": 1
+        },
+        {
+          "name": "Sitharevu",
+          "lat": 10.2364,
+          "lng": 77.7833,
+          "hc": 1
+        },
+        {
+          "name": "Sitharevu",
+          "lat": 10.2384,
+          "lng": 77.7833,
+          "hc": 1
+        },
+        {
+          "name": "Sitharevu",
+          "lat": 10.2412,
+          "lng": 77.7832,
+          "hc": 1
+        },
+        {
+          "name": "Sitharevu",
+          "lat": 10.2416,
+          "lng": 77.78250000000001,
+          "hc": 7
+        },
+        {
+          "name": "Sitharevu",
+          "lat": 10.2437,
+          "lng": 77.7818,
+          "hc": 2
+        },
+        {
+          "name": "Iyyampalayam",
+          "lat": 10.2294,
+          "lng": 77.7518,
+          "hc": 1
+        },
+        {
+          "name": "Iyyampalayam",
+          "lat": 10.2253,
+          "lng": 77.7486,
+          "hc": 2
+        },
+        {
+          "name": "Pattiveeranpatti",
+          "lat": 10.2166,
+          "lng": 77.758,
+          "hc": 1
+        }
+      ]
+    },
+    {
+      "name": "TN37X5218",
+      "type": "rent",
+      "cap": 20,
+      "stops": 16,
+      "riders": 17,
+      "km": 73.6,
+      "ride": 73,
+      "km_to_last": 3.5,
+      "km_to_farthest": 28.6,
+      "cost": 1700,
+      "seq": [
+        {
+          "name": "Sevugampatti",
+          "lat": 10.1873,
+          "lng": 77.7925,
+          "hc": 1
+        },
+        {
+          "name": "Sevugampatti",
+          "lat": 10.1873,
+          "lng": 77.7923,
+          "hc": 1
+        },
+        {
+          "name": "Sevugampatti",
+          "lat": 10.1872,
+          "lng": 77.7926,
+          "hc": 1
+        },
+        {
+          "name": "Bangalapatti",
+          "lat": 10.1668,
+          "lng": 77.8199,
+          "hc": 1
+        },
+        {
+          "name": "Nilakottai",
+          "lat": 10.1678,
+          "lng": 77.8339,
+          "hc": 1
+        },
+        {
+          "name": "Maniyakkaranpatti",
+          "lat": 10.1674,
+          "lng": 77.8357,
+          "hc": 1
+        },
+        {
+          "name": "Nilakottai",
+          "lat": 10.1661,
+          "lng": 77.8451,
+          "hc": 1
+        },
+        {
+          "name": "Ethilodu",
+          "lat": 10.1209,
+          "lng": 77.8759,
+          "hc": 1
+        },
+        {
+          "name": "Ethilodu",
+          "lat": 10.1199,
+          "lng": 77.8754,
+          "hc": 1
+        },
+        {
+          "name": "Ethilodu",
+          "lat": 10.12,
+          "lng": 77.8753,
+          "hc": 2
+        },
+        {
+          "name": "Ethilodu",
+          "lat": 10.119,
+          "lng": 77.8785,
+          "hc": 1
+        },
+        {
+          "name": "Kalladipatti",
+          "lat": 10.1076,
+          "lng": 77.9212,
+          "hc": 1
+        },
+        {
+          "name": "Kalladipatti",
+          "lat": 10.1071,
+          "lng": 77.9231,
+          "hc": 1
+        },
+        {
+          "name": "Mattaparai",
+          "lat": 10.0996,
+          "lng": 77.9145,
+          "hc": 1
+        },
+        {
+          "name": "Nilakkottai",
+          "lat": 10.0931,
+          "lng": 77.9133,
+          "hc": 1
+        },
+        {
+          "name": "Irumbadi",
+          "lat": 10.0616,
+          "lng": 77.9421,
+          "hc": 1
+        }
+      ]
+    },
+    {
+      "name": "TN41W8996S",
+      "type": "rent",
+      "cap": 20,
+      "stops": 11,
+      "riders": 17,
+      "km": 58.3,
+      "ride": 60,
+      "km_to_last": 11.1,
+      "km_to_farthest": 19.4,
+      "cost": 1700,
+      "seq": [
+        {
+          "name": "Kurumbapatty",
+          "lat": 10.1494,
+          "lng": 77.8568,
+          "hc": 2
+        },
+        {
+          "name": "Kurumbapatty",
+          "lat": 10.1483,
+          "lng": 77.8582,
+          "hc": 1
+        },
+        {
+          "name": "Pillaiyarnatham",
+          "lat": 10.1205,
+          "lng": 77.8622,
+          "hc": 2
+        },
+        {
+          "name": "Pillaiyarnatham",
+          "lat": 10.1205,
+          "lng": 77.8623,
+          "hc": 4
+        },
+        {
+          "name": "Pillaiyarnatham",
+          "lat": 10.119,
+          "lng": 77.8618,
+          "hc": 2
+        },
+        {
+          "name": "Ethilodu",
+          "lat": 10.1108,
+          "lng": 77.8744,
+          "hc": 1
+        },
+        {
+          "name": "Ethilodu",
+          "lat": 10.1104,
+          "lng": 77.8746,
+          "hc": 1
+        },
+        {
+          "name": "Ethilodu",
+          "lat": 10.1079,
+          "lng": 77.8751,
+          "hc": 1
+        },
+        {
+          "name": "Ethilodu",
+          "lat": 10.103,
+          "lng": 77.8896,
+          "hc": 1
+        },
+        {
+          "name": "Mattaparai",
+          "lat": 10.0939,
+          "lng": 77.8787,
+          "hc": 1
+        },
+        {
+          "name": "Mattaparai",
+          "lat": 10.0935,
+          "lng": 77.8785,
+          "hc": 1
+        }
+      ]
+    },
+    {
+      "name": "TN19B7844",
+      "type": "own",
+      "cap": 55,
+      "stops": 12,
+      "riders": 18,
+      "km": 87.9,
+      "ride": 82,
+      "km_to_last": 10.4,
+      "km_to_farthest": 35.1,
+      "cost": 3411,
+      "seq": [
+        {
+          "name": "Chinnupatti",
+          "lat": 10.1402,
+          "lng": 77.7805,
+          "hc": 1
+        },
+        {
+          "name": "Venkatasthri Kottai",
+          "lat": 10.1645,
+          "lng": 77.7837,
+          "hc": 1
+        },
+        {
+          "name": "Kurumpapatti",
+          "lat": 10.1322,
+          "lng": 77.7759,
+          "hc": 1
+        },
+        {
+          "name": "Kunnuvarankottai",
+          "lat": 10.1066,
+          "lng": 77.7775,
+          "hc": 2
+        },
+        {
+          "name": "Sekkapatti",
+          "lat": 10.1023,
+          "lng": 77.7781,
+          "hc": 1
+        },
+        {
+          "name": "Viruveedu",
+          "lat": 10.0689,
+          "lng": 77.7805,
+          "hc": 1
+        },
+        {
+          "name": "Uthappanaickanur",
+          "lat": 10.035,
+          "lng": 77.7923,
+          "hc": 1
+        },
+        {
+          "name": "Seemanuthu",
+          "lat": 9.97977,
+          "lng": 77.7908,
+          "hc": 1
+        },
+        {
+          "name": "Usilampatti",
+          "lat": 9.96023,
+          "lng": 77.7859,
+          "hc": 2
+        },
+        {
+          "name": "Usilampatti",
+          "lat": 9.95975,
+          "lng": 77.7845,
+          "hc": 3
+        },
+        {
+          "name": "Poochipatti",
+          "lat": 9.97019,
+          "lng": 77.7453,
+          "hc": 3
+        },
+        {
+          "name": "Poochipatti",
+          "lat": 9.97189,
+          "lng": 77.7457,
+          "hc": 1
+        }
+      ]
+    },
+    {
+      "name": "TN18D8500",
+      "type": "rent",
+      "cap": 20,
+      "stops": 11,
+      "riders": 13,
+      "km": 55.6,
+      "ride": 59,
+      "km_to_last": 5.4,
+      "km_to_farthest": 25,
+      "cost": 1700,
+      "seq": [
+        {
+          "name": "M.Vadipatti",
+          "lat": 10.1884,
+          "lng": 77.7737,
+          "hc": 1
+        },
+        {
+          "name": "M.Vadipatti",
+          "lat": 10.1883,
+          "lng": 77.7735,
+          "hc": 2
+        },
+        {
+          "name": "Batlagundu",
+          "lat": 10.1661,
+          "lng": 77.7605,
+          "hc": 1
+        },
+        {
+          "name": "Batlagundu",
+          "lat": 10.1646,
+          "lng": 77.7596,
+          "hc": 1
+        },
+        {
+          "name": "Batlagundu",
+          "lat": 10.1632,
+          "lng": 77.7569,
+          "hc": 1
+        },
+        {
+          "name": "Batlagundu",
+          "lat": 10.1632,
+          "lng": 77.757,
+          "hc": 2
+        },
+        {
+          "name": "???, ????? ????",
+          "lat": 10.1681,
+          "lng": 77.749,
+          "hc": 1
+        },
+        {
+          "name": "Kanavaipatti",
+          "lat": 10.1699,
+          "lng": 77.7466,
+          "hc": 1
+        },
+        {
+          "name": "Kanavaipatti",
+          "lat": 10.1856,
+          "lng": 77.735,
+          "hc": 1
+        },
+        {
+          "name": "Ganguvarpatti",
+          "lat": 10.1683,
+          "lng": 77.6948,
+          "hc": 1
+        },
+        {
+          "name": "Devadhanapatti",
+          "lat": 10.1463,
+          "lng": 77.642,
+          "hc": 1
+        }
+      ]
+    }
+  ],
+  "service": {
+    "id": "rot-half",
+    "name": "Rotational · Half night"
+  },
+  "costing": {
+    "basis": "full",
+    "standing": true,
+    "note": "manager-finalised in the Planner: driver + maintenance standing (no loan), diesel at Rs100/L over each bus's own ERP mileage"
+  },
+  "source": {
+    "group": "1",
+    "clock": "half",
+    "file": "1 HALF NIGHT PLAN 0209.json",
+    "received": "2026-09-03",
+    "anchorWeek": "2026-08-31",
+    "note": "one of 9 manager-finalised plans: 3 rider groups x 3 clocks; which group runs which clock is decided by src/rotation.json"
+  }
+}

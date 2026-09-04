@@ -48,8 +48,17 @@ USAGE
     python3 build_rotational_roster.py --dry-run            # print the change set, write nothing
 
 Snapshots are read newest-first; add older ones to widen the history the projection can reach.
-RE-RUN THIS AND REBUILD ALL THREE PLANS TOGETHER (build_service_plans.mjs). A roster that moves
-without its plans is what put riders in the wrong slot in the first place.
+
+WHAT THE ROSTER IS FOR NOW
+--------------------------
+The roster says WHO is on which slot this week. It no longer decides which PLAN a slot shows:
+since 2026-09-04 Rotational runs nine manager-finalised plans — three fixed rider groups
+(src/rotationGroups.json) x three clocks — and src/rotation.json turns the label every Monday.
+So a roster that moves is no longer a roster that has outrun its plans. Run
+build_rotation_groups.py straight after this (refresh_routes.sh does) to file the week's joiners
+into a group, and read the ROTATION CHECK this script prints: the share of each group's punches
+that landed where the cycle predicts. That is the weekly proof that the calendar and the floor
+still agree. See docs/rotation.md.
 """
 import argparse, collections, datetime, json, os, re, sys
 
@@ -62,6 +71,14 @@ STEP = {"1": "3", "3": "2", "2": "1"}
 DEFAULT_SNAPSHOTS = ["data/erp_audit.json", "data/erp_live.fresh.json", "data/erp_live.json"]
 ROSTER_PATH = "src/rotationalRoster.json"
 NONROT_PATH = "src/nonRotatingRiders.json"
+GROUPS_PATH = "src/rotationGroups.json"
+CODE_OF_SLOT = {"day": "1", "half": "2", "full": "3"}   # slot id (rotation.json) -> ERP Pun_Shift code
+# Below this share of a group's punches landing on the predicted slot, the calendar and the
+# floor disagree. Measured on week 2026-08-24 against groups cut on 2026-08-31 (a step-2 week,
+# so a real test): 94% / 90% / 85% per group with the right anchor; 5% / 6% / 7% with the anchor
+# moved one week. A wrong step moves EVERYONE, so 0.75 separates the two cleanly and still
+# leaves room for the joiner/leaver churn and the ~10% of riders who rotate irregularly.
+AGREEMENT_FLOOR = 0.75
 
 
 def norm_date(s):
@@ -95,6 +112,54 @@ def load(paths):
     if not rows:
         sys.exit("ERROR: no ERP snapshot found. Looked for: " + ", ".join(paths))
     return rows, used
+
+
+def rotation_check(target, slots, source):
+    """Does this week's punch feed agree with the rotation calendar?
+
+    For each fixed group (src/rotationGroups.json), among members who PUNCHED this week, the
+    share whose observed slot is the one src/rotation.json predicts for that group. Only
+    observed riders count — a projected slot was itself produced by stepping, so it would
+    agree with the calendar by construction and prove nothing.
+
+    Returns the `_rotation` block for the roster JSON, or None when the check cannot run (the
+    groups file is not cut yet). Printed in --dry-run too; written only with the roster."""
+    if not os.path.exists(GROUPS_PATH):
+        print(f"\nrotation check      : skipped — {GROUPS_PATH} not cut yet (python3 build_rotation_groups.py)")
+        return None
+    try:
+        import build_rotation_groups as rg        # the same step arithmetic, one copy
+    except ImportError:
+        print("\nrotation check      : skipped — build_rotation_groups.py is not beside this script")
+        return None
+    manifest, _ = rg.load_manifest(retries=0)
+    groups = json.load(open(GROUPS_PATH, encoding="utf-8")).get("groups") or {}
+    rot = rg.rotation_for(target, manifest)
+    print(f"\nrotation check      : {rg.describe_rotation(target, manifest)}")
+    agreement, low = {}, []
+    for g in sorted(rot["byGroup"]):
+        code = CODE_OF_SLOT[rot["byGroup"][g]]
+        observed = [e for e, gg in groups.items() if gg == g and source.get(e) == "observed"]
+        match = sum(1 for e in observed if slots.get(e) == code)
+        share = round(match / len(observed), 3) if observed else None
+        agreement[g] = {"n": len(observed), "match": match, "share": share}
+        if share is None:
+            print(f"   Group {g}  predicted {NAME[code]:11}  no punches this week — nothing to compare")
+        else:
+            flag = "" if share >= AGREEMENT_FLOOR else "   <-- LOW"
+            print(f"   Group {g}  predicted {NAME[code]:11}  punched {len(observed):3}  agree {match:3}  {share:5.0%}{flag}")
+            if share < AGREEMENT_FLOOR:
+                low.append(g)
+    if low:
+        print()
+        print(f"*** WARNING: the punch feed does NOT agree with the rotation calendar for Group {', '.join(low)}.")
+        print( "    Every rider in a wrong-stepped group is at the wrong clock, so the plans the")
+        print( "    dashboard shows for Rotational this week are probably the wrong ones.")
+        print( "    Usual cause: the factory skipped a Monday (a holiday week in which nobody rotated),")
+        print( "    so the calendar is one step ahead of the floor. Check the punch feed for that week;")
+        print( "    if a Monday was skipped, move anchorWeek in src/rotation.json forward by 7 days")
+        print( "    (git-tracked; say why in the commit) and re-run this script. See docs/rotation.md.")
+    return {"week": target, "step": rot["step"], "predicted": rot["bySlot"], "agreement": agreement}
 
 
 def main():
@@ -264,6 +329,8 @@ def main():
                      f"       Re-run with --accept-large-change if this is genuinely intended.")
         print(f"   ({len(dropped)} dropped rider(s), {share:.1%} — within normal attrition, continuing)")
 
+    rotation = rotation_check(target, slots, source)
+
     if args.dry_run:
         print("\n--dry-run: nothing written")
         return
@@ -281,6 +348,9 @@ def main():
                     "placed": len(slots), "rotationalRiders": len(rotational),
                     "unplaced": len(unplaced), "carried": len(carried),
                    **{k: by_source[k] for k in ("observed", "projected", "stale")}},
+        # which fixed group the calendar puts on each slot this week, and how well the punches
+        # agreed with it — the weekly proof the rotation is still in step (see rotation_check)
+        **({"_rotation": rotation} if rotation else {}),
         # per rider: where the slot came from, so the map can mark an inferred slot as inferred
         "source": {e: source[e] for e in sorted(source)},
         "fromWeek": {e: from_week[e] for e in sorted(from_week)},

@@ -13,15 +13,15 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Bus, Search, AlertTriangle, Clock, Layers, ChevronRight, ZoomIn, ZoomOut, ParkingSquare } from "lucide-react";
 import { Card, Tile, Empty } from "./ui.jsx";
-import { SERVICES, OVERALL, fmtClock, erpStatsFor, serviceNeed, subShiftsOf, ROTATION_SLOTS, weekStart } from "./services.js";
+import { SERVICES, OVERALL, fmtClock, erpStatsFor, serviceNeed, subShiftsOf, ROTATION_SLOTS } from "./services.js";
 import { ROTA_WEEK } from "../erp.js";
 import { recostLinks } from "./layover.js";
 import { getParkPrefs, parkForRoute } from "./parkPrefs.js";
-
-/* YYYY-MM-DD from a LOCAL date. toISOString() would convert to UTC first, which in IST rolls
-   midnight back to the previous day — a Monday then prints as the Sunday before it. */
-const fmtISO = (d) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/* Plan BODIES come through the resolver, never from svc.planUrl: for the three Rotational
+   slots the file to draw changes every Monday (see rotation.js), and a finalised choice must
+   win over the optimiser's default the same way it does on the Fleet plan. */
+import { planUrlFor, resolveFinalised } from "./finalisedPlans.js";
+import { ROTATION, getRotaWeek, rotationFor, subscribeRotaWeek, fmtWeek } from "./rotation.js";
 
 /* ---------------- service picker ---------------- */
 export function ServiceBoard({ t, onPick, shifts, shiftDate }) {
@@ -193,14 +193,37 @@ export function TimingsView({ t, shifts }) {
   const [clashOnly, setClashOnly] = useState(false);
   const [showLayovers, setShowLayovers] = useState(true);
 
+  /* The rota week the clock is drawn for — the calendar week, or the one pinned in the
+     Optimiser header. Held as state so the slots table re-renders when it changes. */
+  const [rotaWeek, setRotaWeek] = useState(getRotaWeek);
+
   useEffect(() => {
-    SERVICES.filter((s) => s.planUrl).forEach((s) => {
-      fetch(s.planUrl).then((r) => (r.ok ? r.json() : null))
-        .then((p) => p && setPlans((prev) => ({ ...prev, [s.id]: p })))
-        .catch(() => {});
-    });
+    /* Reloaded whole on every "rota-week" event: the map is CLEARED first rather than merged
+       into, because a slot whose new week's file fails to load would otherwise keep drawing
+       last week's runs under this week's label. `gen` drops responses from a superseded load
+       so a slow old fetch cannot land on top of the new week. Cache-busted like every other
+       plan reader — the same URL now serves a different body from one week to the next. */
+    let gen = 0;
+    const load = () => {
+      const my = ++gen;
+      setPlans({});
+      setRotaWeek(getRotaWeek());
+      SERVICES.forEach((s) => {
+        const url = planUrlFor(s);
+        if (!url) return;
+        fetch(url + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null))
+          .then((p) => { if (my === gen && p && Array.isArray(p.routes)) setPlans((prev) => ({ ...prev, [s.id]: p })); })
+          .catch(() => {});
+      });
+    };
+    load();
+    const off = subscribeRotaWeek(load);
     fetch("/bus_connections.json").then((r) => (r.ok ? r.json() : null)).then(setConn).catch(() => {});
+    return () => { gen++; off(); };
   }, []);
+  /* Which rider group runs which slot this week — a calendar function of the manifest. */
+  const rota = useMemo(() => rotationFor(rotaWeek), [rotaWeek]);
+  const groupLabel = (gid) => (gid && ROTATION.groups[gid] && ROTATION.groups[gid].label) || (gid ? `Group ${gid}` : "—");
 
   const allRuns = useMemo(() => SERVICES.flatMap((s) => runsFromPlan(plans[s.id], s)), [plans]);
   /* Re-price the shipped model against the parking the manager has actually chosen.
@@ -559,11 +582,11 @@ export function TimingsView({ t, shifts }) {
       </Card>
 
       <Card t={t} title="Rotational — the three slots"
-        hint="Rotational is one ERP shift covering three round-the-clock slots. On the floor riders rotate one place every Monday; the planning roster deliberately does not, so each slot keeps the riders its plan was built for.">
+        hint="Rotational is one ERP shift covering three round-the-clock slots. Three fixed rider groups rotate through them one place every Monday, and each group has its own manager-finalised plan for each slot — so the plan drawn for a slot changes with the calendar.">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm" style={{ minWidth: 520 }}>
+          <table className="w-full text-sm" style={{ minWidth: 640 }}>
             <thead><tr style={{ background: t.surface2 }}>
-              {["Slot", "Window", "Riders on the frozen roster"].map((h) => (
+              {["Slot", "Window", `Group · ${fmtWeek(rotaWeek)}`, "Riders on the roster"].map((h) => (
                 <th key={h} className="py-2 px-3 text-xs font-semibold uppercase tracking-wider text-left" style={{ color: t.muted }}>{h}</th>
               ))}
             </tr></thead>
@@ -571,12 +594,29 @@ export function TimingsView({ t, shifts }) {
               {ROTATION_SLOTS.map((sl) => {
                 const svc = SERVICES.find((s) => s.slot === sl.id);
                 const st = svc && erpStatsFor(svc, shifts);
+                const gid = rota && rota.bySlot ? rota.bySlot[sl.id] : null;
+                /* A finalised draft or hand-picked file on this slot outranks the rotation on the
+                   Fleet plan, Overall and T.I. This clock only draws FILES: a hand-picked file is
+                   drawn here too, but a draft has none, so the clock falls back to the rota plan —
+                   say which, otherwise the clock and this table would disagree about the plan.
+                   resolveFinalised, not planSourceFor: the latter deliberately names the file
+                   UNDER a draft. */
+                const fin = svc ? resolveFinalised(svc) : null;
+                const overridden = !!fin && fin.kind !== "rotation" && !fin.isDefault;
                 return (
                   <tr key={sl.id} style={{ borderTop: "1px solid " + t.border }}>
                     <td className="py-2 px-3 font-semibold whitespace-nowrap" style={{ color: t.text }}>
                       <span className="inline-block w-2.5 h-2.5 rounded-sm mr-2 align-middle" style={{ background: sl.color }} />{sl.name}
                     </td>
                     <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>{fmtClock(sl.from)} – {fmtClock(sl.to % 1440)}{sl.to > 24 * 60 ? " (next day)" : ""}</td>
+                    <td className="py-2 px-3" style={{ color: t.text }}>
+                      {groupLabel(gid)}
+                      {overridden && <span className="ml-2 text-xs" style={{ color: t.watch }}>
+                        {fin.kind === "draft"
+                          ? <>· Fleet plan runs "{fin.name}" instead — clock shows the rota plan</>
+                          : <>· clock and Fleet plan both show "{fin.name}" instead of {groupLabel(gid)}'s plan</>}
+                      </span>}
+                    </td>
                     <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>{st ? st.riders.toLocaleString("en-IN") : "—"}</td>
                   </tr>
                 );
@@ -585,13 +625,15 @@ export function TimingsView({ t, shifts }) {
           </table>
         </div>
         <div className="text-xs mt-3" style={{ color: t.faint }}>
-          Week beginning {fmtISO(weekStart(new Date()))}. Who sits in each slot is
-          read from the roster cut for the rota week beginning {ROTA_WEEK}, which is also the week the
-          three plans were built from — so a plan stays costed against the riders it was actually built
-          for. Most riders in it punched that week; the rest were stepped forward one place per Monday
-          from their last punch, and the Stops map marks those as inferred rather than observed.
-          Re-cut it with build_rotational_roster.py and rebuild all three plans together; doing one
-          without the other is what puts riders in the wrong slot.
+          The transport manager finalised nine plans: three rider groups, each planned at all three
+          clocks. Which group is on which clock is a function of the calendar alone — anchored at the
+          week of {ROTATION.anchorWeek} (Group 1 on Day, Group 2 on Half night, Group 3 on Full night)
+          and stepping every Monday along Day → Full night → Half night → Day. The table above shows
+          the {fmtWeek(rotaWeek)}; pin another week from the Optimiser header to look ahead or back.
+          Who sits in each slot still comes from the roster cut for the rota week beginning {ROTA_WEEK} (most
+          riders punched that week; the rest were stepped forward from their last punch, and the Stops map
+          marks those as inferred). Re-cut the roster every Monday with build_rotational_roster.py — the nine
+          plans do not need rebuilding; the manifest in src/rotation.json picks the right one.
         </div>
       </Card>
 

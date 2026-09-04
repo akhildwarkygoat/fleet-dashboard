@@ -61,6 +61,13 @@ bus's whole-vehicle rider count.
    That order matters: the roster needs the fresh punch feed, and the routes need the fresh
    roster. Use `--no-roster` to skip it.
 
+   Right after the roster it runs **`build_rotation_groups.py`**, which files any rider new to
+   the roster into their rotation group (`src/rotationGroups.json`). That file is the fixed
+   identity behind the nine Rotational plans — it is only ever added to, never re-cut — and the
+   step is a no-op on a week with no joiners. It refuses (exit 7) rather than guess if the
+   groups file is missing and the roster is not on the anchor week. See
+   [rotation.md](rotation.md).
+
 4. **The ERP fetch is atomic.** It stages to `data/.erp_live.json.part` and only replaces the
    real dump once the JSON parses, so a transfer that drops midway through the ~47 MB body
    leaves last week's good dump in place.
@@ -71,25 +78,39 @@ The UI falls back to the old whole-vehicle count when `by_service` is absent, so
 ## Running it
 
 ```bash
-automation/weekly-refresh.sh        # the Monday job: fetch ERP -> re-cut roster -> rebuild routes
+automation/weekly-refresh.sh        # the Monday job: fetch ERP -> re-cut roster -> file joiners into groups -> rebuild routes
 ./refresh_routes.sh                 # the same pipeline, without the logging wrapper
 ./refresh_routes.sh --no-roster     # routes only
 ./refresh_routes.sh --check-login   # log in, say whether it worked, exit. Fetches nothing.
-./refresh_routes.sh --rebuild-plans # ALSO re-solve the three rotational plans (see below)
+./refresh_routes.sh --rebuild-plans # ALSO re-solve the optimiser's baseline plans (see below)
 ```
 
-### Why the plans are not rebuilt
+### Why the plans are not rebuilt — and since 2026-09-04 do not need to be
 
-The roster moves every Monday. The three plans (`public/plan_rot-*.json`) do not, and that is
-deliberate. They are a different artefact — the routes the fleet actually runs — and the builder
-does not reproduce them: re-solving `rot-day` from the same feed returns **9 buses, 171 min worst
-ride** against the operating **12 buses, 119 min**. Silently swapping that in on a timer, with
-nobody looking at the result, is not a refresh.
+The roster moves every Monday. The Rotational plans do not, and they no longer go stale when it
+does. They are **nine** manager-finalised files under `public/plans/rot/` — three fixed rider
+groups × three clocks — and `src/rotation.json` decides which group's plan each clock shows in
+any given week by arithmetic on the calendar. A Monday changes the label, not the plan. The
+whole model is in [rotation.md](rotation.md).
 
-So the default run leaves them alone and prints a note when they have fallen behind the roster.
-Plans now carry `rotaWeek`, so that check is an exact week-string comparison — never a headcount,
-which differs by a rider or two even when the two are perfectly in sync. Rebuild them when you
-mean to, and look at the result:
+So the default run rebuilds nothing and instead prints the rotation for the roster week, with
+the share of this week's punches that landed where the calendar predicts:
+
+```
+Rotation for week 2026-09-07 (step 1): Day = Group 2 · Half night = Group 3 · Full night = Group 1
+    this week's punches agree with the calendar: Group 1 94% (195/208), Group 2 90% (197/219), Group 3 85% (201/237)
+```
+
+85–95% is normal. Under 75% for all three groups at once means the factory skipped a Monday and
+the calendar is a step ahead of the floor; the fix (move `anchorWeek` forward 7 days) is in
+rotation.md. The old note about plans having "fallen behind the roster" is gone: a plan built
+for a fixed group cannot fall behind.
+
+`--rebuild-plans` still exists and re-solves something else: the optimiser's own three baseline
+files (`public/plan_rot-*.json`, each service's `planUrl`), which the dashboard falls back to
+only when the manifest has no plan for a slot. The builder does not reproduce a manager plan —
+re-solving `rot-day` returns **9 buses, 171 min worst ride** against the operating **12 buses,
+119 min** — so it remains opt-in, and something to look at rather than schedule:
 
 ```bash
 ./refresh_routes.sh --rebuild-plans
@@ -102,9 +123,11 @@ The log names the cause, and the code is what Windows Task Scheduler shows as *L
 | code | meaning | who fixes it |
 | --- | --- | --- |
 | 0 | it worked | — |
+| 1 | a build step stopped itself — usually the roster re-cut refusing its input | read the message; it names the fix |
 | 3 | python3, curl or node missing | install it |
 | 4 | could not reach the ERP — network, or the machine slept | reconnect / keep it awake |
 | 5, 6 | the route build refused the roster (unreadable, or wrong week) | re-cut the roster |
+| 7 | the rotation-group cut refused (groups file missing off the anchor week, or unreadable input) | see [rotation.md](rotation.md) |
 | 8 | the ERP **rejected** the credentials | IT — the account |
 | 9 | logged in, but the reply had no recognisable token | IT — the login API changed |
 | 10 | `.erp_key` is missing, malformed, or UTF-16 | recreate the file |
@@ -119,7 +142,8 @@ Takes **30-45 minutes**, almost all of it OSRM road-path lookups. The pipeline r
 stop-for-stop), which leaves some vehicles with 100+ waypoints per request. It is scheduled for
 **Mondays 15:30**, so it lands about 16:15. It writes
 files only; it never touches git, so a bad ERP pull cannot land in the repo. The previous
-`current_routes.json` and `rotationalRoster.json` are copied to `automation/last-good/` first.
+`current_routes.json`, `rotationalRoster.json` and `rotationGroups.json` are copied to
+`automation/last-good/` first.
 
 Logs: `automation/logs/weekly-refresh.log`.
 
@@ -290,11 +314,12 @@ The log names the cause. The usual ones:
   guard working, not a bug.
 
 Recover with the copies in `automation/last-good/`. Each run snapshots
-`public/current_routes.json` and `src/rotationalRoster.json` into a **dated** folder there before
+`public/current_routes.json`, `src/rotationalRoster.json` and `src/rotationGroups.json` into a
+**dated** folder there before
 touching anything, and the newest four are kept. It used to be a single folder overwritten at the
 start of every run, so the second consecutive failure copied the broken state over the only good
 copy — which had already happened once.
 
-A failed run now also **rolls those two files back**, so "the dashboard is still serving last
+A failed run now also **rolls those files back**, so "the dashboard is still serving last
 week's data" is true rather than merely hoped for. If the rollback itself fails the log says
 `COULD NOT ROLL BACK` and names what to distrust, instead of claiming everything is fine.

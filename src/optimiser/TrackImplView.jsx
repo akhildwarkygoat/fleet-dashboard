@@ -28,6 +28,7 @@ import { ClipboardCheck, Download, Upload, ChevronLeft, ChevronRight, Info, Aler
 import { Card, Tile, Empty, Btn, Segmented } from "./ui.jsx";
 import { SERVICES, fmtClock as fmtGate } from "./services.js";
 import { resolveFinalised } from "./finalisedPlans.js";
+import { subscribeRotaWeek } from "./rotation.js";
 import * as store from "./store.js";
 import {
   getTI, setEntry, deleteEntry, getEntry, plannedRuns, snapshotOf, commit,
@@ -56,21 +57,36 @@ export default function TrackImplView({ t, toast, svc }) {
 
   /* The finalised plan is the thing being marked, so it is resolved the same way every
      other board resolves it. A draft's scored BODY is stored on the ref at finalise time,
-     which is what makes a draft usable out here without the Planner's machinery. */
+     which is what makes a draft usable out here without the Planner's machinery. A
+     Rotational slot resolves to the manager's plan for the group on that clock THIS WEEK
+     (kind "rotation") — a file like any other, fetched the same way.
+
+     The week can change under the board: the Monday step, or the week picker. Every load
+     is numbered, and a load that finishes after a newer one started throws its result
+     away — otherwise last week's Day file could land after this week's and be marked
+     against. The map is emptied first for the same reason: merging a failed fetch into a
+     stale map keeps last week's body in place for that slot. */
   useEffect(() => {
-    let live = true;
-    scoped.forEach((s) => {
-      const r = resolveFinalised(s);
-      if (r.kind === "draft" && r.body) { if (live) setPlans((p) => ({ ...p, [s.id]: { body: r.body, meta: r } })); return; }
-      if (r.kind === "plan" && r.file) {
-        fetch(r.file).then((x) => (x.ok ? x.json() : null))
-          .then((d) => { if (live) setPlans((p) => ({ ...p, [s.id]: d && Array.isArray(d.routes) ? { body: d, meta: r } : null })); })
-          .catch(() => { if (live) setPlans((p) => ({ ...p, [s.id]: null })); });
-        return;
-      }
-      if (live) setPlans((p) => ({ ...p, [s.id]: null }));
-    });
-    return () => { live = false; };
+    let gen = 0;
+    const load = () => {
+      const mine = ++gen;
+      const live = () => mine === gen;
+      setPlans({});
+      scoped.forEach((s) => {
+        const r = resolveFinalised(s);
+        if (r.kind === "draft" && r.body) { if (live()) setPlans((p) => ({ ...p, [s.id]: { body: r.body, meta: r } })); return; }
+        if ((r.kind === "plan" || r.kind === "rotation") && r.file) {
+          fetch(r.file + "?ts=" + Date.now()).then((x) => (x.ok ? x.json() : null))
+            .then((d) => { if (live()) setPlans((p) => ({ ...p, [s.id]: d && Array.isArray(d.routes) ? { body: d, meta: r } : null })); })
+            .catch(() => { if (live()) setPlans((p) => ({ ...p, [s.id]: null })); });
+          return;
+        }
+        if (live()) setPlans((p) => ({ ...p, [s.id]: null }));
+      });
+    };
+    load();
+    const off = subscribeRotaWeek(load);
+    return () => { gen++; off(); };
   }, [svc && svc.id]);                                              // eslint-disable-line
 
   /* Every run the plan expects today, across the services in scope. */
@@ -161,6 +177,12 @@ export default function TrackImplView({ t, toast, svc }) {
   const quota = useMemo(() => quotaUse(ti), [ti]);
   const noPlans = expected.length === 0;
   const assumedSvcs = [...new Set(expected.filter((r) => r.assumedOff).map((r) => r.svc.name))];
+  /* Which of the manager's nine plans each Rotational slot is being marked against. The
+     rows only say "Rotational · Day"; the group behind that name changes every Monday, so
+     without this line the manager cannot tell which plan today's lateness is measured on. */
+  const rotationPlans = useMemo(
+    () => scoped.map((s) => plans[s.id]).filter((p) => p && p.meta && p.meta.kind === "rotation").map((p) => p.meta.name),
+    [plans, svc && svc.id]);                                       // eslint-disable-line
 
   return (
     <div className="flex flex-col gap-4">
@@ -195,6 +217,11 @@ export default function TrackImplView({ t, toast, svc }) {
           <b style={{ color: t.text }}>Measured against the finalised plan as it stood when you entered the time.</b>{" "}
           Finalising a different plan later does not move a day already recorded — otherwise every
           past variance would silently rewrite itself and the trend would be worthless.
+          {rotationPlans.length > 0 && (
+            <> Rotational is on <b style={{ color: t.text }}>{rotationPlans.join(" · ")}</b> — the rider
+            groups step one clock along every Monday, so the plan behind each slot changes with them and
+            each record keeps the one it was marked against.</>
+          )}
           {assumedSvcs.length > 0 && (
             <> <b style={{ color: t.watch }}>Drop runs on {assumedSvcs.join(", ")} are timed against an assumed
             8-hour shift</b>, because the ERP gives a gate time but no release time. Those rows are recorded and their
@@ -253,7 +280,9 @@ export default function TrackImplView({ t, toast, svc }) {
           {noPlans ? (
             <Empty t={t} title="No finalised plan to mark against"
               sub={svc && !svc.overall
-                ? `${svc.name} has no plan resolved yet. Finalise one in the Planner, then this board can measure against it.`
+                ? svc.slot
+                  ? `${svc.name} has no plan for the group on this clock in the week shown — the manager's plan file is missing, or nothing is finalised for it in the Planner.`
+                  : `${svc.name} has no plan resolved yet. Finalise one in the Planner, then this board can measure against it.`
                 : "None of the services has a plan resolved yet."} />
           ) : (
             <>

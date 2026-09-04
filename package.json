@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --host",
-    "test": "node src/optimiser/engine.test.js"
+    "test": "node src/optimiser/engine.test.js && node src/optimiser/rotation.test.js"
   },
   "dependencies": {
     "@googlemaps/markerclusterer": "^2.6.2",

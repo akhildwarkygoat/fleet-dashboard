@@ -6,6 +6,10 @@ import {
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { serviceIdFor, SERVICES } from "./optimiser/services.js";
+/* Plan BODIES are resolved, never read off svc.planUrl: the Rotational slots serve a different
+   rider group's plan each Monday (rotation.js), and a finalised choice outranks the default. */
+import { planUrlFor, planSourceFor } from "./optimiser/finalisedPlans.js";
+import { subscribeRotaWeek } from "./optimiser/rotation.js";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
 import { fetchErpRaw, fetchErpCostRaw, mapErpToDashboard, mapErpCosts, canonVehicle, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 import {
@@ -848,9 +852,11 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
           <span className="tabular-nums" style={{ color: t.muted }}><b style={{ color: t.text }}>{planSummary.buses}</b> routes ({planSummary.matched} on today's fleet)</span>
           <span className="tabular-nums" style={{ color: t.muted }}><b style={{ color: t.text }}>{planSummary.km.toLocaleString("en-IN")}</b> km/day</span>
           <span className="tabular-nums" style={{ color: t.muted }}>plan cost <b style={{ color: t.text }}>{inr(planSummary.cost)}</b>/day{planSummary.mixedBasis ? "" : ` · ${inr(planSummary.cost_head)}/head`}</span>
-          <span className="text-xs w-full" style={{ color: t.faint }}>
-            {planSummary.services.join(" · ")}
-            {planSummary.missing.length ? ` — not included: ${planSummary.missing.join(", ")} (no plan yet)` : ""}
+          {/* One span per service so the line wraps between services, not inside a Rotational
+              label that itself carries middle-dots ("Group 2 · Half night · week of 7 Sep"). */}
+          <span className="text-xs w-full flex flex-wrap gap-x-3 gap-y-0.5" style={{ color: t.faint }}>
+            {planSummary.services.map((s) => <span key={s}>{s}</span>)}
+            {planSummary.missing.length ? <span>— not included: {planSummary.missing.join(", ")} (no plan yet)</span> : null}
           </span>
           {planSummary.mixedBasis && (
             <span className="text-xs w-full" style={{ color: t.watch }}>
@@ -2566,13 +2572,24 @@ export default function App() {
   }, []);
   const [servicePlans, setServicePlans] = useState([]);
   useEffect(() => {
-    const withPlans = SERVICES.filter((s) => s.planUrl);
-    Promise.all(withPlans.map((s) =>
-      fetch(s.planUrl + "?ts=" + Date.now())
-        .then((r) => (r.ok ? r.json() : null))
-        .then((p) => (p && Array.isArray(p.routes) ? { svc: s, plan: p } : null))
-        .catch(() => null)
-    )).then((rs) => setServicePlans(rs.filter(Boolean)));
+    /* Reloaded whole on every "rota-week" event (a Monday step, or a week pinned in the
+       Optimiser header). The array is REPLACED rather than merged so a slot whose new week's
+       file fails to load drops out of the roll-up instead of quietly keeping last week's cost
+       under this week's label; `gen` discards a slow response from a superseded load. */
+    let gen = 0;
+    const load = () => {
+      const my = ++gen;
+      const withPlans = SERVICES.map((s) => ({ svc: s, url: planUrlFor(s), src: planSourceFor(s) })).filter((x) => x.url);
+      Promise.all(withPlans.map(({ svc, url, src }) =>
+        fetch(url + "?ts=" + Date.now())
+          .then((r) => (r.ok ? r.json() : null))
+          .then((p) => (p && Array.isArray(p.routes) ? { svc, plan: p, src } : null))
+          .catch(() => null)
+      )).then((rs) => { if (my === gen) setServicePlans(rs.filter(Boolean)); });
+    };
+    load();
+    const off = subscribeRotaWeek(load);
+    return () => { gen++; off(); };
   }, []);
   /* Per-SERVICE roll-up, DERIVED from the synced employees rather than captured during the
      sync: on a day that is already synced the stored snapshot is served and syncErp never
@@ -2632,7 +2649,10 @@ export default function App() {
       buses: sum((o) => o.buses), km: sum((o) => o.km), cost: sum((o) => o.cost), riders,
       cost_head: riders ? sum((o) => o.cost) / riders : 0,
       matched: buses.filter((b) => named.has(b.id)).length,
-      services: servicePlans.map(({ svc }) => svc.name),
+      // A Rotational slot names the group and week it is running, so the strip never reads
+      // as if "Rotational · Day" were one fixed plan — it is a different group's every Monday.
+      services: servicePlans.map(({ svc, src }) =>
+        src && src.kind === "rotation" ? `${svc.name} — ${src.label}` : svc.name),
       missing: SERVICES.filter((s) => !servicePlans.some((x) => x.svc.id === s.id)).map((s) => s.name),
       mixedBasis: bases.size > 1,
     };
@@ -2743,7 +2763,13 @@ export default function App() {
 
   // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
   // Equations is retired; Metrics lives inside Settings now.
-  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", Route], ["costs", "Cost report", IndianRupee], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
+  /* Cost report is HIDDEN, not deleted. CostReportView and its `tab === "costs"` branch below
+     are untouched, along with its entry in titleMap — the tab simply has no way in from the
+     nav, exactly like "bus", which is reached by clicking a bus on Live.
+
+     To bring it back, put this entry back in the list (nothing else needs changing):
+       ["costs", "Cost report", IndianRupee],                                              */
+  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", Route], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
   const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", costs: "Cost report", compare: "Compare", optimiser: "", settings: "Settings" };
 
   return (

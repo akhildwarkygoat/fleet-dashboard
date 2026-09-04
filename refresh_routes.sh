@@ -7,12 +7,16 @@
 #   ./refresh_routes.sh                 # fetch live ERP + re-cut the rota roster + rebuild routes
 #   ./refresh_routes.sh --no-roster     # skip the roster re-cut (routes only)
 #   ./refresh_routes.sh --roster-only   # ONLY re-cut the roster: ~2 min, no map rebuild
-#   ./refresh_routes.sh --rebuild-plans # ALSO re-solve the three rotational plans (see below)
+#   ./refresh_routes.sh --rebuild-plans # ALSO re-solve the optimiser's three baseline plans (see below)
 #   ./refresh_routes.sh --check-login   # log in, report, exit. Fetches nothing, writes nothing.
 #
-# The plans are deliberately NOT rebuilt by default. The roster (who is on which shift) must
-# move every Monday; the plans (which bus goes where) are an operating decision a person
-# makes. Without the flag this script says when they have diverged and leaves them alone.
+# The Rotational plans are NOT rebuilt on a Monday, and since 2026-09-04 they do not need to
+# be. They are nine manager-finalised files — three FIXED rider groups x three clocks, under
+# public/plans/rot/ — and src/rotation.json turns the label every Monday: which group's plan
+# each clock shows is arithmetic on the calendar, not a rebuild. What moves every week is the
+# roster (WHO is on which slot) and, additively, the groups file (WHICH group a new rider
+# belongs to). Both are re-cut here, in that order, and the run prints the rotation for the
+# week so the log says which group is on which clock. See docs/rotation.md.
 #
 # RUN THIS EVERY MONDAY. Rotational's three slots step one place every Monday
 #   (Day -> Full night -> Half night -> Day)
@@ -32,7 +36,7 @@ for a in "$@"; do
     --roster-only) ROSTER_ONLY=1 ;;
     --rebuild-plans) REBUILD_PLANS=1 ;;
     --check-login) CHECK_LOGIN=1 ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "unknown option: $a" >&2; exit 2 ;;
   esac
 done
@@ -77,7 +81,8 @@ ERP_URL="${ERP_URL:-$ERP_BASE/api/general/VehicleEmpMapDetails}"
 #   9   logged in, but the reply had no recognisable token — the login API changed
 #   10  .erp_key exists but is unreadable, malformed, or missing a field
 #   11  the ERP itself errored (5xx) — their server, not us
-# (5, 6 and 7 are reserved: build_erp_routes.py raises them and they propagate through here.)
+# (5 and 6 come from build_erp_routes.py, 7 from build_rotation_groups.py — the roster or the
+#  groups file is not what the step needs, and the message names the fix. All propagate here.)
 HAVE_CREDS=0
 if { [ -n "${ERP_USER:-}" ] && [ -n "${ERP_PASS:-}" ]; } || [ -f .erp_key ]; then HAVE_CREDS=1; fi
 
@@ -231,18 +236,32 @@ mv "$ERP_TMP" data/erp_live.json
 if [ "$ROSTER" = "1" ]; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Re-cutting the rotational roster for this week…"
   "$PY" build_rotational_roster.py
+  # The roster just moved everyone one slot. The GROUPS file must not move at all — it is the
+  # fixed identity the nine plans were built for — so this step is additive: it files this
+  # week's joiners into the group the calendar puts on their slot, removes nobody, and is a
+  # no-op when there is nothing new. It runs in every mode that re-cuts the roster, including
+  # --roster-only. Exit 7 means it refused (same family as build_erp_routes.py's 5 and 6: the
+  # input is not what it needs, and the message above names the fix); under `set -e` that
+  # stops the run here, before the map is built against a roster whose joiners have no plan.
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Filing this week's joiners into their rotation group…"
+  "$PY" build_rotation_groups.py
 else
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Skipping the roster re-cut (--no-roster)."
 fi
 
 # ── Rotational plans ────────────────────────────────────────────────────────────────
-# The roster moves every Monday; the three plans do not. They are a DIFFERENT artefact —
-# the routes the fleet actually runs — and re-solving them unattended is not a refresh:
-# measured, the current builder does not reproduce the committed plans (rot-day comes back
-# 9 buses / 171 min max ride against the operating 12 buses / 119 min). Replacing an
-# operating plan with a materially different one at 04:00, two hours before the 06:00 Day
-# gate, is not something a timer should decide. So the rebuild is OPT-IN, and the default
-# path just says loudly when the plans have fallen behind the roster.
+# The operating plans are the nine group x clock files under public/plans/rot/, chosen per
+# week by src/rotation.json. They are built for a FIXED group of people, so they never fall
+# behind the roster and nothing here rebuilds them — a new set arrives from the transport
+# manager and is imported with scripts/import_rotation_plans.mjs (docs/rotation.md).
+#
+# --rebuild-plans re-solves something else: the optimiser's own three baseline files
+# (public/plan_rot-*.json, each service's planUrl), which the dashboard falls back to only
+# when the manifest has no plan for a slot. Re-solving those unattended is still not a
+# refresh — measured, the builder does not reproduce a manager plan (rot-day comes back
+# 9 buses / 171 min max ride against the operating 12 buses / 119 min) — so it stays OPT-IN.
+# The default path instead prints the rotation for the roster week: which group is on which
+# clock, and how well this week's punches agreed with the calendar.
 if [ "$REBUILD_PLANS" = "1" ]; then
   command -v node >/dev/null 2>&1 || { echo "ERROR: --rebuild-plans needs node on PATH." >&2; exit 3; }
   # `import … with { type: "json" }` in build_service_plans.mjs is a SyntaxError below Node 18.20.
@@ -255,27 +274,50 @@ if [ "$REBUILD_PLANS" = "1" ]; then
     node build_service_plans.mjs --service "$s" --erp data/erp_live.json
   done
 else
-  # Exact comparison on the week string — never on headcounts. A plan's rider total is
-  # counted after stop matching and differs from the roster's by a rider or two even when
-  # the two are perfectly in sync, so a headcount check would cry wolf every single week.
+  # Informational, hence `|| true`: a roster cut before the rotation check existed, or a
+  # missing manifest, must never fail the run. The agreement figures come from
+  # build_rotational_roster.py's rotation check, stored in the roster as `_rotation`; when
+  # the roster has none for this week the prediction is still printed, without a figure.
   "$PY" - <<'PYEOF' || true
-import json, os
-roster = json.load(open("src/rotationalRoster.json")).get("_rotaWeek", "?")
-stale, unknown = [], []
-for s in ("rot-day", "rot-half", "rot-full"):
-    f = f"public/plan_{s}.json"
-    if not os.path.exists(f):
-        continue
-    w = json.load(open(f)).get("rotaWeek")
-    (unknown if not w else stale if w != roster else []).append((s, w))
-if stale or unknown:
-    print(f"NOTE: the roster is cut for week {roster}; the rotational plans are not all on it.")
-    for s, w in stale:
-        print(f"      plan_{s}.json was built for week {w}")
-    for s, _ in unknown:
-        print(f"      plan_{s}.json predates week stamping — its cohort is unknown")
-    print("      The plans still describe the riders they were built for. That is deliberate:")
-    print("      re-cut them when you mean to, with  ./refresh_routes.sh --rebuild-plans")
+import json, sys
+SLOT = {"day": "Day", "half": "Half night", "full": "Full night"}
+try:
+    roster = json.load(open("src/rotationalRoster.json", encoding="utf-8"))
+except Exception as e:
+    print(f"NOTE: could not read src/rotationalRoster.json ({e.__class__.__name__}) — no rotation line.")
+    sys.exit(0)
+week = roster.get("_rotaWeek") or "?"
+rot = roster.get("_rotation") or {}
+agreement = {}
+if rot.get("week") == week and rot.get("predicted"):
+    by_slot, step, agreement = rot["predicted"], rot.get("step", "?"), rot.get("agreement") or {}
+else:
+    try:
+        import build_rotation_groups as rg            # same arithmetic as the dashboard's rotation.js
+        manifest, _ = rg.load_manifest(retries=0)
+        r = rg.rotation_for(week, manifest)
+        by_slot, step = r["bySlot"], r["step"]
+    except Exception as e:
+        print(f"NOTE: no rotation for week {week} ({e.__class__.__name__}: {e}) — is src/rotation.json present?")
+        sys.exit(0)
+print(f"Rotation for week {week} (step {step}): "
+      + " · ".join(f"{SLOT[s]} = Group {by_slot.get(s, '?')}" for s in ("day", "half", "full")))
+if agreement:
+    parts, low = [], []
+    for g in sorted(agreement):
+        a = agreement[g]
+        if a.get("share") is None:
+            parts.append(f"Group {g} no punches")
+        else:
+            parts.append(f"Group {g} {a['share']:.0%} ({a['match']}/{a['n']})")
+            if a["share"] < 0.75:
+                low.append(g)
+    print("    this week's punches agree with the calendar: " + ", ".join(parts))
+    if low:
+        print("    *** LOW agreement for Group " + ", ".join(low) + " — the calendar may be a step off the floor.")
+        print("        See the warning from build_rotational_roster.py above, and docs/rotation.md.")
+else:
+    print("    (no agreement figure yet: the roster predates the rotation check — the next re-cut adds it)")
 PYEOF
 fi
 
@@ -285,7 +327,7 @@ fi
 # them lets the shift board be brought up to date on a Monday without waiting for the map.
 if [ "$ROSTER_ONLY" = "1" ]; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] --roster-only: skipping the route rebuild and the merge review."
-  echo "    The shift list is now current. public/current_routes.json still describes the"
+  echo "    The shift list and the rotation groups are now current. public/current_routes.json still describes the"
   echo "    week it was last built for, so the Prev-route map is one refresh behind until"
   echo "    a full run is made. The Planner and the Stops board read the roster and are correct."
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Done (roster only)."
