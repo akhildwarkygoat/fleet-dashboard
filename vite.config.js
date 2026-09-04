@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
+import dns from "node:dns/promises";
 
 /* ── ERP login ────────────────────────────────────────────────────────────────────
  * The ERP is no longer open: POST /api/login with a username and password returns a
@@ -24,24 +25,29 @@ import net from "node:net";
  *
  * PRODUCTION: the backend passthrough has to do this same login. The browser cannot,
  * for the same reason it cannot hold the password. */
-/* The ERP has SPLIT-HORIZON DNS. On the office LAN, life.gainup.in resolves to the internal
-   172.16.10.169; from anywhere else it resolves to the public 203.101.97.26. The old comment
-   here claimed the hostname "works from either side" — it does not. A machine on a different
-   office subnet (e.g. 172.16.97.x) is handed the internal address and cannot route to it, so
-   the dashboard dies with ETIMEDOUT on the office wifi while working fine on a phone hotspot.
+/* The ERP has SPLIT-HORIZON DNS. Inside the office, life.gainup.in resolves to an internal
+   172.16.10.x address; from anywhere else the same name resolves to a public one. The old
+   comment here claimed the hostname "works from either side" — it does not. A machine on a
+   different office subnet (e.g. 172.16.97.x) is handed the internal address, cannot route to
+   it, and the dashboard dies with ETIMEDOUT on office wifi while working fine on a hotspot.
 
-   So don't trust one address: try each candidate's TCP port and use the first that answers.
+   So the address is DISCOVERED, not assumed, and no IP is written down here. At startup we
+   collect every address the ERP might be at — from the system resolver, and separately from a
+   PUBLIC resolver, which is the part that defeats split-horizon DNS — then TCP-probe them and
+   use the first that answers. Works on office wifi, a hotspot, home, or a VPN, and keeps
+   working if the public IP is ever changed, because nothing here is pinned to it.
+
    ERP_BASE still wins outright when set, for a site whose ERP lives somewhere else. */
-let ERP_BASE = process.env.ERP_BASE || "http://life.gainup.in:8089";
+const ERP_HOST = process.env.ERP_HOST || "life.gainup.in";
+const ERP_PORT = Number(process.env.ERP_PORT || 8089);
+let ERP_BASE = process.env.ERP_BASE || `http://${ERP_HOST}:${ERP_PORT}`;
 
-const ERP_CANDIDATES = [
-  process.env.ERP_BASE,
-  "http://life.gainup.in:8089",   // correct on the hotspot / from home; internal-only in some offices
-  "http://203.101.97.26:8089",    // the public address the hostname resolves to outside
-].filter(Boolean);
+// Public resolvers, asked explicitly. The system resolver is the one being overridden inside
+// the office, so asking it again would just return the same unroutable answer.
+const PUBLIC_DNS = ["8.8.8.8", "1.1.1.1"];
+const ERP_CACHE = "automation/.erp-address";        // shared with erp_address.py
 
-/** Resolves once at dev-server startup. ~2.5 s worst case per dead candidate. */
-function tcpProbe(host, port, ms = 2500) {
+function tcpProbe(host, port, ms = 2000) {
   return new Promise((resolve) => {
     const sock = new net.Socket();
     const done = (ok) => { sock.destroy(); resolve(ok); };
@@ -53,16 +59,46 @@ function tcpProbe(host, port, ms = 2500) {
   });
 }
 
+/** Every address worth trying, best-guess first. Deduplicated, never throws. */
+async function erpCandidates() {
+  const out = [];
+  const add = (base) => { if (base && !out.includes(base)) out.push(base); };
+  add(process.env.ERP_BASE);
+  // Last address that worked, written by whichever of this file / erp_address.py ran last.
+  // Tried first: it makes startup one fast probe, and it is the ONLY thing that works on a
+  // subnet where the internal address is unroutable AND public DNS is blocked — both have
+  // been seen here, on different subnets.
+  try { add(fs.readFileSync(ERP_CACHE, "utf8").trim() || null); } catch { /* no cache yet */ }
+  add(`http://${ERP_HOST}:${ERP_PORT}`);            // system DNS — right everywhere but here
+
+  const lookup = async (servers) => {
+    try {
+      const r = new dns.Resolver({ timeout: 1500, tries: 1 });
+      if (servers) r.setServers(servers);
+      return await r.resolve4(ERP_HOST);
+    } catch { return []; }
+  };
+  for (const ip of await lookup(null)) add(`http://${ip}:${ERP_PORT}`);        // system view
+  for (const server of PUBLIC_DNS) {
+    for (const ip of await lookup([server])) add(`http://${ip}:${ERP_PORT}`);  // outside view
+  }
+  return out;
+}
+
 async function resolveErpBase(logger) {
-  for (const base of ERP_CANDIDATES) {
+  const candidates = await erpCandidates();
+  for (const base of candidates) {
     const u = new URL(base);
     if (await tcpProbe(u.hostname, Number(u.port) || 80)) {
-      if (base !== ERP_CANDIDATES[0] || ERP_CANDIDATES.length === 1) { /* fallthrough */ }
+      try { fs.mkdirSync("automation", { recursive: true }); fs.writeFileSync(ERP_CACHE, base + "\n"); } catch { /* read-only checkout */ }
       return base;
     }
     logger && logger.info(`  ERP   ${u.hostname}:${u.port} did not answer — trying the next address`);
   }
-  return ERP_CANDIDATES[0];
+  // Nothing answered. Return the hostname form so the failure reads as "ERP unreachable"
+  // rather than as a confusing bad-IP error.
+  logger && logger.warn(`  ERP   no address answered on port ${ERP_PORT} (tried ${candidates.length})`);
+  return `http://${ERP_HOST}:${ERP_PORT}`;
 }
 
 function erpCredentials() {
