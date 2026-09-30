@@ -240,12 +240,84 @@ function routesRebuildPlugin() {
   };
 }
 
+/* ── Bus attendance link: GPS km per bus per day ─────────────────────────────────────
+ * The bus attendance app (its own repo and server) records every trip a bus makes: the trip's
+ * leader taps Start / End journey on the bus phone and the km is worked out from GPS. Its server
+ * serves the per-bus, per-day totals at GET /api/fleet/km behind a shared key. The key is added
+ * HERE, in the dev server, exactly like the ERP token above, so it never reaches a browser.
+ *
+ * Supply it either way (see README "Bus attendance link"):
+ *   BUS_API_URL / BUS_API_KEY   environment variables, or
+ *   .bus_key                    {"url": "http://127.0.0.1:3000", "key": "…"} — gitignored.
+ *                               `npm run fleet:link` in the bus attendance repo writes it.
+ *
+ * Only GET /bus-api/fleet/* is passed through. With the bus app down the dashboard gets a 502 it
+ * reads as "offline" and costs on plan km meanwhile; that is logged once per change of state,
+ * not once per 30-second poll. */
+function busLink() {
+  if (process.env.BUS_API_KEY) return { url: process.env.BUS_API_URL || "http://127.0.0.1:3000", key: process.env.BUS_API_KEY };
+  try {
+    const raw = JSON.parse(fs.readFileSync(".bus_key", "utf8").replace(/^﻿/, ""));
+    if (raw && raw.key) return { url: process.env.BUS_API_URL || raw.url || "http://127.0.0.1:3000", key: String(raw.key) };
+  } catch { /* no file, or not JSON — not linked */ }
+  return null;
+}
+
+function busAttendancePlugin() {
+  return {
+    name: "bus-attendance",
+    configureServer(server) {
+      const log = server.config.logger;
+      const link = busLink();
+      log.info(link
+        ? `  BUS   GPS km from the bus attendance app at ${link.url}`
+        : "  BUS   bus attendance app not linked (.bus_key or BUS_API_KEY) — km stays on the finalised plan");
+      let state = "";
+      const note = (next, msg) => { if (next !== state) { state = next; (next === "ok" ? log.info : log.warn)(`  BUS   ${msg}`); } };
+      const send = (res, status, body, headers = {}) => {
+        res.statusCode = status;
+        res.setHeader("Content-Type", "application/json");
+        for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+        res.end(typeof body === "string" ? body : JSON.stringify(body));
+      };
+      server.middlewares.use("/bus-api", async (req, res) => {
+        if (req.method !== "GET" || !req.url.startsWith("/fleet/"))
+          return send(res, 404, { error: { code: "not_found", message: "Only GET /bus-api/fleet/* is passed through" } });
+        if (!link)
+          return send(res, 503, { error: { code: "not_linked", message: "The bus attendance app is not linked: add .bus_key (npm run fleet:link in that repo)" } });
+        try {
+          const up = await fetch(link.url.replace(/\/+$/, "") + "/api" + req.url, {
+            headers: { "X-Fleet-Key": link.key, Accept: "application/json",
+              ...(req.headers["if-none-match"] ? { "If-None-Match": req.headers["if-none-match"] } : {}) },
+            signal: AbortSignal.timeout(15000),
+          });
+          if (up.status === 404) {
+            // something answers there, but not with the fleet feed: a bus app started before the feed existed
+            note("outdated", `bus attendance app at ${link.url} has no /api/fleet/km — restart it on the current code`);
+            return send(res, 502, { error: { code: "bus_app_outdated", message: `The bus attendance app at ${link.url} has no fleet feed yet: restart it on the current code` } });
+          }
+          note(up.ok || up.status === 304 ? "ok" : "http" + up.status,
+            up.ok || up.status === 304 ? `bus attendance app answering at ${link.url}` : `bus attendance app answered HTTP ${up.status}`);
+          const etag = up.headers.get("etag");
+          // no-cache = revalidate every poll: an unchanged feed comes back as a 304 with no body
+          const headers = { "Cache-Control": "no-cache", ...(etag ? { ETag: etag } : {}) };
+          if (up.status === 304) { res.statusCode = 304; for (const [k, v] of Object.entries(headers)) res.setHeader(k, v); return res.end(); }
+          send(res, up.status, await up.text(), headers);
+        } catch (e) {
+          note("offline", `bus attendance app not reachable at ${link.url} (${(e.cause && e.cause.code) || e.name}) — retrying on the next poll`);
+          send(res, 502, { error: { code: "bus_app_offline", message: `The bus attendance app is not reachable at ${link.url}` } });
+        }
+      });
+    },
+  };
+}
+
 /* async: the proxy's `target` is read once when this object is built, so the reachable ERP
    address has to be settled before that — not inside configureServer, which runs later. */
 export default defineConfig(async () => {
   ERP_BASE = await resolveErpBase(console);
   return {
-  plugins: [react(), routesRebuildPlugin(), erpAuthPlugin()],
+  plugins: [react(), routesRebuildPlugin(), erpAuthPlugin(), busAttendancePlugin()],
   server: {
     host: true,
     // honour the port the launcher assigns (autoPort) via the PORT env var; fall back to 5173

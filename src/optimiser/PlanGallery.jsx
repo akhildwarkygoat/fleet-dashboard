@@ -5,9 +5,16 @@
  * your saved drafts. Each saved draft is a card with a lightweight map PREVIEW
  * (an SVG of its routes), its name, last-edited time and a quick summary.
  * ==========================================================================*/
-import React, { useRef, useMemo } from "react";
+import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { gsap } from "gsap";
+import { Flip } from "gsap/Flip";
 import { Plus, Sparkles, MapPinned, Trash2, Clock, Users, Bus, FileUp, History, CheckCircle2, Circle } from "lucide-react";
 import { PALETTE } from "./ui.jsx";
+import { KPI_DEFS, getHiddenKpis } from "./kpiPrefs.js";
+import { PLAN_RANK, nextRank, rankBy, dirWords } from "./kpiRank.js";
+import { prefersReduced, springTween } from "../ui/motion.js";
+
+gsap.registerPlugin(Flip);
 
 function relTime(ts) {
   if (!ts) return "";
@@ -63,7 +70,29 @@ function PlanThumb({ t, assignments, stopsById, depot, busColor, lines }) {
   );
 }
 
-export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel, planKind, onImportFile, onImportPrev, prevPlan, finalised, onFinalise }) {
+export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel, planKind, onImportFile, onImportPrev, prevPlan, finalised, onFinalise, bodies }) {
+  /* Rank the saved plans by any KPI the boards show (the same hidden-KPI preference applies):
+     highest first, then lowest first, then back to newest first. Each plan is scored the way
+     finalising scores it (NewPlanView.scoreDraft), so a figure here matches the board. */
+  const [rank, setRank] = useState(null);                  // { key, dir } | null
+  const [hidden] = useState(getHiddenKpis);
+  const chips = KPI_DEFS.filter((d) => PLAN_RANK[d.key] && !hidden.has(d.key));
+  const gridRef = useRef(null);
+  const flipFrom = useRef(null);
+  const press = (key) => {
+    if (gridRef.current && !prefersReduced()) flipFrom.current = Flip.getState(gridRef.current.children);
+    setRank((cur) => (key ? nextRank(cur, key) : null));
+  };
+  useLayoutEffect(() => {
+    if (!flipFrom.current) return;
+    Flip.from(flipFrom.current, springTween("move"));
+    flipFrom.current = null;
+  }, [rank]);
+  const ranked = useMemo(() => {
+    if (!rank) return drafts.map((d) => ({ item: d, value: null, rank: null }));
+    const def = PLAN_RANK[rank.key];
+    return rankBy(drafts, (d) => { const b = bodies && bodies.get(d.id); return b ? def.value(b) : null; }, rank.dir);
+  }, [drafts, rank, bodies]);
   // hidden file input for "Import plan file" — reads a plan JSON exported by a teammate
   const fileRef = useRef(null);
   const prevMeta = prevPlan && prevPlan.meta;
@@ -79,6 +108,30 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
       coords: (b.stops || []).filter((s) => s.lat != null && s.lng != null).map((s) => [s.lat, s.lng]),
     })).filter((l) => l.coords.length);
   }, [prevPlan]);
+  /* The ERP's previous allocation is not a saved plan and has no score, so while the plans are
+     ranked it follows them rather than sitting above #1. */
+  const prevCard = prevLines && (
+    <div key="prev" className="relative rounded-2xl border overflow-hidden transition-all hover:-translate-y-0.5 cursor-pointer"
+      style={{ borderColor: t.border, background: t.surface, boxShadow: "0 1px 2px rgba(15,23,42,.04)" }}
+      onClick={onImportPrev} title={rank ? "The ERP's actual allocation — open it to score it; it is not a saved plan, so it is not ranked" : "Open the ERP's actual allocation in the editor"}>
+      <div className="h-32 w-full" style={{ borderBottom: "1px solid " + t.border }}>
+        <PlanThumb t={t} lines={prevLines} depot={depot} />
+      </div>
+      <div className="p-3">
+        <div className="flex items-start gap-2">
+          <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: t.watch + "22", color: t.watch }}><History size={16} /></span>
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold truncate" style={{ color: t.text }}>Previous routes</div>
+            <div className="flex items-center gap-3 text-[11px] mt-0.5" style={{ color: t.muted }}>
+              <span className="inline-flex items-center gap-1"><Clock size={11} /> from ERP</span>
+              <span className="inline-flex items-center gap-1"><Users size={11} /> {prevMeta ? prevMeta.riders : "—"}</span>
+              <span className="inline-flex items-center gap-1"><Bus size={11} /> {prevMeta ? prevMeta.vehicles : "—"}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
   const onFile = async (e) => {
     const f = e.target.files && e.target.files[0];
     e.target.value = ""; // allow picking the same file again
@@ -105,9 +158,10 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
           className="flex items-center gap-3 rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5"
           style={{ border: "1.5px solid " + t.border, background: t.surface, cursor: canImport ? "pointer" : "not-allowed", opacity: canImport ? 1 : 0.5 }}>
           <span className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: t.techno + "22", color: t.techno }}><Sparkles size={20} /></span>
-          {/* A Rotational slot seeds from the transport manager's group plan, not an optimiser
-              output — say whose plan it is (planKind "rotation" from finalisedPlans.planSourceFor). */}
-          <span><span className="block font-semibold" style={{ color: t.text }}>{planKind === "rotation" ? "From the finalised plan" : "From optimised plan"}{planLabel ? ` — ${planLabel}` : ""}</span><span className="block text-xs" style={{ color: t.muted }}>Import the {planKind === "rotation" ? "manager's" : "optimiser's"} {planLabel ? `${planLabel} ` : ""}plan and tweak it</span></span>
+          {/* A Rotational slot seeds from the transport manager's group plan and a fixed-hour
+              service from its finalised (built-in or chosen) plan — say whose plan it is
+              (planKind from NewPlanView: "rotation" | "final" | "optimised"). */}
+          <span><span className="block font-semibold" style={{ color: t.text }}>{planKind === "optimised" || !planKind ? "From optimised plan" : "From the finalised plan"}{planLabel ? ` — ${planLabel}` : ""}</span><span className="block text-xs" style={{ color: t.muted }}>Import the {planKind === "rotation" ? "manager's" : planKind === "final" ? "finalised" : "optimiser's"} {planLabel ? `${planLabel} ` : ""}plan and tweak it</span></span>
         </button>
         <button type="button" onClick={() => fileRef.current && fileRef.current.click()}
           className="flex items-center gap-3 rounded-2xl p-4 text-left transition-all hover:-translate-y-0.5"
@@ -121,42 +175,55 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
       {/* Saved drafts — the ERP's prev-route allocation always sits first as a permanent card */}
       <div>
         <div className="text-xs font-bold uppercase tracking-wider mb-2" style={{ color: t.muted }}>Plans ({drafts.length + (prevLines ? 1 : 0)})</div>
+        {drafts.length > 1 && chips.length > 0 && (
+          <div className="mb-3">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-semibold mr-1" style={{ color: t.muted }}>Rank plans by</span>
+              {chips.map((d) => {
+                const on = !!rank && rank.key === d.key;
+                return (
+                  <button key={d.key} type="button" onClick={() => press(d.key)} aria-pressed={on}
+                    title={!on ? `${d.hint} — highest first` : rank.dir === "desc" ? "Press for lowest first" : "Press to stop ranking"}
+                    className="rounded-full px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap"
+                    style={{ border: "1px solid " + (on ? t.primary : t.border), background: on ? t.primarySoft : t.surface,
+                             color: on ? t.primary : t.text, cursor: "pointer" }}>
+                    {PLAN_RANK[d.key].label}{on ? (rank.dir === "desc" ? " ↓" : " ↑") : ""}
+                  </button>
+                );
+              })}
+              {rank && (
+                <button type="button" onClick={() => press(null)} className="rounded-full px-2.5 py-1 text-xs font-semibold"
+                  style={{ color: t.muted, cursor: "pointer" }}>Clear</button>
+              )}
+            </div>
+            {rank && (
+              <p className="text-xs mt-1.5" style={{ color: t.muted }}>
+                By {PLAN_RANK[rank.key].label.toLowerCase()}, {dirWords(rank.dir)} — each plan scored the way finalising scores it.
+              </p>
+            )}
+          </div>
+        )}
         {drafts.length === 0 && !prevLines ? (
           <div className="rounded-2xl border py-10 text-center text-sm" style={{ borderColor: t.border, color: t.muted, borderStyle: "dashed" }}>
             No saved plans yet. Create one above and hit <b>Save</b> to keep it here.
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {prevLines && (
-              <div className="relative rounded-2xl border overflow-hidden transition-all hover:-translate-y-0.5 cursor-pointer"
-                style={{ borderColor: t.border, background: t.surface, boxShadow: "0 1px 2px rgba(15,23,42,.04)" }}
-                onClick={onImportPrev} title="Open the ERP's actual allocation in the editor">
-                <div className="h-32 w-full" style={{ borderBottom: "1px solid " + t.border }}>
-                  <PlanThumb t={t} lines={prevLines} depot={depot} />
-                </div>
-                <div className="p-3">
-                  <div className="flex items-start gap-2">
-                    <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: t.watch + "22", color: t.watch }}><History size={16} /></span>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold truncate" style={{ color: t.text }}>Previous routes</div>
-                      <div className="flex items-center gap-3 text-[11px] mt-0.5" style={{ color: t.muted }}>
-                        <span className="inline-flex items-center gap-1"><Clock size={11} /> from ERP</span>
-                        <span className="inline-flex items-center gap-1"><Users size={11} /> {prevMeta ? prevMeta.riders : "—"}</span>
-                        <span className="inline-flex items-center gap-1"><Bus size={11} /> {prevMeta ? prevMeta.vehicles : "—"}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-            {drafts.map((d) => {
+          <div ref={gridRef} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {!rank && prevCard}
+            {ranked.map(({ item: d, value, rank: pos }) => {
               const m = d.meta || {};
               return (
                 <div key={d.id} className="group relative rounded-2xl border overflow-hidden transition-all hover:-translate-y-0.5 cursor-pointer"
-                  style={{ borderColor: t.border, background: t.surface, boxShadow: "0 1px 2px rgba(15,23,42,.04)" }} onClick={() => onOpen(d)}>
+                  style={{ borderColor: pos === 1 ? t.primary : t.border, background: t.surface, boxShadow: "0 1px 2px rgba(15,23,42,.04)" }} onClick={() => onOpen(d)}>
                   {/* map preview */}
-                  <div className="h-32 w-full" style={{ borderBottom: "1px solid " + t.border }}>
+                  <div className="relative h-32 w-full" style={{ borderBottom: "1px solid " + t.border }}>
                     <PlanThumb t={t} assignments={d.assignments} stopsById={stopsById} depot={depot} busColor={busColor} />
+                    {rank && (
+                      <span className="absolute top-2 left-2 rounded-lg px-2 py-0.5 text-xs font-bold tabular-nums"
+                        style={{ background: t.surface, border: "1px solid " + (pos === 1 ? t.primary : t.border), color: pos != null ? t.primary : t.muted }}>
+                        {pos != null ? `#${pos}` : "not scored"}
+                      </span>
+                    )}
                   </div>
                   {/* info row */}
                   <div className="p-3">
@@ -164,6 +231,11 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
                       <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: t.primarySoft, color: t.primary }}><MapPinned size={16} /></span>
                       <div className="min-w-0 flex-1">
                         <div className="font-semibold truncate" style={{ color: t.text }} title={d.name}>{d.name}</div>
+                        {rank && (
+                          <div className="text-sm font-bold tabular-nums mt-0.5" style={{ color: pos != null ? t.text : t.faint }}>
+                            {pos != null ? PLAN_RANK[rank.key].fmt(value) : "—"}
+                          </div>
+                        )}
                         <div className="flex items-center gap-3 text-[11px] mt-0.5" style={{ color: t.muted }}>
                           <span className="inline-flex items-center gap-1"><Clock size={11} /> {relTime(d.ts)}</span>
                           <span className="inline-flex items-center gap-1"><Users size={11} /> {m.riders ?? 0}{totalRiders ? `/${totalRiders}` : ""}</span>
@@ -189,6 +261,7 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
                 </div>
               );
             })}
+            {rank && prevCard}
           </div>
         )}
       </div>

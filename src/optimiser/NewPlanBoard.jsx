@@ -6,7 +6,9 @@
  * remove them from that bus (click several for multi-select). The KPI tiles scope
  * to the active bus while one is selected, else to the whole plan.
  * ==========================================================================*/
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { gsap } from "gsap";
+import { Flip } from "gsap/Flip";
 import { PALETTE } from "./ui.jsx";
 import GMap from "./GMap.jsx";
 import { routeGeometry } from "./roadGeom.js";
@@ -14,6 +16,10 @@ import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarC
 import { KPI_DEFS, getHiddenKpis, setHiddenKpis, visibleKpis } from "./kpiPrefs.js";
 import ParkPicker, { useParkPoints, parkLabel } from "./ParkPicker.jsx";
 import { parkForRoute, startForRoute, setRoutePark, setRouteStart } from "./parkPrefs.js";
+import { BUS_RANK, TYPE_KEYS, nextRank, rankBy, dirWords } from "./kpiRank.js";
+import { prefersReduced, springTween } from "../ui/motion.js";
+
+gsap.registerPlugin(Flip);
 
 const UNADDED = "#f87171"; // light red — stop not yet on any bus
 const ADDED = "#4ade80";   // light green — stop assigned to a bus
@@ -216,13 +222,46 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
   ];
   const shownTiles = visibleKpis(tiles, hiddenKpis);
 
+  /* Pressing a tile ranks the bus list by that figure (kpiRank.js): highest first, then lowest
+     first, then back to normal. Owned / Rental narrow the list to that kind of bus instead. The
+     cards slide to their new places, so the eye follows a bus rather than losing it. */
+  const [rank, setRank] = useState(null);                  // { key, dir } | null
+  const [typeOnly, setTypeOnly] = useState(null);          // "own" | "rent" | null
+  const busGridRef = useRef(null);
+  const flipFrom = useRef(null);
+  const captureFlip = () => { if (busGridRef.current && !prefersReduced()) flipFrom.current = Flip.getState(busGridRef.current.children); };
+  const pressKpi = (key) => {
+    if (!TYPE_KEYS[key] && !BUS_RANK[key]) return;
+    captureFlip();
+    if (TYPE_KEYS[key]) setTypeOnly((cur) => (cur === TYPE_KEYS[key] ? null : TYPE_KEYS[key]));
+    else setRank((cur) => nextRank(cur, key));
+  };
+  const clearRank = () => { captureFlip(); setRank(null); setTypeOnly(null); };
+  useLayoutEffect(() => {
+    if (!flipFrom.current) return;
+    Flip.from(flipFrom.current, { ...springTween("move"), nested: true, onEnter: (els) => gsap.fromTo(els, { opacity: 0 }, { opacity: 1, duration: 0.2 }) });
+    flipFrom.current = null;
+  }, [rank, typeOnly]);
+  const kpiOn = (key) => (TYPE_KEYS[key] ? typeOnly === TYPE_KEYS[key] : !!rank && rank.key === key);
+  const kpiTitle = (key) => TYPE_KEYS[key]
+    ? (kpiOn(key) ? "Show every bus again" : `Show only ${key === "owned" ? "owned" : "rental"} buses`)
+    : !BUS_RANK[key] ? undefined
+    : !kpiOn(key) ? `Rank the buses by ${BUS_RANK[key].label.toLowerCase()}, highest first`
+    : rank.dir === "desc" ? "Press for lowest first" : "Press to stop ranking";
+
   const busList = useMemo(() => {
     const q = busQuery.trim().toLowerCase();
+    const list = editor.perBus.filter((r) => (!q || r.bus.name.toLowerCase().includes(q)) && (!typeOnly || r.bus.type === typeOnly));
+    if (rank && BUS_RANK[rank.key]) {
+      const def = BUS_RANK[rank.key];
+      // a bus with no stops has nothing to rank; it keeps its place at the end
+      return rankBy(list, (r) => (r.stopIds.length
+        ? def.value({ riders: r.heads, cap: r.cap, cost: r.cost, ride: r.ride, km: r.km, stops: r.stopIds.length })
+        : null), rank.dir);
+    }
     // Pin the active bus to the top so a stop you just clicked is right there for easy access.
-    return editor.perBus
-      .filter((r) => !q || r.bus.name.toLowerCase().includes(q))
-      .sort((a, b) => (b.bus.id === activeBus) - (a.bus.id === activeBus));
-  }, [editor.perBus, busQuery, activeBus]);
+    return list.sort((a, b) => (b.bus.id === activeBus) - (a.bus.id === activeBus)).map((item) => ({ item, value: null, rank: null }));
+  }, [editor.perBus, busQuery, activeBus, rank, typeOnly]);
 
   // fill most of the viewport — the New-plan tab opens as a big map cockpit; a toggle blows it up to
   // true fullscreen (covers the header/tabs). Height tracks the window so it stays right on resize.
@@ -358,15 +397,22 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
             changes as you toggle them — it wraps instead, so the panel grows a row rather than
             squeezing eleven tiles into four slots. */}
         <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(86px, 1fr))" }}>
-          {shownTiles.map((c, i) => (
-            <div key={i} className="rounded-xl px-2 py-1 relative overflow-hidden" style={{ background: glassInner, border: "1px solid " + glassInnerBorder }}>
-              {/* rail only when the accent came from a threshold — see Tile in Dashboard.jsx */}
-              {c.accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: c.accent }} />}
-              <div className={"text-[9px] uppercase tracking-wider truncate leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: t.muted }}>{c.label}</div>
-              <div className={"text-base font-bold tabular-nums leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: t.text }}>{c.value}</div>
-              <div className={"text-[9px] truncate leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: c.dc || t.muted }}>{c.sub}</div>
-            </div>
-          ))}
+          {shownTiles.map((c) => {
+            const on = kpiOn(c.key);
+            return (
+              <button key={c.key} type="button" onClick={() => pressKpi(c.key)} title={kpiTitle(c.key)} aria-pressed={on}
+                className="text-left rounded-xl px-2 py-1 relative overflow-hidden transition-colors"
+                style={{ background: on ? t.primarySoft : glassInner, border: "1px solid " + (on ? t.primary : glassInnerBorder), cursor: "pointer" }}>
+                {/* rail only when the accent came from a threshold — see Tile in Dashboard.jsx */}
+                {c.accent && <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: c.accent }} />}
+                <div className={"text-[9px] uppercase tracking-wider truncate leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: on ? t.primary : t.muted }}>
+                  {c.label}{on && rank && !TYPE_KEYS[c.key] ? (rank.dir === "desc" ? " ↓" : " ↑") : ""}
+                </div>
+                <div className={"text-base font-bold tabular-nums leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: t.text }}>{c.value}</div>
+                <div className={"text-[9px] truncate leading-tight" + (c.accent ? " pl-1.5" : "")} style={{ color: c.dc || t.muted }}>{c.sub}</div>
+              </button>
+            );
+          })}
         </div>
         {/* always-on legend so the stop-colour meaning never has to be recalled mid-rebuild */}
         <div className="flex items-center gap-3 mt-2 text-[9px] font-medium" style={{ color: t.muted }}>
@@ -391,8 +437,18 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
           <input value={busQuery} onChange={(e) => setBusQuery(e.target.value)} placeholder="Find a bus…"
             className="w-full rounded-lg px-3 py-2 text-sm outline-none" style={{ border: "1px solid " + t.border, background: glassInner, color: t.text }} />
         </div>
-        <div className="grid grid-cols-2 gap-2 overflow-y-auto px-3 pb-3">
-          {busList.map((r) => {
+        {(rank || typeOnly) && (
+          <div className="flex items-center gap-2 px-3 pb-2 text-[11px]">
+            <span className="font-semibold truncate" style={{ color: t.primary }}>
+              {[rank && `By ${BUS_RANK[rank.key].label.toLowerCase()}, ${dirWords(rank.dir)}`, typeOnly && (typeOnly === "own" ? "owned only" : "rental only")].filter(Boolean).join(" · ")}
+            </span>
+            <button type="button" onClick={clearRank}
+              className="ml-auto rounded-lg px-2 py-0.5 font-semibold flex-shrink-0"
+              style={{ border: "1px solid " + t.border, background: glassBtn, color: t.text, cursor: "pointer" }}>Clear</button>
+          </div>
+        )}
+        <div ref={busGridRef} className="grid grid-cols-2 gap-2 overflow-y-auto px-3 pb-3">
+          {busList.map(({ item: r, value, rank: pos }) => {
             const on = activeBus === r.bus.id;
             const fillCol = r.overCap ? t.poor : r.overSeats ? t.watch : r.stopIds.length ? t.good : t.border;
             return (
@@ -409,6 +465,11 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                   <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: busColor[r.bus.id] }} />
                   <span className="text-xs font-semibold truncate" style={{ color: t.text }}>{r.bus.name}</span>
                 </div>
+                {pos != null && (
+                  <div className="text-[11px] font-bold tabular-nums mb-1 truncate">
+                    <span style={{ color: t.primary }}>#{pos}</span> <span style={{ color: t.text }}>{BUS_RANK[rank.key].fmt(value)}</span>
+                  </div>
+                )}
                 <div className="h-1 rounded-full overflow-hidden mb-1" style={{ background: glassTrack }}>
                   <div className="h-full rounded-full" style={{ width: Math.min(100, r.fill * 100) + "%", background: fillCol }} />
                 </div>

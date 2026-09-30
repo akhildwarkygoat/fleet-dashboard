@@ -1,0 +1,9 @@
+{
+  "_comment": "The plan each fixed-hour service runs when nobody has finalised one in this browser. Ships with the app, so every machine starts on the transport manager's finalised plans without importing anything. A choice finalised in a browser still wins there; Revert returns to this. The three Rotational slots are not listed on purpose: they follow src/rotation.json, the manager's nine group plans stepping one clock every Monday. Set 2026-09-30 from the Planner exports in Documents/Projects_Summer/Plans.",
+  "set": "2026-09-30",
+  "services": {
+    "s9": { "name": "Finalised_plan_Done", "file": "/finalised_plan.json", "from": "Plans/Finalised_plan_Done.json" },
+    "s7": { "name": "7am Shift", "file": "/plans/final/7am-shift.json", "from": "Plans/7am Shift.json" },
+    "zen": { "name": "Subulapuram Unit", "file": "/plans/final/subulapuram-unit.json", "from": "Plans/Subulapuram Unit.json" }
+  }
+}

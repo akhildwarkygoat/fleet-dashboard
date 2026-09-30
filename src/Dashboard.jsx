@@ -6,12 +6,10 @@ import {
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
 import { serviceIdFor, SERVICES } from "./optimiser/services.js";
-/* Plan BODIES are resolved, never read off svc.planUrl: the Rotational slots serve a different
-   rider group's plan each Monday (rotation.js), and a finalised choice outranks the default. */
-import { planUrlFor, planSourceFor } from "./optimiser/finalisedPlans.js";
-import { subscribeRotaWeek } from "./optimiser/rotation.js";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
-import { fetchErpRaw, fetchErpCostRaw, mapErpToDashboard, mapErpCosts, canonVehicle, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
+import { fetchErpRaw, fetchErpCostRaw, fetchErpDieselRaw, mapErpToDashboard, mapErpCosts, mapErpDiesel, canonVehicle, vehKey, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
+import { indexGps, priceOn, kmOn, dieselOn, variableCost, MAX_SPREAD_DAYS, RECENT_DAYS, LOW_GPS_SHARE } from "./dailyCost.js";
+import { fetchBusKm } from "./busApp.js";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   BarChart, Bar, Cell, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter,
@@ -87,6 +85,13 @@ const inr = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 const inr1 = (n) => "₹" + (n || 0).toLocaleString("en-IN", { maximumFractionDigits: 1 });
 const inrK = (n) => { const a = Math.abs(n || 0), s = n < 0 ? "-" : ""; if (a >= 1e7) return s + "₹" + (a / 1e7).toFixed(1) + "Cr"; if (a >= 1e5) return s + "₹" + (a / 1e5).toFixed(1) + "L"; if (a >= 1e3) return s + "₹" + Math.round(a / 1e3) + "k"; return s + "₹" + Math.round(a); };
 const pct = (n) => (n || 0).toFixed(0) + "%";
+/* Calendar-date helpers for the km and diesel feeds, which are keyed on local service dates. */
+const localIso = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const addDaysIso = (iso, n) => new Date(Date.parse(iso + "T00:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+const fmtDay = (iso) => (iso ? new Date(iso + "T00:00:00Z").toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" }) : "—");
+const km1 = (n) => (n || 0).toLocaleString("en-IN", { maximumFractionDigits: 1 });
+const GPS_KEEP_DAYS = 31;          // GPS days kept in the browser and re-read on a full sync
+const dieselMsg = (m) => (m ? `${m.vehicles} vehicles · issues ${fmtDay(m.from)} → ${fmtDay(m.to)}` : "");
 
 const DEFAULT_BANDS = [
   { id: "b1", label: "Excellent", min: 90, color: "#10b981" },
@@ -95,18 +100,26 @@ const DEFAULT_BANDS = [
   { id: "b4", label: "Critical", min: 0, color: "#f43f5e" },
 ];
 
-const FORMULA_VARS = ["present", "absent", "capacity", "assigned", "km", "budget", "spend", "util", "cph", "cpk", "variance"];
+/* Money is worked out two ways (dailyCost.js): by km travelled and by diesel consumed. The plain
+   names are the km figures — the basis every formula written before the diesel feed was built on —
+   and each has a _diesel twin. */
+const FORMULA_VARS = ["present", "absent", "capacity", "assigned", "km", "budget", "spend", "util", "cph", "cpk", "variance",
+  "spend_diesel", "cph_diesel", "cpk_diesel", "variance_diesel"];
 const VAR_INFO = [
   ["present", "riders present"], ["absent", "riders absent"], ["capacity", "seats on bus"],
-  ["assigned", "present + absent"], ["km", "route distance"], ["budget", "allotted ₹"],
-  ["spend", "actual ₹ spent"], ["util", "utilisation %"], ["cph", "cost per head"],
-  ["cpk", "cost per km"], ["variance", "budget − spend"],
+  ["assigned", "present + absent"], ["km", "km travelled (GPS, else plan)"], ["budget", "allotted ₹"],
+  ["spend", "₹ spent, diesel by km"], ["util", "utilisation %"], ["cph", "cost per head, by km"],
+  ["cpk", "cost per km, by km"], ["variance", "budget − spend"],
+  ["spend_diesel", "₹ spent, diesel as issued"], ["cph_diesel", "cost per head, by diesel"],
+  ["cpk_diesel", "cost per km, by diesel"], ["variance_diesel", "budget − spend_diesel"],
 ];
 const OPS = ["+", "-", "*", "/", "(", ")"];
 const DIGITS = ["7", "8", "9", "4", "5", "6", "1", "2", "3", "0", "."];
 const CMP_METRICS = [
-  ["cph", "Cost / head", "₹"], ["util", "Utilisation", "%"], ["cpk", "Cost / km", "₹"],
-  ["spend", "Total spend", "₹"], ["present", "Riders", ""],
+  ["cph", "Cost / head · by km", "₹"], ["cph_diesel", "Cost / head · by diesel", "₹"], ["util", "Utilisation", "%"],
+  ["cpk", "Cost / km · by km", "₹"], ["cpk_diesel", "Cost / km · by diesel", "₹"],
+  ["spend", "Total spend · by km", "₹"], ["spend_diesel", "Total spend · by diesel", "₹"],
+  ["km", "Km travelled", "km"], ["present", "Riders", ""],
 ];
 const GRAPH_TYPES = [["line", "Line"], ["bar", "Bar"], ["area", "Area"], ["pie", "Pie"], ["scatter", "Scatter"]];
 const GROUP_BYS = [["company", "By company"], ["bus", "By bus"]];
@@ -131,7 +144,7 @@ const COST_TYPES = [
   // heads the costing feed carries that predate this list (see ERP_COST_HEADS in erp.js)
   { key: "rto", label: "RTO expense", qty: false, period: "year" },
   { key: "adblue", label: "AdBlue", qty: true, qtyLabel: "litres / year", period: "year" },
-  // plan-derived lines (see withPlanCosts): rental day tariff from the finalised plan
+  // the km-variable line for a hired bus, worked out per day (dailyCost.js)
   { key: "hire", label: "Hire (day tariff)", qty: false, period: "day" },
 ];
 const COST_TYPE_MAP = Object.fromEntries(COST_TYPES.map((c) => [c.key, c]));
@@ -150,21 +163,29 @@ function lineDaily(line, wd) {
 }
 function profileDailySpend(prof, wd) { return (prof && prof.lines ? prof.lines : []).reduce((s, l) => s + lineDaily(l, wd), 0); }
 function profileDailyBudget(prof, wd) { const b = prof && prof.budget; return b && b.amount ? perDay(b.amount, b.period || "month", wd) : 0; }
-/* overlay each bus's cost profile onto its records so daily spend/budget flow to every tab */
-function mergeCostsIntoRecords(records, buses, attendance, busCosts, wd) {
-  if (!busCosts || !Object.keys(busCosts).length) return records;
+/* Each bus's day: its standing costs (ERP cost lines, the same every day) plus that day's
+   km-variable cost, worked out two ways by dailyCost.js —
+     spend        diesel priced on the km travelled (GPS from the bus attendance app, else plan km)
+     spendDiesel  diesel as the ERP issued it; null while the diesel feed has not loaded, so a
+                  missing figure reads as missing rather than as ₹0
+   A hired bus is its day tariff on km both ways. `day` and `cost` ride along so a view can say
+   where each number came from. */
+function mergeCostsIntoRecords(records, buses, attendance, busCosts, wd, run = {}) {
   const dates = Object.keys(attendance || {});
   const byKey = new Map(records.map((r) => [r.busId + "|" + r.date, { ...r }]));
   buses.forEach((b) => {
-    const prof = busCosts[b.id];
-    if (!prof) return;
-    const spend = profileDailySpend(prof, wd), budget = profileDailyBudget(prof, wd);
-    if (!spend && !budget) return;
+    const prof = busCosts && busCosts[b.id];
+    const standing = profileDailySpend(prof, wd), budget = profileDailyBudget(prof, wd);
+    const issues = run.diesel ? run.diesel.issues[vehKey(b.id)] || [] : null;
     dates.forEach((d) => {
+      const day = kmOn(b, d, run.gpsIdx, run.today);
+      const cost = variableCost(b, day, issues && dieselOn(issues, d), run.diesel ? priceOn(run.diesel.prices, d) : null);
+      const byKm = cost.byKm ? cost.byKm.amount : 0;
+      const byDiesel = cost.byDiesel ? cost.byDiesel.amount : cost.hired ? byKm : null;
+      if (!standing && !budget && !byKm && !byDiesel && day.source !== "gps") return;
       const k = b.id + "|" + d;
-      const ex = byKey.get(k) || { busId: b.id, date: d, km: 0 };
-      // route km from the finalised plan, so cost/km and the km roll-ups are real
-      byKey.set(k, { ...ex, spend, budget, km: +ex.km || +b.planKm || 0 });
+      byKey.set(k, { ...(byKey.get(k) || { busId: b.id, date: d }), budget, standing, km: day.km,
+        spend: standing + byKm, spendDiesel: byDiesel == null ? null : standing + byDiesel, day, cost });
     });
   });
   return [...byKey.values()];
@@ -172,63 +193,26 @@ function mergeCostsIntoRecords(records, buses, attendance, busCosts, wd) {
 
 /* ---- finalised route plan (public/finalised_plan.json) ----
    The approved plan gives each bus its route: km/day, stops, riders, ride time. Its own cost
-   model was  fixed ₹1,934/day (driver 692 + maintenance 1,242, assumed flat per owned bus)
-   + diesel at ₹100/L ÷ ERP mileage × km  — verified to reproduce all 70 route costs exactly —
-   and the slab tariff for rentals. On the Live page the planner's ASSUMED fixed part is
-   REPLACED by the bus's real standing costs from the ERP costing feed; only the km-variable
-   part survives from the plan: diesel for owned buses, the whole day tariff for rentals
-   (a rented bus has no cost lines in the ERP — the tariff IS its cost). */
+   model was a fixed ₹1,934/day plus diesel at ₹100/L on its route km, and the slab tariff for
+   rentals. Here the assumed fixed part is REPLACED by the bus's real standing costs from the ERP
+   costing feed, and the km part is worked out per day (dailyCost.js): the plan's route km is only
+   the fallback for a day the bus attendance app did not record, and a rental keeps the plan's own
+   tariff figure on those days. */
 /* Bumped whenever a cost profile gains fields the card relies on. A profile stored under an
    older shape still renders, but a background resync is kicked off so the new fields arrive
    without the user having to press Resync. */
 const COST_SHAPE = 3;                 // 2 = per-line `detail` rows · 3 = financial-year window (was trailing 12 months)
-const PLAN_DIESEL_PER_LITRE = 100;    // ₹/L — the same constant the plan editor prices with
-const PLAN_FALLBACK_KMPL = 100 / 18;  // editor's template ₹18/km, for a bus with no ERP mileage
 
-/* Overlay the plan onto the fleet: route summary + km on each routed bus, and the plan's
-   km-variable costs merged into the ERP cost profiles. Pure; returns {buses, profiles}. */
-function withPlanCosts(buses, costProfiles, planByVeh) {
-  if (!planByVeh || !planByVeh.size) return { buses, profiles: costProfiles };
-  const profiles = { ...costProfiles };
-  const outBuses = buses.map((b) => {
+/* The plan's route onto each routed bus: summary, stops and the km/tariff dailyCost.js falls back to. */
+function withPlanRoutes(buses, planByVeh) {
+  if (!planByVeh || !planByVeh.size) return buses;
+  return buses.map((b) => {
     const r = planByVeh.get(b.id);
     if (!r) return b;
-    if (r.type === "rent") {
-      profiles[b.id] = {
-        source: "plan",
-        budget: { amount: "", period: "month" },
-        lines: [{
-          id: "plan-hire", type: "hire", label: "Hire — plan tariff", amount: +r.cost || 0, period: "day",
-          planned: true,
-          basis: [["Route distance", `${r.km} km/day`], ["Riders on the route", `${r.riders}`],
-            ["Tariff slab", r.km <= 80 ? "≤80 km → ₹1,700" : r.km <= 95 ? "80–95 km → ₹1,900" : "over 95 km → ₹18.70/km"],
-            ["Day tariff", inr(+r.cost || 0)]],
-        }],
-      };
-    } else {
-      const kmpl = +b.mileage > 0 ? +b.mileage : PLAN_FALLBACK_KMPL;
-      const litres = Math.round((r.km / kmpl) * 100) / 100;
-      const base = profiles[b.id];
-      profiles[b.id] = {
-        source: base ? base.source + "+plan" : "plan",
-        budget: base ? base.budget : { amount: "", period: "month" },
-        lines: [
-          ...(base ? base.lines : []),
-          {
-            id: "plan-diesel", type: "diesel", label: "Diesel — plan route", amount: PLAN_DIESEL_PER_LITRE,
-            quantity: litres, period: "day", planned: true,
-            basis: [["Route distance", `${r.km} km/day`],
-              ["Mileage", +b.mileage > 0 ? `${b.mileage} km/L (ERP)` : `${PLAN_FALLBACK_KMPL.toFixed(2)} km/L (no ERP mileage — planner default)`],
-              ["Diesel price", `${inr(PLAN_DIESEL_PER_LITRE)}/L (assumed)`],
-              ["Litres per day", `${litres} L`], ["Cost per day", inr(PLAN_DIESEL_PER_LITRE * litres)]],
-          },
-        ],
-      };
-    }
-    return { ...b, planKm: +r.km || 0, planStops: r.seq || [], planRide: r.ride, planRiders: r.riders,
+    return { ...b, planKm: +r.km || 0, planType: r.type, planCost: r.type === "rent" ? +r.cost || 0 : null,
+      planStops: r.seq || [], planRide: r.ride, planRiders: r.riders,
       route: `${r.stops} stops · ${r.km} km · ${r.ride} min ride` };
   });
-  return { buses: outBuses, profiles };
 }
 
 /* ---- per-vehicle details the ERP does not carry ----
@@ -253,36 +237,44 @@ function applyBusInfo(buses, profiles, busInfo) {
   return { buses: outBuses, profiles: out };
 }
 
+/* Money derived from one spend figure. `null` in, `null` out: an unknown diesel figure stays unknown. */
+function moneyOf(spend, present, km, budget, workingDays) {
+  if (spend == null) return { spend: null, cph: null, cpk: null, variance: null, netAnnual: null };
+  return { spend, cph: present ? spend / present : 0, cpk: km ? spend / km : 0, variance: budget - spend, netAnnual: (budget - spend) * workingDays };
+}
+/* The plain money keys are the km basis; the _diesel keys the same figures on diesel as issued.
+   Keys match FORMULA_VARS so a formula can be evaluated on this object directly. */
+function withDiesel(m, d) {
+  return { ...m, spend_diesel: d.spend, cph_diesel: d.cph, cpk_diesel: d.cpk, variance_diesel: d.variance, netAnnual_diesel: d.netAnnual };
+}
 function metricsFor(rec, bus, workingDays) {
   const present = +rec.present || 0, absent = +rec.absent || 0, cap = +bus.capacity || 0;
   const km = +rec.km || 0, budget = +rec.budget || 0, spend = +rec.spend || 0;
-  return {
-    present, absent, capacity: cap, km, budget, spend, assigned: present + absent,
+  const spendD = rec.spendDiesel == null ? null : +rec.spendDiesel || 0;
+  return withDiesel({
+    present, absent, capacity: cap, km, budget, assigned: present + absent,
     util: cap ? (present / cap) * 100 : 0,
-    cph: present ? spend / present : 0,
-    cpk: km ? spend / km : 0,
-    variance: budget - spend,
-    netAnnual: (budget - spend) * workingDays,
-  };
+    ...moneyOf(spend, present, km, budget, workingDays),
+  }, moneyOf(spendD, present, km, budget, workingDays));
 }
 function aggregate(pairs, workingDays) {
-  let present = 0, absent = 0, cap = 0, km = 0, budget = 0, spend = 0, count = 0;
+  let present = 0, absent = 0, cap = 0, km = 0, budget = 0, spend = 0, spendD = 0, count = 0;
   pairs.forEach(({ rec, bus }) => {
     const m = metricsFor(rec, bus, workingDays);
     present += m.present; absent += m.absent; cap += m.capacity; km += m.km; budget += m.budget; spend += m.spend; count++;
+    spendD = spendD == null || m.spend_diesel == null ? null : spendD + m.spend_diesel;
   });
-  return {
-    count, present, absent, cap, km, budget, spend,
+  return withDiesel({
+    count, present, absent, cap, km, budget,
     util: cap ? (present / cap) * 100 : 0,
-    cph: present ? spend / present : 0,
-    cpk: km ? spend / km : 0,
-    netAnnual: (budget - spend) * workingDays,
-  };
+    ...moneyOf(spend, present, km, budget, workingDays),
+  }, moneyOf(count ? spendD : 0, present, km, budget, workingDays));
 }
 function scopeFromAgg(a) {
   return {
     present: a.present, absent: a.absent, capacity: a.cap, assigned: a.present + a.absent,
-    km: a.km, budget: a.budget, spend: a.spend, util: a.util, cph: a.cph, cpk: a.cpk, variance: a.budget - a.spend,
+    km: a.km, budget: a.budget, spend: a.spend, util: a.util, cph: a.cph, cpk: a.cpk, variance: a.variance,
+    spend_diesel: a.spend_diesel, cph_diesel: a.cph_diesel, cpk_diesel: a.cpk_diesel, variance_diesel: a.variance_diesel,
   };
 }
 /* ---- employees + attendance roll-up (punch feed is source of truth; typed counts are fallback) ---- */
@@ -296,9 +288,12 @@ function rollup(employees, attendance, busId, date) {
   return { present, absent: emps.length - present, assigned: emps.length };
 }
 function resolveRec(records, employees, attendance, busId, date) {
-  const r = recOf(records, busId, date) || {};
+  const rec = recOf(records, busId, date), r = rec || {};
   const roll = rollup(employees, attendance, busId, date);
-  return { busId, date, present: roll ? roll.present : +r.present || 0, absent: roll ? roll.absent : +r.absent || 0, km: +r.km || 0, budget: +r.budget || 0, spend: +r.spend || 0 };
+  return { busId, date, present: roll ? roll.present : +r.present || 0, absent: roll ? roll.absent : +r.absent || 0, km: +r.km || 0, budget: +r.budget || 0,
+    spend: +r.spend || 0,
+    // no record = no costs either way; a record without a diesel figure = the diesel feed has not loaded
+    spendDiesel: !rec ? 0 : rec.spendDiesel == null ? null : +rec.spendDiesel };
 }
 function unionDates(records, attendance) { return [...new Set([...records.map((r) => r.date), ...Object.keys(attendance || {})])].sort(); }
 function busHasData(records, employees, attendance, busId, date) { return !!recOf(records, busId, date) || !!rollup(employees, attendance, busId, date); }
@@ -357,7 +352,7 @@ function healthOf(m, medCph, s) {
 function varMapOf(variables) { return Object.fromEntries((variables || []).map((v) => [v.name, Number(v.value) || 0])); }
 function evalFormula(expr, m, vars) {
   try {
-    const scope = {}; FORMULA_VARS.forEach((v) => (scope[v] = m[v] || 0));
+    const scope = {}; FORMULA_VARS.forEach((v) => (scope[v] = m[v] == null && v.endsWith("_diesel") ? NaN : m[v] || 0));
     if (vars) Object.assign(scope, vars);
     const val = math.evaluate(expr, scope);
     return typeof val === "number" && isFinite(val) ? val : null;
@@ -372,9 +367,13 @@ function fmtFormula(val, f) {
 // cost-derived metrics return null (→ honest "no data" state) until costs / km exist, rather than a misleading flat 0
 const metricVal = (agg, key) =>
   key === "util" ? agg.util : key === "present" ? agg.present :
+  key === "km" ? (agg.km > 0 ? agg.km : null) :
   key === "cph" ? (agg.spend > 0 ? agg.cph : null) :
   key === "cpk" ? (agg.spend > 0 && agg.km > 0 ? agg.cpk : null) :
-  key === "spend" ? (agg.spend > 0 ? agg.spend : null) : null;
+  key === "spend" ? (agg.spend > 0 ? agg.spend : null) :
+  key === "cph_diesel" ? (agg.spend_diesel > 0 ? agg.cph_diesel : null) :
+  key === "cpk_diesel" ? (agg.spend_diesel > 0 && agg.km > 0 ? agg.cpk_diesel : null) :
+  key === "spend_diesel" ? (agg.spend_diesel > 0 ? agg.spend_diesel : null) : null;
 /* effective working days = configured working days minus declared holidays */
 function effWorkingDays(s) { return Math.max(1, (s.workingDays || 312) - ((s.holidays && s.holidays.length) || 0)); }
 
@@ -746,7 +745,7 @@ function ErpLoading({ t, phase, progress, onSync }) {
     </div>
   );
 }
-function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onOpenBusView, erpPhase, erpProgress, onSync, planSummary }) {
+function LiveView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, onOpenBusView, erpPhase, erpProgress, onSync }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const [q, setQ] = useState("");
@@ -805,10 +804,17 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         <span style={{ color: t.muted }}>Present <b style={{ color: t.good }}>{x.m.present}</b>/{x.m.capacity}</span>
         <span style={{ color: t.muted }}>Absent <b style={{ color: t.text }}>{x.m.absent}</b></span>
         <span className="rounded-full px-2 py-0.5 text-xs font-semibold" style={{ background: x.bd.color + "22", color: x.bd.color }}>{x.bd.label} {pct(x.m.util)}</span>
-        <span style={{ color: t.muted }}>Cost/head <b style={{ color: t.text }}>{inr(x.m.cph)}</b></span>
-        <span style={{ color: t.muted }}>Cost/km <b style={{ color: t.text }}>{inr1(x.m.cpk)}</b></span>
-        {showNV && <span style={{ color: t.muted }}>Net value <b style={{ color: x.m.netAnnual >= 0 ? t.good : t.poor }}>{inr(x.m.netAnnual)}/yr</b></span>}
+        <span style={{ color: t.muted }}>Cost/head <Both t={t} km={x.m.cph} diesel={x.m.cph_diesel} /></span>
+        <span style={{ color: t.muted }}>Cost/km <Both t={t} km={x.m.km ? x.m.cpk : null} diesel={x.m.km ? x.m.cpk_diesel : null} fmt={inr1} /></span>
+        {showNV && <span style={{ color: t.muted }}>Net value/yr <Both t={t} km={x.m.netAnnual} diesel={x.m.netAnnual_diesel} color={(v) => (v >= 0 ? t.good : t.poor)} /></span>}
       </div>
+      {(() => { const r = recOf(records, x.bus.id, x.date);
+        return r && r.day ? (
+          <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs mb-3" style={{ color: t.muted }}>
+            <span>Km <b className="tabular-nums" style={{ color: t.text }}>{r.day.source ? km1(r.day.km) : "—"}</b> · <span style={{ color: r.day.partial ? t.watch : t.muted }}>{kmSourceText(r.day)}</span></span>
+            <span>Diesel {!r.cost.hired && r.cost.byDiesel && r.cost.byDiesel.source !== "none" && <b className="tabular-nums" style={{ color: t.text }}>{r.cost.byDiesel.source === "estimate" ? "≈" : ""}{km1(r.cost.byDiesel.litres)} L </b>}· {dieselSourceText(r.cost)}</span>
+          </div>
+        ) : null; })()}
       {(() => { const emps = busEmps(employees, x.bus.id), day = attendance[x.date] || {};
         // absentees first, then no-punch, present last — the misses are what you scan for
         const stRank = (st) => (st === "A" ? 0 : st === "P" ? 2 : 1);
@@ -828,7 +834,8 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         <Tile t={t} label="Capacity utilisation" value={pct(agg.util)} sub={`${agg.count} buses shown`} />
         {noCosts
           ? <Tile t={t} label="Over 150%" value={overCount} sub="heavily over-loaded" />
-          : <Tile t={t} label="Avg cost / head" value={inr(agg.cph)} sub={`${inr(agg.spend)} spend`} />}
+          : <Tile t={t} label="Avg cost / head" value={<Both t={t} stack km={agg.cph} diesel={agg.cph_diesel} />}
+              sub={<>Spend <Both t={t} km={agg.spend} diesel={agg.spend_diesel} /></>} />}
         {(() => {
           const n = (u) => buses.filter((b) => b.unit === u).length;
           const sub = UNITS.map((u) => `${n(u)} ${u}`).filter((x) => !x.startsWith("0 ")).join(" · ");
@@ -840,31 +847,6 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
         <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-3 text-sm" style={{ background: t.primarySoft, borderColor: t.primary, color: t.text }}>
           <Server size={16} style={{ color: t.primary }} />
           <span>Cost, spend &amp; net-value figures stay blank until approved cost lines exist for these vehicles in the ERP. They arrive with the daily sync — or use Resync costing in Settings.</span>
-        </div>
-      )}
-
-      {planSummary && (
-        <div className="rounded-xl border px-4 py-3 mb-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm" style={{ background: t.surface, borderColor: t.border }}>
-          <span className="font-semibold flex items-center gap-2" style={{ color: t.text }}>
-            <Route size={15} style={{ color: t.primary }} />
-            Finalised plans · {planSummary.services.length} of {planSummary.services.length + planSummary.missing.length} services
-          </span>
-          <span className="tabular-nums" style={{ color: t.muted }}><b style={{ color: t.text }}>{planSummary.buses}</b> routes ({planSummary.matched} on today's fleet)</span>
-          <span className="tabular-nums" style={{ color: t.muted }}><b style={{ color: t.text }}>{planSummary.km.toLocaleString("en-IN")}</b> km/day</span>
-          <span className="tabular-nums" style={{ color: t.muted }}>plan cost <b style={{ color: t.text }}>{inr(planSummary.cost)}</b>/day{planSummary.mixedBasis ? "" : ` · ${inr(planSummary.cost_head)}/head`}</span>
-          {/* One span per service so the line wraps between services, not inside a Rotational
-              label that itself carries middle-dots ("Group 2 · Half night · week of 7 Sep"). */}
-          <span className="text-xs w-full flex flex-wrap gap-x-3 gap-y-0.5" style={{ color: t.faint }}>
-            {planSummary.services.map((s) => <span key={s}>{s}</span>)}
-            {planSummary.missing.length ? <span>— not included: {planSummary.missing.join(", ")} (no plan yet)</span> : null}
-          </span>
-          {planSummary.mixedBasis && (
-            <span className="text-xs w-full" style={{ color: t.watch }}>
-              ₹/head is hidden: these plans use different cost bases (some charge loan, driver and
-              maintenance, some treat them as sunk), so a combined per-head figure would be meaningless.
-            </span>
-          )}
-          <span className="text-xs w-full" style={{ color: t.faint }}>Live spend below swaps the plan's assumed fixed ₹1,934/bus for each bus's real ERP standing costs; km &amp; diesel are the plan's.</span>
         </div>
       )}
 
@@ -929,7 +911,12 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
                             <div className="text-[10px]" style={{ color: t.muted }}>util</div>
                           </div>
                           <div className="text-[10px] font-bold uppercase tracking-wide truncate" style={{ color: col }}>{tag}</div>
-                          {showNV && <div className="text-xs font-semibold tabular-nums mt-1" style={{ color: x.m.netAnnual >= 0 ? t.good : t.poor }}>{inrK(x.m.netAnnual)}/yr</div>}
+                          {showNV && (
+                            <div className="text-[11px] font-semibold tabular-nums mt-1 leading-tight" title="Net value a year — by km travelled, then by diesel issued">
+                              <div style={{ color: x.m.netAnnual >= 0 ? t.good : t.poor }}>{inrK(x.m.netAnnual)}<span className="font-normal" style={{ color: t.muted }}> km</span></div>
+                              <div style={{ color: x.m.netAnnual_diesel == null ? t.faint : x.m.netAnnual_diesel >= 0 ? t.good : t.poor }}>{x.m.netAnnual_diesel == null ? "—" : inrK(x.m.netAnnual_diesel)}<span className="font-normal" style={{ color: t.muted }}> diesel</span></div>
+                            </div>
+                          )}
                         </button>
                       ); })}
                   </div>
@@ -940,7 +927,7 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
           </div>
         );
       })}
-      <p className="text-xs" style={{ color: t.muted }}>Tile border + dot = health. Utilisation shows on every tile{showNV ? "; net value too (toggle in Settings)." : " — enable Net Value in Settings to also show profit."} Tap a tile for employees + details.</p>
+      <p className="text-xs" style={{ color: t.muted }}>Tile border + dot = health (scored on the by-km cost). Utilisation shows on every tile{showNV ? "; net value too, by km and by diesel (toggle in Settings)." : " — enable Net Value in Settings to also show profit."} Tap a tile for employees + details.</p>
     </div>
   );
 }
@@ -1021,34 +1008,328 @@ function BusDocuments({ t, busId, busLabel, toast }) {
   );
 }
 
+/* ============================ BY KM / BY DIESEL ============================ */
+/* Every money figure is shown both ways (dailyCost.js): diesel priced on the km each bus travelled,
+   and diesel as the ERP issued it. One grammar everywhere — the km figure first, the diesel figure
+   second, each carrying its own small label — so the two read as a pair, never as a range. A diesel
+   figure that cannot be known yet (the feed has not loaded) reads "—", never ₹0. */
+function Both({ t, km, diesel, fmt = inr, stack = false, size = "text-2xl", color }) {
+  const val = (v) => (v == null ? "—" : fmt(v));
+  const tone = (v) => (color && v != null ? color(v) : t.text);
+  if (stack) return (
+    <span className="grid items-baseline gap-x-2 gap-y-0.5" style={{ gridTemplateColumns: "auto 1fr" }}>
+      <span className={size + " font-bold tabular-nums type-metric"} style={{ color: tone(km) }}>{val(km)}</span>
+      <span className="text-xs font-normal" style={{ color: t.muted }}>by km</span>
+      <span className={size + " font-bold tabular-nums type-metric"} style={{ color: tone(diesel) }}>{val(diesel)}</span>
+      <span className="text-xs font-normal" style={{ color: t.muted }}>by diesel</span>
+    </span>
+  );
+  // each figure keeps its label; a narrow screen may break the line between the two, never inside one
+  return (
+    <span className="tabular-nums">
+      <span className="whitespace-nowrap"><b style={{ color: tone(km) }}>{val(km)}</b><span className="text-xs" style={{ color: t.muted }}> km</span></span>
+      <span style={{ color: t.faint }}> · </span>
+      <span className="whitespace-nowrap"><b style={{ color: tone(diesel) }}>{val(diesel)}</b><span className="text-xs" style={{ color: t.muted }}> diesel</span></span>
+    </span>
+  );
+}
+
+/* Where a day's km came from, in words. */
+function kmSourceText(day) {
+  if (!day || !day.source) return "no km — not recorded, not in the plan";
+  if (day.source === "plan") return "plan route km (the bus app did not record this day)";
+  const g = day.gps, trips = `${g.journeys} trip${g.journeys === 1 ? "" : "s"}`;
+  if (g.active) return `GPS · ${trips} · ${g.active} still out`;
+  if (day.inProgress) return `GPS so far · ${trips}`;
+  return `GPS · ${trips}`;
+}
+/* Where a day's issued diesel came from, in words. */
+function dieselSourceText(cost) {
+  if (!cost) return "";
+  if (cost.hired) return "hired — its owner buys the diesel";
+  const d = cost.byDiesel;
+  if (!d) return "ERP diesel not loaded";
+  if (d.source === "issued") return d.issue.days > 1
+    ? `${km1(d.issue.litres)} L issued ${fmtDay(d.issue.date)}, spread over ${d.issue.days} days`
+    : `issued ${fmtDay(d.issue.date)}`;
+  if (d.source === "estimate") return `ERP average, waiting for next fill (last fill ${fmtDay(d.last)})`;
+  return d.last ? `none issued since ${fmtDay(d.last)}` : d.next ? `none — next issue ${fmtDay(d.next)} covers ${MAX_SPREAD_DAYS} days` : "none issued";
+}
+
+/* A data source's state, as a dot and a few words. */
+function sourceTone(t, phase) {
+  return phase === "ok" ? t.good : phase === "syncing" ? t.watch : phase === "offline" || phase === "error" ? t.poor : t.faint;
+}
+function gpsLabel(st, feed) {
+  const when = st.at ? fmtClock(st.at) : "";
+  if (st.phase === "ok") return `Bus app · ${when}`;
+  if (st.phase === "syncing") return "Bus app · syncing";
+  if (st.phase === "offline") return feed ? `Bus app offline · last ${when}` : "Bus app offline";
+  if (st.phase === "error") return st.code === "bus_app_outdated" ? "Bus app needs a restart" : st.code === "unauthorised" ? "Bus app refused the key" : "Bus app error";
+  if (st.phase === "off") return "Bus app not linked";
+  return "Bus app…";
+}
+function dieselLabel(st, data) {
+  if (st.phase === "syncing") return "ERP diesel · syncing";
+  if (st.phase === "error") return data ? `ERP diesel failed · kept to ${fmtDay(data.meta.to)}` : "ERP diesel failed";
+  if (data) return `ERP diesel to ${fmtDay(data.meta.to)}`;
+  return "ERP diesel…";
+}
+function SourceDot({ t, phase, children, title }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap" title={title}>
+      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: sourceTone(t, phase) }} />{children}
+    </span>
+  );
+}
+
+/* ============================ KM & DIESEL BY DAY (Bus-wise) ============================ */
+/* One bus, day by day: the km it travelled and the diesel the ERP issued, each priced — the two
+   ways every cost on this page is worked out. Computed straight from the feeds for the 14 days up to
+   the selected date, so it reaches past the ERP's ~11-day punch window. */
+function KmDieselCard({ t, bus, endDate, run }) {
+  const days = useMemo(() => {
+    if (!endDate) return [];
+    const issues = run.diesel ? run.diesel.issues[vehKey(bus.id)] || [] : null;
+    return Array.from({ length: 14 }, (_, i) => addDaysIso(endDate, -i)).map((d) => {
+      const day = kmOn(bus, d, run.gpsIdx, run.today);
+      const cost = variableCost(bus, day, issues && dieselOn(issues, d), run.diesel ? priceOn(run.diesel.prices, d) : null);
+      return { d, day, cost };
+    });
+  }, [bus, endDate, run]);
+  if (!endDate) return null;
+  const hired = days.length && days[0].cost.hired;
+  const sum = { km: 0, gps: 0, plan: 0, byKm: 0, byDiesel: 0, litres: 0, bothKm: 0, bothL: 0, both: 0 };
+  days.forEach(({ day, cost }) => {
+    sum.km += day.km; if (day.source === "gps") sum.gps++; else if (day.source === "plan") sum.plan++;
+    if (cost.byKm) sum.byKm += cost.byKm.amount;
+    if (cost.byDiesel) { sum.byDiesel += cost.byDiesel.amount; if (!hired) sum.litres += cost.byDiesel.litres; }
+    // actual km per litre only where both are measured: GPS km against a real issue, not an estimate
+    if (!hired && day.source === "gps" && !day.inProgress && cost.byDiesel && cost.byDiesel.source === "issued" && cost.byDiesel.litres > 0) {
+      sum.bothKm += day.km; sum.bothL += cost.byDiesel.litres; sum.both++;
+    }
+  });
+  const th = "py-2 px-3 text-xs font-semibold uppercase tracking-wider whitespace-nowrap";
+  const sub = (txt, tone) => <div className="text-[11px] mt-0.5 leading-snug whitespace-nowrap" style={{ color: tone || t.muted }}>{txt}</div>;
+  return (
+    <Card t={t} title="Km & diesel by day"
+      hint={hired
+        ? `${bus.vehicle} is hired: each day costs its tariff on the km driven, so both ways agree. GPS km where the bus attendance app recorded the day, plan route km otherwise.`
+        : `The two ways every cost here is worked out, side by side for the 14 days to ${fmtDay(endDate)}: diesel priced on the km ${bus.vehicle} travelled, and diesel as the ERP issued it.`}>
+      <div className="rounded-xl overflow-x-auto" style={{ border: "1px solid " + t.border }}>
+        <table className="w-full text-sm" style={{ minWidth: 680 }}>
+          <thead><tr style={{ background: t.surface2, color: t.muted }}>
+            <th className={th + " text-left"}>Day</th>
+            <th className={th + " text-right"}>Km travelled</th>
+            <th className={th + " text-right"}>{hired ? "Tariff" : "Diesel by km"}</th>
+            <th className={th + " text-right"}>{hired ? "—" : "Diesel issued"}</th>
+            <th className={th + " text-right"}>{hired ? "Same both ways" : "Cost as issued"}</th>
+            <th className={th + " text-right"}>km / L</th>
+          </tr></thead>
+          <tbody>
+            {days.map(({ d, day, cost }) => {
+              const k = cost.byKm, dz = cost.byDiesel;
+              const kmpl = !hired && day.source === "gps" && !day.inProgress && dz && dz.source === "issued" && dz.litres > 0 ? day.km / dz.litres : null;
+              return (
+                <tr key={d} style={{ borderTop: "1px solid " + t.border }}>
+                  <td className="py-2 px-3 align-top whitespace-nowrap" style={{ color: t.text }}>
+                    {new Date(d + "T00:00:00Z").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}
+                  </td>
+                  <td className="py-2 px-3 text-right align-top tabular-nums">
+                    <div className="font-semibold" style={{ color: day.source ? t.text : t.faint }}>{day.source ? km1(day.km) : "—"}</div>
+                    {sub(day.source === "gps" ? (day.gps.active ? `GPS · ${day.gps.active} still out` : `GPS · ${day.gps.journeys} trip${day.gps.journeys === 1 ? "" : "s"}`) : day.source === "plan" ? "plan route" : "not recorded",
+                      day.partial ? t.watch : undefined)}
+                    {day.partial && sub(`under ${Math.round(LOW_GPS_SHARE * 100)}% of the plan's ${km1(day.planKm)}`, t.watch)}
+                  </td>
+                  <td className="py-2 px-3 text-right align-top tabular-nums">
+                    <div className="font-semibold" style={{ color: k ? t.text : t.faint }}>{k ? inr(k.amount) : "—"}</div>
+                    {k && !hired && sub(`${km1(k.litres)} L at ${k.kmplFromErp ? km1(k.kmpl) : km1(k.kmpl) + "*"} km/L`)}
+                  </td>
+                  <td className="py-2 px-3 text-right align-top tabular-nums">
+                    {hired ? <span style={{ color: t.faint }}>—</span> : <>
+                      <div className="font-semibold" style={{ color: dz && dz.source !== "none" ? t.text : t.faint }}>{dz ? (dz.source === "none" ? "0 L" : `${dz.source === "estimate" ? "≈" : ""}${km1(dz.litres)} L`) : "—"}</div>
+                      {sub(dz ? (dz.source === "issued" ? (dz.issue.days > 1 ? `from ${fmtDay(dz.issue.date)} ÷ ${dz.issue.days}` : "issued this day") : dz.source === "estimate" ? "ERP average" : "none issued") : "not loaded",
+                        dz && dz.source === "estimate" ? t.watch : undefined)}
+                      {dz && dz.source === "estimate" && sub("waiting for next fill")}
+                    </>}
+                  </td>
+                  <td className="py-2 px-3 text-right align-top tabular-nums">
+                    <div className="font-semibold" style={{ color: dz ? t.text : t.faint }}>{dz ? `${!hired && dz.source === "estimate" ? "≈" : ""}${inr(dz.amount)}` : "—"}</div>
+                    {!hired && dz && k && k.amount > 0 && dz.source !== "none" && (day.inProgress
+                      ? sub("km still growing")
+                      : sub(`${dz.amount >= k.amount ? "+" : "−"}${Math.abs(((dz.amount - k.amount) / k.amount) * 100).toFixed(0)}% vs by km`))}
+                  </td>
+                  <td className="py-2 px-3 text-right align-top tabular-nums" style={{ color: kmpl != null ? t.text : t.faint }}>{kmpl != null ? km1(kmpl) : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-wrap gap-x-6 gap-y-1 mt-3 text-sm" style={{ color: t.muted }}>
+        <span>14 days: <b style={{ color: t.text }}>{km1(sum.km)} km</b> · GPS on {sum.gps} days{sum.plan ? `, plan on ${sum.plan}` : ""}</span>
+        <span>{hired ? "Tariff" : "By km"} <b style={{ color: t.text }}>{inr(sum.byKm)}</b>{!hired && <> · as issued <b style={{ color: t.text }}>{run.diesel ? inr(sum.byDiesel) : "—"}</b>{run.diesel ? ` (${km1(sum.litres)} L)` : ""}</>}</span>
+        {!hired && (sum.both
+          ? <span>Actual <b style={{ color: t.text }}>{km1(sum.bothKm / sum.bothL)} km/L</b> over {sum.both} day{sum.both === 1 ? "" : "s"} with GPS km and an issue{+bus.mileage > 0 ? ` · the ERP says ${km1(+bus.mileage)}` : ""}</span>
+          : <span>Actual km/L appears once a GPS-recorded day is covered by a real issue.</span>)}
+      </div>
+      <p className="text-xs mt-2" style={{ color: t.faint }}>
+        {hired
+          ? "A hired bus is billed its day tariff: ₹1,700 up to 80 km, ₹1,900 to 95 km, ₹18.70/km beyond."
+          : `By km: km ÷ the bus's mileage${+bus.mileage > 0 ? "" : " (* planner default — no ERP mileage)"} × the ERP's diesel price that day. As issued: each issue is spread over the days since the previous one (at most ${MAX_SPREAD_DAYS}); days after a bus's last fill show its ERP average (marked ≈), waiting for the next fill to be entered.`}
+      </p>
+    </Card>
+  );
+}
+
 /* ============================ PER-BUS COST CARD ============================ */
-/* Read-only view of one bus's running costs, from the ERP costing feed
-   (VehicleEmpMapProjectDetails). The dashboard shows what it was given and normalises
-   each line to ₹/day (see mergeCostsIntoRecords). Nothing here is editable — costs are
-   corrected in the ERP and arrive on the next sync, or on the Resync button. */
-function CostCard({ t, bus, profile, wd, costMeta, costPhase, onSyncCosts, budget, onSetBudget }) {
+/* Read-only view of one bus's running costs. The standing lines come from the ERP costing feed
+   (VehicleEmpMapProjectDetails), each normalised to ₹/day; nothing here is editable — costs are
+   corrected in the ERP and arrive on the next sync, or on the Resync button. Under them, the day's
+   km-variable cost worked out two ways (dailyCost.js), each counted in one of the two totals. */
+const TARIFF_TEXT = "≤80 km → ₹1,700 · 80–95 km → ₹1,900 · over 95 km → ₹18.70/km";
+/* The day's km-variable lines, as cost-card rows. `daily` is the exact figure the records carry. */
+function variableLines(rec, date) {
+  if (!rec || !rec.cost) return [];
+  const { day, cost } = rec, when = ["Day", fmtDay(date)];
+  const kmRow = ["Km", day.source ? `${km1(day.km)} km — ${kmSourceText(day)}` : "none"];
+  const kmTag = day.source === "gps" ? "GPS km" : "Plan km";
+  if (cost.hired) {
+    if (!cost.byKm) return [];
+    return [{ id: "var-hire", type: "hire", label: "Hire — day tariff on km", amount: cost.byKm.amount, period: "day", daily: cost.byKm.amount,
+      tag: kmTag, both: true, note: day.source === "gps" ? "Worked out from the km the bus attendance app recorded — not an ERP cost line." : "The finalised plan's tariff for this route — not an ERP cost line.",
+      basis: [when, kmRow, ["Tariff", day.source === "plan" ? "the finalised plan's own figure" : TARIFF_TEXT], ["Cost for the day", inr(cost.byKm.amount)]] }];
+  }
+  const out = [];
+  const k = cost.byKm;
+  if (k) out.push({ id: "var-km", type: "diesel", label: "Diesel — by km travelled", amount: k.rate, quantity: Math.round(k.litres * 100) / 100, period: "day", daily: k.amount,
+    tag: kmTag, note: `Worked out from ${day.source === "gps" ? "the km the bus attendance app recorded" : "the finalised plan's route km"} — not an ERP cost line.`,
+    basis: [when, kmRow,
+      ["Mileage", k.kmplFromErp ? `${km1(k.kmpl)} km/L (ERP)` : `${km1(k.kmpl)} km/L (planner default — no ERP mileage)`],
+      ["Diesel price", k.rateDate ? `${inr1(k.rate)}/L (ERP, ${fmtDay(k.rateDate)})` : `${inr(k.rate)}/L (assumed — no ERP price yet)`],
+      ["Litres", `${km1(k.litres)} L`], ["Cost for the day", inr(k.amount)]] });
+  const d = cost.byDiesel;
+  if (!d) out.push({ id: "var-issued", type: "diesel", label: "Diesel — as issued", missing: true, daily: null, tag: "Not loaded", period: "day",
+    note: "The ERP's diesel feed has not loaded yet — see Settings → Km & diesel.", basis: [when] });
+  else out.push({ id: "var-issued", type: "diesel", label: "Diesel — as issued", amount: d.rate, quantity: Math.round(d.litres * 100) / 100, period: "day", daily: d.amount,
+    tag: d.source === "issued" ? "ERP issue" : d.source === "estimate" ? "ERP average" : "None issued",
+    tagNote: d.source === "estimate" ? "waiting for next fill" : null,
+    note: d.source === "estimate"
+      ? "No fill in the ERP covers this day yet, so this bus's own average from its ERP fills stands in. The next fill replaces it."
+      : "From the ERP's diesel issues (DieselDetails).",
+    basis: d.source === "issued"
+      ? [when, ["Issue", `${km1(d.issue.litres)} L on ${fmtDay(d.issue.date)} for ${inr(d.issue.amount)}`],
+         ["Covers", d.issue.days > 1 ? `${d.issue.days} days (${fmtDay(d.issue.from)} → ${fmtDay(d.issue.date)}), shared evenly` : "this day only"],
+         ["This day's share", `${km1(d.litres)} L · ${inr(d.amount)}`]]
+      : d.source === "estimate"
+        ? [when, ["Last fill", fmtDay(d.last)], ["ERP average", `${km1(d.litres)} L a day (its last ${RECENT_DAYS} days of fills)`], ["Cost for the day", inr(d.amount)]]
+        : [when, ["Issues", d.last ? `none since ${fmtDay(d.last)}` : d.next ? `the next issue (${fmtDay(d.next)}) covers only the ${MAX_SPREAD_DAYS} days before it` : "none on record"]] });
+  return out;
+}
+
+function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncCosts, budget, onSetBudget }) {
   const [open, setOpen] = useState({});          // line id -> expanded
   const [editBudget, setEditBudget] = useState(false);
   const [draft, setDraft] = useState({ amount: "", period: "month" });
   const lines = (profile && profile.lines) || [];
-  const dailySpend = profileDailySpend(profile, wd);
+  const vlines = variableLines(day, date);
+  const standing = profileDailySpend(profile, wd);
   const dailyBudget = profileDailyBudget(profile, wd);
+  const hired = !!(day && day.cost && day.cost.hired);
+  const vKm = vlines.find((l) => l.id !== "var-issued"), vIssued = vlines.find((l) => l.id === "var-issued");
+  const totKm = standing + (vKm ? vKm.daily : 0);
+  const totDiesel = hired ? totKm : vIssued && vIssued.daily != null ? standing + vIssued.daily : null;
   const periodLabel = (p) => (COST_PERIODS.find(([v]) => v === p) || [, p])[1];
   const busy = costPhase === "syncing";
   const windowLabel = costMeta && costMeta.fy ? `FY ${costMeta.fy} (${costMeta.from} → ${costMeta.to})` : "the current financial year";
 
+  const row = (l, derived) => {
+    const spec = COST_TYPE_MAP[l.type] || {};
+    const rows = l.detail || [], basis = l.basis || [];
+    const canOpen = rows.length > 0 || basis.length > 0;
+    const isOpen = !!open[l.id];
+    // worked-out lines are tinted so they never read as ERP cost lines
+    const bg = derived ? t.primarySoft : undefined;
+    return (
+      <React.Fragment key={l.id}>
+        <tr onClick={canOpen ? () => setOpen({ ...open, [l.id]: !isOpen }) : undefined}
+          aria-expanded={canOpen ? isOpen : undefined}
+          title={canOpen ? (isOpen ? "Hide how this figure was worked out" : "Show how this figure was worked out") : undefined}
+          style={{ borderTop: "1px solid " + t.border, background: bg, cursor: canOpen ? "pointer" : "default" }}>
+          <td className="py-2 px-3" style={{ color: t.text }}>
+            <span className="inline-flex items-center gap-1.5">
+              {canOpen && <ChevronRight size={13} style={{ color: t.muted, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }} />}
+              {l.label || spec.label || l.type}
+            </span>
+            {l.tag && <span className="text-[10px] font-bold uppercase tracking-wider ml-2 rounded px-1.5 py-0.5 whitespace-nowrap"
+              style={l.tag === "ERP average" || l.tag === "Not loaded" || l.tag === "None issued"
+                ? { border: "1px solid " + t.border, color: t.muted }
+                : { background: t.primaryStrong || t.primary, color: t.onPrimary || "#fff" }}>{l.tag}</span>}
+            {l.tagNote && <span className="text-xs ml-1.5 whitespace-nowrap" style={{ color: t.muted }}>{l.tagNote}</span>}
+            {l.erpLines > 1 && <span className="text-xs ml-1.5" style={{ color: t.muted }}>· {l.erpLines} lines</span>}
+          </td>
+          <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.text }}>{l.missing ? "—" : l.type === "diesel" ? inr1(+l.amount || 0) : inr(+l.amount || 0)}</td>
+          <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.muted }}>{spec.qty && !l.missing ? (l.quantity ?? "—") : "—"}</td>
+          <td className="py-2 px-3 text-right" style={{ color: t.muted }}>{periodLabel(l.period || spec.period)}</td>
+          <td className="py-2 px-3 text-right tabular-nums font-semibold" style={{ color: l.missing ? t.faint : t.text }}>
+            {l.missing ? "—" : inr(l.daily != null ? l.daily : lineDaily(l, wd))}
+          </td>
+        </tr>
+        {isOpen && (
+          <tr style={{ background: derived ? t.primarySoft : t.surface2 }}>
+            <td colSpan={5} className="px-3 py-3">
+              {rows.length > 0 ? (
+                <table className="w-full text-xs">
+                  <thead><tr style={{ color: t.muted }}>
+                    {["Description", "Period", "Covers", "Rate", "Qty", "Amount", "Approved"].map((h, i) => (
+                      <th key={h} className={"pb-1.5 font-semibold uppercase tracking-wider " + (i > 2 ? "text-right pl-3" : "text-left pr-3")}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {rows.map((d, i) => (
+                      <tr key={i} style={{ borderTop: "1px solid " + t.border }}>
+                        <td className="py-1.5 pr-3" style={{ color: t.text }}>{d.desc}</td>
+                        <td className="py-1.5 pr-3" style={{ color: t.muted }}>{d.period || "—"}</td>
+                        <td className="py-1.5 pr-3 tabular-nums" style={{ color: t.muted }}>{d.from}{d.to ? ` → ${d.to}` : ""}</td>
+                        <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.rate ? inr(d.rate) : "—"}</td>
+                        <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.qty != null && d.qty !== 1 ? d.qty : "—"}</td>
+                        <td className="py-1.5 pl-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{inr(d.amount)}</td>
+                        <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.approved || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
+                  {basis.map(([k, v]) => (
+                    <div key={k} className="flex justify-between gap-4 text-xs">
+                      <span style={{ color: t.muted }}>{k}</span><span className="tabular-nums font-semibold text-right" style={{ color: t.text }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="text-[11px] mt-2" style={{ color: t.faint }}>
+                {rows.length ? `From the ERP costing feed — the ${rows.length === 1 ? "line" : rows.length + " lines"} that make up this figure.` : l.note || "Worked out here — not an ERP figure."}
+              </div>
+            </td>
+          </tr>
+        )}
+      </React.Fragment>
+    );
+  };
+
   return (
     <Card t={t} title="Cost breakdown"
-      hint={lines.some((l) => l.id === "plan-hire")
-        ? `Day tariff for ${bus.vehicle}'s route in the finalised plan. Drives Cost/head, Spend & Net value.`
-        : `Approved cost lines for ${bus.vehicle} from the ERP costing feed (${windowLabel})${lines.some((l) => l.id === "plan-diesel") ? ", plus diesel for its finalised-plan route" : ""}. Each is converted to ₹/day (using ${wd} working days) and drives Cost/head, Budget, Spend & Net value. Edit these in the ERP — the dashboard reads them.`}
+      hint={hired
+        ? `${bus.vehicle} is hired: its cost is the day tariff on the km it drove${date ? ` on ${fmtDay(date)}` : ""}, the same by km and by diesel.`
+        : `Approved cost lines for ${bus.vehicle} from the ERP costing feed (${windowLabel}), each converted to ₹/day using ${wd} working days, plus ${date ? fmtDay(date) + "'s" : "the day's"} diesel worked out two ways. Edit costs in the ERP — the dashboard reads them.`}
       right={onSyncCosts && (
         <Btn t={t} variant="ghost" className="shrink-0" onClick={onSyncCosts} disabled={busy}
           title="Re-fetch the costing feed from the ERP now">
           <RefreshCw size={15} className={busy ? "animate-spin" : ""} /> {busy ? "Resyncing…" : "Resync costs"}
         </Btn>
       )}>
-      {lines.length || dailyBudget ? (
+      {lines.length || dailyBudget || vlines.length ? (
         <>
           <div className="flex flex-wrap items-center gap-3 mb-4">
             <div className="text-xs uppercase tracking-widest" style={{ color: t.muted }}>Budget</div>
@@ -1081,110 +1362,49 @@ function CostCard({ t, bus, profile, wd, costMeta, costPhase, onSyncCosts, budge
             )}
           </div>
 
-          <div className="rounded-xl overflow-hidden" style={{ border: "1px solid " + t.border }}>
-            <table className="w-full text-sm">
+          <div className="rounded-xl overflow-x-auto" style={{ border: "1px solid " + t.border }}>
+            <table className="w-full text-sm" style={{ minWidth: 520 }}>
               <thead><tr style={{ background: t.surface2 }}>
                 {["Cost", "Amount", "Qty", "Per", "₹/day"].map((h, i) => (
                   <th key={h} className={"py-2 px-3 text-xs font-semibold uppercase tracking-wider " + (i > 0 ? "text-right" : "text-left")} style={{ color: t.muted }}>{h}</th>
                 ))}
               </tr></thead>
               <tbody>
-                {lines.map((l) => {
-                  const spec = COST_TYPE_MAP[l.type] || {};
-                  const rows = l.detail || [], basis = l.basis || [];
-                  const canOpen = rows.length > 0 || basis.length > 0;
-                  const isOpen = !!open[l.id];
-                  // plan-derived lines are tinted so an assumed figure never reads as an ERP one
-                  const bg = l.planned ? t.primarySoft : undefined;
-                  return (
-                    <React.Fragment key={l.id}>
-                      <tr onClick={canOpen ? () => setOpen({ ...open, [l.id]: !isOpen }) : undefined}
-                        aria-expanded={canOpen ? isOpen : undefined}
-                        title={canOpen ? (isOpen ? "Hide the lines behind this figure" : "Show the lines behind this figure") : undefined}
-                        style={{ borderTop: "1px solid " + t.border, background: bg, cursor: canOpen ? "pointer" : "default" }}>
-                        <td className="py-2 px-3" style={{ color: t.text }}>
-                          <span className="inline-flex items-center gap-1.5">
-                            {canOpen && <ChevronRight size={13} style={{ color: t.muted, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s" }} />}
-                            {l.label || spec.label || l.type}
-                          </span>
-                          {l.planned && <span className="text-[10px] font-bold uppercase tracking-wider ml-2 rounded px-1.5 py-0.5" style={{ background: t.primary, color: t.onPrimary || "#fff" }}>Plan</span>}
-                          {l.erpLines > 1 && <span className="text-xs ml-1.5" style={{ color: t.muted }}>· {l.erpLines} lines</span>}
-                        </td>
-                        <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.text }}>{inr(+l.amount || 0)}</td>
-                        <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.muted }}>{spec.qty ? (l.quantity ?? "—") : "—"}</td>
-                        <td className="py-2 px-3 text-right" style={{ color: t.muted }}>{periodLabel(l.period || spec.period)}</td>
-                        <td className="py-2 px-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{inr(lineDaily(l, wd))}</td>
-                      </tr>
-                      {isOpen && (
-                        <tr style={{ background: l.planned ? t.primarySoft : t.surface2 }}>
-                          <td colSpan={5} className="px-3 py-3">
-                            {rows.length > 0 ? (
-                              <table className="w-full text-xs">
-                                <thead><tr style={{ color: t.muted }}>
-                                  {["Description", "Period", "Covers", "Rate", "Qty", "Amount", "Approved"].map((h, i) => (
-                                    <th key={h} className={"pb-1.5 font-semibold uppercase tracking-wider " + (i > 2 ? "text-right pl-3" : "text-left pr-3")}>{h}</th>
-                                  ))}
-                                </tr></thead>
-                                <tbody>
-                                  {rows.map((d, i) => (
-                                    <tr key={i} style={{ borderTop: "1px solid " + t.border }}>
-                                      <td className="py-1.5 pr-3" style={{ color: t.text }}>{d.desc}</td>
-                                      <td className="py-1.5 pr-3" style={{ color: t.muted }}>{d.period || "—"}</td>
-                                      <td className="py-1.5 pr-3 tabular-nums" style={{ color: t.muted }}>{d.from}{d.to ? ` → ${d.to}` : ""}</td>
-                                      <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.rate ? inr(d.rate) : "—"}</td>
-                                      <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.qty != null && d.qty !== 1 ? d.qty : "—"}</td>
-                                      <td className="py-1.5 pl-3 text-right tabular-nums font-semibold" style={{ color: t.text }}>{inr(d.amount)}</td>
-                                      <td className="py-1.5 pl-3 text-right tabular-nums" style={{ color: t.muted }}>{d.approved || "—"}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            ) : (
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
-                                {basis.map(([k, v]) => (
-                                  <div key={k} className="flex justify-between gap-4 text-xs">
-                                    <span style={{ color: t.muted }}>{k}</span><span className="tabular-nums font-semibold" style={{ color: t.text }}>{v}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            <div className="text-[11px] mt-2" style={{ color: t.faint }}>
-                              {rows.length ? `From the ERP costing feed — the ${rows.length === 1 ? "line" : rows.length + " lines"} that make up this figure.` : "Worked out from the finalised plan — not an ERP figure."}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
+                {lines.map((l) => row(l, false))}
+                {vlines.length > 0 && (
+                  <tr style={{ borderTop: "1px solid " + t.border, background: t.surface2 }}>
+                    <td colSpan={5} className="py-1.5 px-3 text-xs" style={{ color: t.muted }}>
+                      <b style={{ color: t.text }}>{hired ? "Hire" : "Diesel"} on {fmtDay(date)}</b>
+                      {hired ? " — the same by km and by diesel" : " — two ways: the first row counts in the by-km total, the second in the by-diesel total"}
+                    </td>
+                  </tr>
+                )}
+                {vlines.map((l) => row(l, true))}
               </tbody>
             </table>
           </div>
-          {lines.some((l) => l.planned) && (
-            <div className="flex items-center gap-2 mt-2 text-xs" style={{ color: t.muted }}>
-              <span className="inline-block w-3 h-3 rounded" style={{ background: t.primarySoft, border: "1px solid " + t.border }} />
-              Tinted rows come from the finalised plan, not the ERP. Click any row to see how it was worked out.
-            </div>
-          )}
 
-          <div className="flex flex-wrap items-center gap-4 mt-3 text-sm">
-            <div>Total spend: <b style={{ color: t.text }}>{inr(dailySpend)}</b>/day · <span style={{ color: t.muted }}>{inr(dailySpend * wd / 12)}/mo</span></div>
-            <div className="ml-auto">Variance: <b style={{ color: dailyBudget - dailySpend >= 0 ? t.good : t.poor }}>{inr(dailyBudget - dailySpend)}</b>/day</div>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mt-3 text-sm" style={{ color: t.muted }}>
+            <div>Total spend /day {hired ? <b className="tabular-nums" style={{ color: t.text }}>{inr(totKm)}</b> : <Both t={t} km={totKm} diesel={totDiesel} />}</div>
+            <div>/mo {hired ? <b className="tabular-nums" style={{ color: t.text }}>{inr(totKm * wd / 12)}</b> : <Both t={t} km={totKm * wd / 12} diesel={totDiesel == null ? null : totDiesel * wd / 12} />}</div>
+            {dailyBudget > 0 && (
+              <div className="ml-auto">Variance /day {hired
+                ? <b className="tabular-nums" style={{ color: dailyBudget - totKm >= 0 ? t.good : t.poor }}>{inr(dailyBudget - totKm)}</b>
+                : <Both t={t} km={dailyBudget - totKm} diesel={totDiesel == null ? null : dailyBudget - totDiesel} color={(v) => (v >= 0 ? t.good : t.poor)} />}</div>
+            )}
           </div>
           <div className="text-xs mt-3" style={{ color: t.muted }}>
-            {lines.some((l) => l.id === "plan-hire")
-              ? "Rented bus — its cost is the finalised plan's day tariff for this route; the ERP carries no cost lines for hired vehicles."
-              : lines.some((l) => l.id === "plan-diesel")
-                ? "Financial-year ERP standing costs plus diesel priced from the finalised plan's route km (₹100/L at this bus's ERP mileage). Driver salary is in neither ERP feed, so the total remains short of the full running cost."
-                : "Standing costs only — this bus has no route in the finalised plan, and diesel and driver salary are in neither ERP feed."}
+            {hired
+              ? "Hired bus — the ERP carries no cost lines or diesel for hired vehicles; the day tariff on the km driven is its cost."
+              : `Standing costs from the ERP costing feed${lines.length ? "" : " (none approved for this bus yet)"}. The day's diesel is shown two ways — priced on the km travelled (GPS from the bus attendance app, else the plan's route km) and as the ERP issued it. Driver salary is not included yet.`}
           </div>
         </>
       ) : (
         <div className="text-sm rounded-xl border border-dashed py-8 px-4 text-center" style={{ borderColor: t.border, color: t.muted }}>
-          <div style={{ color: t.text }} className="font-semibold mb-1">No approved costs in the ERP for {bus.vehicle}</div>
+          <div style={{ color: t.text }} className="font-semibold mb-1">No costs for {bus.vehicle} yet</div>
           {bus.type === "Rental"
-            ? "Rented buses carry no cost lines in the costing feed — their hire charge is invoiced rather than planned against the vehicle."
-            : `Nothing has been purchased against this vehicle in ${windowLabel}. Approve its cost lines in the ERP and they appear on the next sync.`}
+            ? "It's hired, has no route in the finalised plan and no km from the bus attendance app, so there is no tariff to work out."
+            : `Nothing has been purchased against this vehicle in ${windowLabel}, and it has no km or diesel issues to price. Approve its cost lines in the ERP and they appear on the next sync.`}
           <div className="mt-3">
             {editBudget ? (
               <div className="flex flex-wrap items-center justify-center gap-2">
@@ -1393,7 +1613,10 @@ function CostReportView({ t, buses, records, employees, attendance, settings, bu
     const rec = d ? resolveRec(records, employees, attendance, b.id, d) : null;
     const m = rec ? metricsFor(rec, b, wd) : null;
     const prof = busCosts && busCosts[b.id];
-    return { bus: b, m, prof, spend: profileDailySpend(prof, wd), budget: profileDailyBudget(prof, wd) };
+    // the day's whole cost by km — standing plus diesel on the km travelled — the figure the Live board
+    // and the bus page lead with (the bus page shows the diesel-issued figure beside it)
+    const full = d ? recOf(records, b.id, d) : null;
+    return { bus: b, m, prof, date: d, rec: full, spend: full ? +full.spend || 0 : profileDailySpend(prof, wd), budget: profileDailyBudget(prof, wd) };
   }), [buses, records, employees, attendance, busCosts, wd]);
 
   const ledgerFor = (scope, target) => ledger.filter((e) => e.scope === scope && e.target === target);
@@ -1546,7 +1769,7 @@ function CostReportView({ t, buses, records, employees, attendance, settings, bu
               sub={selBus.budget ? (selBus.budget - selBus.spend >= 0 ? "under budget" : "over budget") : "set a budget to compare"}
               accent={selBus.budget ? (selBus.budget - selBus.spend >= 0 ? t.good : t.poor) : null} />
           </div>
-          <CostCard t={t} bus={selBus.bus} profile={selBus.prof} wd={wd} costMeta={costMeta} costPhase={costPhase} onSyncCosts={onSyncCosts}
+          <CostCard t={t} bus={selBus.bus} profile={selBus.prof} day={selBus.rec} date={selBus.date} wd={wd} costMeta={costMeta} costPhase={costPhase} onSyncCosts={onSyncCosts}
             budget={busInfo && busInfo[selBus.bus.id]} onSetBudget={(patch) => { onSetBusField(selBus.bus.id, patch); toast("Budget saved"); }} />
           <LedgerCard t={t} title={`${selBus.bus.vehicle} — allotments & receipts`} scope="bus" target={selBus.bus.id} entries={ledger} onAdd={onAddLedger} onDelete={onDelLedger} wd={wd}
             hint="Money given out for this bus (an advance, a deposit) or received against it (a claim, a rebate). Rolls up into its unit." />
@@ -1557,7 +1780,7 @@ function CostReportView({ t, buses, records, employees, attendance, settings, bu
 }
 
 /* ============================ BUS-WISE (Unit → Bus → details) ============================ */
-function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, costMeta, costPhase, onSyncCosts, busInfo, onSetBusField, toast, focusBusId, onBack }) {
+function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, costMeta, costPhase, onSyncCosts, busInfo, onSetBusField, toast, focusBusId, onBack, run }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
   const allDates = useMemo(() => unionDates(records, attendance), [records, attendance]);
@@ -1599,6 +1822,9 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
   const minRide = travels.length ? Math.min(...travels) : null, maxRide = travels.length ? Math.max(...travels) : null;
   const latest = busLatestDate(records, employees, attendance, bus.id);
   const day = (latest && attendance[latest]) || {};
+  // the cost card prices one day: the last day with data in the chosen range, else the bus's latest
+  const cardDate = rngDates[rngDates.length - 1] || latest;
+  const cardRec = cardDate ? recOf(records, bus.id, cardDate) : null;
   const inputBase = { background: t.inputBg, border: "1px solid " + t.border, color: t.text };
   const rangeLabel = range.from && range.to ? (range.from === range.to ? range.from : `${range.from} → ${range.to}`) : "all dates";
   const isRange = range.from !== range.to;
@@ -1678,16 +1904,16 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
               {metricTile("Present vs allocated", pct(presentVsAlloc))}
               {metricTile("Utilisation", pct(m.util), bd ? bd.color : t.text)}
               {metricTile("Absent", agg.absent)}
-              {metricTile("Cost / head", inr(m.cph))}
-              {metricTile("Cost / km", agg.km > 0 ? inr1(m.cpk) : optVal)}
+              {metricTile("Cost / head", <Both t={t} stack size="text-lg" km={m.cph} diesel={m.cph_diesel} />)}
+              {metricTile("Cost / km", agg.km > 0 ? <Both t={t} stack size="text-lg" fmt={inr1} km={m.cpk} diesel={m.cpk_diesel} /> : optVal)}
               {metricTile("Budget", inr(agg.budget))}
-              {metricTile("Spend", inr(agg.spend))}
+              {metricTile("Spend", <Both t={t} stack size="text-lg" km={agg.spend} diesel={agg.spend_diesel} />)}
               {metricTile("Min ride", minRide != null ? minRide + " min" : optVal)}
               {metricTile("Max ride", maxRide != null ? maxRide + " min" : optVal)}
-              {showNV && metricTile("Net value (yr)", inrK(m.netAnnual), m.netAnnual >= 0 ? t.good : t.poor)}
+              {showNV && metricTile("Net value (yr)", <Both t={t} stack size="text-lg" fmt={inrK} km={m.netAnnual} diesel={agg.netAnnual_diesel} color={(v) => (v >= 0 ? t.good : t.poor)} />)}
             </div>
           ) : <div className="text-sm" style={{ color: t.muted }}>No attendance / cost data for this bus in the selected range.</div>}
-          <p className="text-xs mt-3" style={{ color: t.muted }}>Cost/km and ride times show "{RUN_OPTIMISER}" until the route is planned in the Optimiser (that's where per-bus km &amp; travel time are computed). Cost/head, budget, spend &amp; net value come from the ERP's running costs for this vehicle (shown below).</p>
+          <p className="text-xs mt-3" style={{ color: t.muted }}>Money is shown two ways: diesel priced on the km this bus travelled, and diesel as the ERP issued it — day by day in <b style={{ color: t.text }}>Km &amp; diesel by day</b> below. Both add the ERP's standing costs for this vehicle (Cost breakdown). Km is GPS from the bus attendance app where it recorded the day, else the finalised plan's route; ride times show "{RUN_OPTIMISER}" until the route is planned.</p>
         </Card>
 
         {/* Bus & driver info now sit BELOW the metrics */}
@@ -1698,8 +1924,10 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
           <DriverCard t={t} bus={bus} info={busInfo && busInfo[bus.id]} onSave={(patch) => { onSetBusField(bus.id, patch); toast("Driver details saved"); }} />
         </div>
 
-        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} wd={wd} costMeta={costMeta} costPhase={costPhase} onSyncCosts={onSyncCosts}
+        <CostCard t={t} bus={bus} profile={busCosts && busCosts[bus.id]} day={cardRec} date={cardDate} wd={wd} costMeta={costMeta} costPhase={costPhase} onSyncCosts={onSyncCosts}
           budget={busInfo && busInfo[bus.id]} onSetBudget={(patch) => { onSetBusField(bus.id, patch); toast("Budget saved"); }} />
+
+        <KmDieselCard t={t} bus={bus} endDate={range.to || latest || (run && run.today)} run={run || {}} />
 
         <Card t={t} title={`Employees (${emps.length})`} hint="Latest punch status · click an employee for full details">
           {emps.length ? <div className="flex flex-wrap gap-1.5">{emps.slice().sort((a, b) => { const r = (st) => (st === "A" ? 0 : st === "P" ? 2 : 1); return r(day[a.id]) - r(day[b.id]); }).map((e) => { const st = day[e.id]; const c = st === "P" ? t.good : st === "A" ? t.poor : t.faint; const lab = st === "P" ? "P" : st === "A" ? "A" : "–";
@@ -2131,8 +2359,9 @@ function MetricForm({ t, editing, variables, onSubmit, onCancel, toast }) {
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const expr = tokensToExpr(tokens);
   const sample = useMemo(() => {
-    const s = { present: 38, absent: 3, capacity: 42, assigned: 41, km: 48, budget: 2600, spend: 2480 };
-    s.util = (s.present / s.capacity) * 100; s.cph = s.spend / s.present; s.cpk = s.spend / s.km; s.variance = s.budget - s.spend; return s;
+    const s = { present: 38, absent: 3, capacity: 42, assigned: 41, km: 48, budget: 2600, spend: 2480, spend_diesel: 2390 };
+    s.util = (s.present / s.capacity) * 100; s.cph = s.spend / s.present; s.cpk = s.spend / s.km; s.variance = s.budget - s.spend;
+    s.cph_diesel = s.spend_diesel / s.present; s.cpk_diesel = s.spend_diesel / s.km; s.variance_diesel = s.budget - s.spend_diesel; return s;
   }, []);
   const preview = expr ? evalFormula(expr, sample, varMapOf(variables)) : undefined;
   const submit = () => {
@@ -2234,7 +2463,7 @@ function MetricsView({ t, formulas, variables, onAdd, onUpdate, onDel, onAddVar,
 
 /* ============================ SETTINGS ============================ */
 function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, erpStatus, toast, themeName, setThemeName,
-  onSyncCosts, costStatus, costMeta,
+  onSyncCosts, costStatus, costMeta, gpsStatus, gpsFeed, onSyncGps, dieselStatus, diesel, onSyncDiesel,
   formulas, variables, onAddMetric, onUpdateMetric, onDelMetric, onAddVar, onUpdateVar, onDelVar }) {
   const [syncing, setSyncing] = useState(false);
   const doSync = async () => { setSyncing(true); try { await onSyncErp(); } finally { setSyncing(false); } };
@@ -2336,7 +2565,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
           <Btn t={t} onClick={doSync} disabled={syncing}><Server size={15} /> {syncing ? "Syncing…" : "Sync now"}</Btn>
           <span className="text-xs" style={{ color: erpStatus.phase === "error" ? t.poor : erpStatus.phase === "ok" ? t.good : t.muted }}>{erpLabel}</span>
         </div>
-        <div className="text-xs mt-3" style={{ color: t.muted }}>Route / driver / phone aren't in this feed → shown as "{NEEDS_ERP}". Per-bus km, ride times &amp; stops come from the Optimiser → "{RUN_OPTIMISER}". In production this call is routed through the backend passthrough; in dev it uses the Vite proxy.</div>
+        <div className="text-xs mt-3" style={{ color: t.muted }}>Route / driver / phone aren't in this feed → shown as "{NEEDS_ERP}". Per-bus km comes from the bus attendance app (Km &amp; diesel below); ride times &amp; stops from the Optimiser → "{RUN_OPTIMISER}". In production this call is routed through the backend passthrough; in dev it uses the Vite proxy.</div>
       </Card>
 
       <Card t={t} title="ERP costing" hint="Approved vehicle cost lines from the ERP (VehicleEmpMapProjectDetails) — road tax, insurance, FC work, servicing, tyres, RTO and AdBlue. Pulled with the daily sync; resync here to pick up approvals made today.">
@@ -2354,8 +2583,47 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
           </div>
         )}
         <div className="text-xs mt-3" style={{ color: t.muted }}>
-          Costs cover the financial year (1 April → 31 March), the same year the ERP plans against — so early in the year the total is genuinely part-year. A line counts once it is approved; an unapproved line carries a zero amount and is left out. Rented buses have no cost lines in this feed. <b style={{ color: t.text }}>Diesel and driver salary are in neither ERP feed</b>, so per-bus totals are standing costs only.
+          Costs cover the financial year (1 April → 31 March), the same year the ERP plans against — so early in the year the total is genuinely part-year. A line counts once it is approved; an unapproved line carries a zero amount and is left out. Rented buses have no cost lines in this feed. Diesel comes from its own feed (Km &amp; diesel below); <b style={{ color: t.text }}>driver salary is not included yet</b>.
           {costMeta && costMeta.heads && costMeta.heads.length ? ` Heads in this pull: ${costMeta.heads.join(", ")}.` : ""}
+        </div>
+      </Card>
+
+      <Card t={t} title="Km & diesel" hint="Every cost on the dashboard is shown two ways. By km: diesel priced on the km each bus travelled, at its ERP mileage and the ERP's diesel price — GPS from the bus attendance app, or the finalised plan's route km on a day the app did not record. By diesel: what the ERP issued, each issue spread over the days since the previous one. Hired buses cost their day tariff on km either way.">
+        {(() => {
+          const today = gpsFeed && gpsFeed.today;
+          const recorded = today ? gpsFeed.days.filter((d) => d.serviceDate === today).length : 0;
+          const out = today ? gpsFeed.days.filter((d) => d.serviceDate === today && d.active).length : 0;
+          const gpsDetail = gpsStatus.phase === "ok" && gpsFeed
+            ? `${recorded} bus${recorded === 1 ? "" : "es"} recorded today${out ? ` · ${out} still out` : ""} · ${gpsFeed.days.length} bus-days held from the last ${GPS_KEEP_DAYS} days · refreshed every 30 s while this page is open`
+            : gpsStatus.phase === "offline" ? `Not answering: ${gpsStatus.msg}. Days it would have recorded use plan km until it is back${gpsFeed ? "; the last pull is kept" : ""}.`
+            : gpsStatus.phase === "off" || gpsStatus.phase === "error" ? gpsStatus.msg
+            : "Connecting…";
+          const m = diesel && diesel.meta;
+          const dieselDetail = dieselStatus.phase === "error" ? `${dieselStatus.msg}${m ? " — the last pull is kept" : ""}`
+            : m ? `${m.vehicles} vehicles · ${km1(m.litres)} L issued ${fmtDay(m.from)} → ${fmtDay(m.to)} · pulled with every ERP sync`
+            : "Loading…";
+          const srcRow = (title, detail, dot, btn, last) => (
+            <div className="flex flex-wrap items-center justify-between gap-3 py-3" style={last ? undefined : { borderBottom: "1px solid " + t.border }}>
+              <div className="min-w-0">
+                <div className="font-semibold" style={{ color: t.text }}>{title}</div>
+                <div className="text-sm mt-0.5" style={{ color: t.muted, maxWidth: 600 }}>{detail}</div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 text-xs shrink-0" style={{ color: t.muted }}>{dot}{btn}</div>
+            </div>
+          );
+          return (
+            <>
+              {srcRow("Bus attendance app · GPS km", gpsDetail,
+                <SourceDot t={t} phase={gpsStatus.phase}>{gpsLabel(gpsStatus, gpsFeed)}</SourceDot>,
+                <Btn t={t} variant="ghost" onClick={onSyncGps} disabled={gpsStatus.phase === "syncing"}><RefreshCw size={15} className={gpsStatus.phase === "syncing" ? "animate-spin" : ""} /> Refresh</Btn>)}
+              {srcRow("ERP · diesel issued", dieselDetail,
+                <SourceDot t={t} phase={dieselStatus.phase === "error" ? "error" : m ? (dieselStatus.phase === "syncing" ? "syncing" : "ok") : dieselStatus.phase}>{dieselLabel(dieselStatus, diesel)}</SourceDot>,
+                <Btn t={t} variant="ghost" onClick={onSyncDiesel} disabled={dieselStatus.phase === "syncing"}><RefreshCw size={15} className={dieselStatus.phase === "syncing" ? "animate-spin" : ""} /> Resync diesel</Btn>, true)}
+            </>
+          );
+        })()}
+        <div className="text-xs mt-2" style={{ color: t.muted }}>
+          To link the bus app, run <b style={{ color: t.text }}>npm run fleet:link</b> in the bus attendance folder, then restart both apps — <b style={{ color: t.text }}>npm run dev:all</b> there starts the two together, with this dashboard on port 5174. The shared key stays in this dashboard's server, never in the browser.
         </div>
       </Card>
 
@@ -2405,6 +2673,14 @@ export default function App() {
   const [costProfiles, setCostProfiles] = useState({});   // vehicle -> cost profile
   const [costMeta, setCostMeta] = useState(null);         // { from, to, vehicles, total, ... }
   const [costStatus, setCostStatus] = useState({ phase: "idle", at: null, msg: "" });
+  // The two km-variable sources (dailyCost.js). Each keeps its last good pull on screen while
+  // offline, like the ERP snapshot: GPS km from the bus attendance app, diesel issued from the ERP.
+  const [gpsFeed, setGpsFeed] = useState(null);           // { days, today, at } — see busApp.js
+  const [gpsStatus, setGpsStatus] = useState({ phase: "idle", at: null, msg: "" });   // idle|syncing|ok|off|offline|error
+  const gpsRef = useRef(null);                            // latest feed, for merging inside a stable callback
+  const gpsQuietUntil = useRef(0);                        // polls pause while only a restart or setup can help
+  const [diesel, setDiesel] = useState(null);             // mapErpDiesel(...) — { issues, prices, meta }
+  const [dieselStatus, setDieselStatus] = useState({ phase: "idle", at: null, msg: "" });
   const [plan, setPlan] = useState(null);                 // finalised route plan (static asset)
   const [ledger, setLedger] = useState([]);              // allotted / received entries (not in the ERP)
   const [busInfo, setBusInfo] = useState({});             // vehicle -> { driver, phone, budgetAmount, budgetPeriod }
@@ -2540,6 +2816,10 @@ export default function App() {
         if (cp.at) setCostStatus({ phase: "ok", at: cp.at, msg: `${Object.keys(cp.profiles).length} buses costed` });
         if (cp.shape !== COST_SHAPE) staleCostShape.current = true;   // refetch once the app is up
       }
+      const dz = await Store.get("diesel");
+      if (dz && dz.issues) { setDiesel(dz); setDieselStatus({ phase: "ok", at: dz.at || null, msg: dieselMsg(dz.meta) }); }
+      const gk = await Store.get("busKm");
+      if (gk && Array.isArray(gk.days)) { gpsRef.current = gk; setGpsFeed(gk); setGpsStatus({ phase: "ok", at: gk.at || null, msg: "last pull" }); }
       const th = await Store.get("theme"); if (th && THEMES[th]) setThemeName(th); // ignore any removed/old theme name
       setLoaded(true);
     })();
@@ -2559,37 +2839,14 @@ export default function App() {
   useEffect(() => { if (loaded) Store.set("busInfo", busInfo); }, [busInfo, loaded]);
   useEffect(() => { if (loaded) Store.set("costLedger", ledger); }, [ledger, loaded]);
 
-  /* Every service's finalised plan, not just 9 am's. The strip below used to read
-     finalised_plan.json alone while sitting under a fleet-wide bus count, so a fleet running
-     four services advertised one service's routes and cost as if they were the whole day.
-     `plan` stays 9 am only — it feeds the per-bus cost overlay, and a bus shared between
-     services would otherwise have one service's route silently overwrite another's. */
+  /* `plan` is the 9 am finalised plan only — it gives each bus its route, whose km and tariff stand
+     in on a day the bus attendance app did not record; a bus shared between services would
+     otherwise have one service's route silently overwrite another's. */
   useEffect(() => {
     fetch("/finalised_plan.json")
       .then((r) => (r.ok ? r.json() : null))
       .then((p) => { if (p && Array.isArray(p.routes)) setPlan(p); })
       .catch(() => {});   // no plan file → dashboard runs exactly as before
-  }, []);
-  const [servicePlans, setServicePlans] = useState([]);
-  useEffect(() => {
-    /* Reloaded whole on every "rota-week" event (a Monday step, or a week pinned in the
-       Optimiser header). The array is REPLACED rather than merged so a slot whose new week's
-       file fails to load drops out of the roll-up instead of quietly keeping last week's cost
-       under this week's label; `gen` discards a slow response from a superseded load. */
-    let gen = 0;
-    const load = () => {
-      const my = ++gen;
-      const withPlans = SERVICES.map((s) => ({ svc: s, url: planUrlFor(s), src: planSourceFor(s) })).filter((x) => x.url);
-      Promise.all(withPlans.map(({ svc, url, src }) =>
-        fetch(url + "?ts=" + Date.now())
-          .then((r) => (r.ok ? r.json() : null))
-          .then((p) => (p && Array.isArray(p.routes) ? { svc, plan: p, src } : null))
-          .catch(() => null)
-      )).then((rs) => { if (my === gen) setServicePlans(rs.filter(Boolean)); });
-    };
-    load();
-    const off = subscribeRotaWeek(load);
-    return () => { gen++; off(); };
   }, []);
   /* Per-SERVICE roll-up, DERIVED from the synced employees rather than captured during the
      sync: on a day that is already synced the stored snapshot is served and syncErp never
@@ -2625,38 +2882,19 @@ export default function App() {
     return m;
   }, [plan]);
 
-  // records the tabs actually read: base records with each bus's cost profile overlaid as daily
-  // spend/budget. Buses/profiles first pass through the finalised plan: route km + plan-variable
-  // costs (diesel / rental tariff) join the ERP standing costs (see withPlanCosts).
+  // records the tabs actually read: each bus's ERP standing costs plus that day's km-variable cost,
+  // both ways (mergeCostsIntoRecords). Buses first pick up their finalised-plan route, whose km and
+  // tariff stand in on a day the bus attendance app did not record.
   const wd = effWorkingDays(settings);
-  const { buses: effBuses, profiles: busCosts } = useMemo(() => {
-    const planned = withPlanCosts(buses, costProfiles, planByVeh);
-    return applyBusInfo(planned.buses, planned.profiles, busInfo);
-  }, [buses, costProfiles, planByVeh, busInfo]);
+  const { buses: effBuses, profiles: busCosts } = useMemo(
+    () => applyBusInfo(withPlanRoutes(buses, planByVeh), costProfiles, busInfo),
+    [buses, costProfiles, planByVeh, busInfo]);
   const setBusField = useCallback((busId, patch) =>
     setBusInfo((prev) => ({ ...prev, [busId]: { ...prev[busId], ...patch } })), []);
-  const effRecords = useMemo(() => mergeCostsIntoRecords(records, effBuses, attendance, busCosts, wd), [records, effBuses, attendance, busCosts, wd]);
-  const planSummary = useMemo(() => {
-    if (!servicePlans.length) return null;
-    const named = new Set();
-    servicePlans.forEach(({ plan: p }) => (p.routes || []).forEach((r) => named.add(canonVehicle(r.name))));
-    // Plans built on different cost bases must not be added into one ₹/head. finalised_plan
-    // charges loan+driver+maintenance in full; the headless plans can exclude them.
-    const bases = new Set(servicePlans.map(({ plan: p }) => (p.costing && p.costing.basis) || "full"));
-    const sum = (f) => servicePlans.reduce((n, { plan: p }) => n + (+f(p.overall) || 0), 0);
-    const riders = sum((o) => o.riders);
-    return {
-      buses: sum((o) => o.buses), km: sum((o) => o.km), cost: sum((o) => o.cost), riders,
-      cost_head: riders ? sum((o) => o.cost) / riders : 0,
-      matched: buses.filter((b) => named.has(b.id)).length,
-      // A Rotational slot names the group and week it is running, so the strip never reads
-      // as if "Rotational · Day" were one fixed plan — it is a different group's every Monday.
-      services: servicePlans.map(({ svc, src }) =>
-        src && src.kind === "rotation" ? `${svc.name} — ${src.label}` : svc.name),
-      missing: SERVICES.filter((s) => !servicePlans.some((x) => x.svc.id === s.id)).map((s) => s.name),
-      mixedBasis: bases.size > 1,
-    };
-  }, [servicePlans, buses]);
+  const gpsIdx = useMemo(() => (gpsFeed ? indexGps(gpsFeed.days) : null), [gpsFeed]);
+  const run = useMemo(() => ({ gpsIdx, today: gpsFeed && gpsFeed.today, diesel }), [gpsIdx, gpsFeed, diesel]);
+  const effRecords = useMemo(() => mergeCostsIntoRecords(records, effBuses, attendance, busCosts, wd, run),
+    [records, effBuses, attendance, busCosts, wd, run]);
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
@@ -2682,6 +2920,67 @@ export default function App() {
     }
   }, []);
 
+  /* Diesel issued (ERP DieselDetails, ~8 MB back to 2017) — pulled with the other two feeds and
+     on its own from Settings. Only the last 120 days are kept (mapErpDiesel). */
+  const syncDiesel = useCallback(async ({ silent = false } = {}) => {
+    setDieselStatus((s) => ({ ...s, phase: "syncing" }));
+    try {
+      const d = mapErpDiesel(await fetchErpDieselRaw());
+      const at = Date.now();
+      const next = { ...d, at };
+      setDiesel(next);
+      setDieselStatus({ phase: "ok", at, msg: dieselMsg(d.meta) });
+      Store.set("diesel", next);
+      Store.set("lastDieselSync", at);
+      if (!silent) toast(`Diesel synced · ${d.meta.vehicles} vehicles · issues to ${fmtDay(d.meta.to)}`);
+      return d.meta;
+    } catch (e) {
+      setDieselStatus((s) => ({ ...s, phase: "error", at: Date.now(), msg: e.message || String(e) }));
+      if (!silent) toast("Diesel sync failed: " + (e.message || e));
+      return null;
+    }
+  }, []);
+
+  /* GPS km from the bus attendance app. A poll re-reads yesterday and today (a late upload can
+     still change yesterday); a full read takes the last GPS_KEEP_DAYS. Days in the window just read
+     are REPLACED, not merged, so a journey that moved or vanished does not linger. */
+  const syncGps = useCallback(async ({ full = false, silent = true } = {}) => {
+    const prev = gpsRef.current;
+    const today = prev && prev.today;
+    const from = full || !today ? addDaysIso(today || localIso(), 1 - GPS_KEEP_DAYS) : addDaysIso(today, -1);
+    if (!silent) setGpsStatus((s) => ({ ...s, phase: "syncing" }));
+    const r = await fetchBusKm({ from });
+    if (!r.ok) {
+      // not linked, outdated or refused: nothing changes until someone restarts or links it
+      gpsQuietUntil.current = r.phase === "offline" ? 0 : Date.now() + 5 * 60_000;
+      setGpsStatus((s) => ({ ...s, phase: r.phase, code: r.code || null, msg: r.msg, failedAt: Date.now() }));
+      if (!silent) toast("Bus app: " + r.msg);
+      return;
+    }
+    gpsQuietUntil.current = 0;
+    const { data } = r, oldest = addDaysIso(data.today, 1 - GPS_KEEP_DAYS);
+    const kept = (prev ? prev.days : []).filter((d) => (d.serviceDate < data.from || d.serviceDate > data.to) && d.serviceDate >= oldest);
+    const next = { days: [...kept, ...data.days], today: data.today, at: Date.now() };
+    gpsRef.current = next;
+    setGpsFeed(next);
+    setGpsStatus({ phase: "ok", at: next.at, msg: "" });
+    Store.set("busKm", next);
+    if (!silent) toast(`Bus app synced · ${data.days.filter((d) => d.serviceDate === data.today).length} buses recorded today`);
+  }, []);
+  // Polled, not pushed: every 30 s while the tab is visible and at once when it comes back into
+  // view; a full re-read every 10 minutes catches edits to older days. A bus app that is not linked,
+  // out of date or refusing the key is asked again only every 5 minutes (Settings → Refresh: now).
+  useEffect(() => {
+    if (!loaded) return;
+    syncGps({ full: true });
+    const visible = () => document.visibilityState === "visible" && Date.now() >= gpsQuietUntil.current;
+    const poll = setInterval(() => { if (visible()) syncGps(); }, 30_000);
+    const whole = setInterval(() => { if (visible()) syncGps({ full: true }); }, 10 * 60_000);
+    const onShow = () => { if (visible()) syncGps(); };
+    document.addEventListener("visibilitychange", onShow);
+    return () => { clearInterval(poll); clearInterval(whole); document.removeEventListener("visibilitychange", onShow); };
+  }, [loaded, syncGps]);
+
   // silent = auto/background refresh (no toast, no tab jump); loud = manual button press
   const syncErp = useCallback(async ({ silent = false } = {}) => {
     const firstLoad = busesRef.current.length === 0; // count-up reveal only when starting from empty
@@ -2691,6 +2990,7 @@ export default function App() {
     // concurrently. syncCosts settles its own status and never throws, so a costing
     // outage leaves the fleet sync untouched.
     const costing = syncCosts({ silent: true });
+    syncDiesel({ silent: true });
     try {
       const data = mapErpToDashboard(await fetchErpRaw());
       // On the first load, reveal the fetched routes as a real count-up (0 → total) before showing
@@ -2721,7 +3021,7 @@ export default function App() {
       setErpStatus((s) => ({ ...s, phase: "error", msg: e.message || String(e), progress: null }));
       if (!silent) toast("ERP sync failed: " + (e.message || e));
     }
-  }, [syncCosts]);
+  }, [syncCosts, syncDiesel]);
 
   /* Live connection: re-fetch every `erpRefreshMin` minutes (default 30), not once a day.
      The ERP is edited continuously — riders are onboarded into shifts and units through the
@@ -2750,6 +3050,8 @@ export default function App() {
           staleCostShape.current = false;
           syncCosts({ silent: true });
         }
+        const lastDiesel = await Store.get("lastDieselSync");
+        if (!cancelled && !fresh(lastDiesel)) syncDiesel({ silent: true });
         return;
       }
       staleEmployees.current = false;
@@ -2759,7 +3061,7 @@ export default function App() {
     // check often; `fresh()` decides whether a check actually costs a fetch
     const id = setInterval(tick, Math.min(everyMs || 10 * 60_000, 5 * 60_000));
     return () => { cancelled = true; clearInterval(id); };
-  }, [loaded, settings.erpAuto, settings.erpRefreshMin, syncErp, syncCosts]);
+  }, [loaded, settings.erpAuto, settings.erpRefreshMin, syncErp, syncCosts, syncDiesel]);
 
   // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
   // Equations is retired; Metrics lives inside Settings now.
@@ -2785,7 +3087,10 @@ export default function App() {
       <div ref={headerRef} className="app-chrome sticky top-0 z-20" data-scrolled={scrolled ? "true" : undefined}>
         <div className="w-full px-6 flex items-center gap-4">
           <div className="flex items-center gap-3 py-2 min-w-0 shrink-0 sm:flex-1 sm:overflow-hidden">
-            <div data-fx="logo" className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: t.primary }}><Bus size={20} color={t.onPrimary || "#fff"} /></div>
+            <div data-fx="logo" className="w-9 h-9 flex items-center justify-center shrink-0" role="img" aria-label="Gainup">
+              {/* the Gainup mark (public/logo.svg), bare, in the text colour — black on the light themes */}
+              <span className="block w-8 h-8" style={{ background: t.text, WebkitMask: "url(/logo.svg) center / contain no-repeat", mask: "url(/logo.svg) center / contain no-repeat" }} />
+            </div>
             {/* brand text is dropped below sm so the tabs and status pill never collide on a phone */}
             <div data-fx="brand" className="font-bold text-lg leading-tight tracking-tight truncate hidden sm:block">Transport dashboard</div>
           </div>
@@ -2818,15 +3123,17 @@ export default function App() {
         </div>}
         {!loaded ? <div style={{ color: t.muted }}>Loading…</div> : (
           <>
-            {tab === "live" && <LiveView t={t} unit={unit} buses={effBuses} records={effRecords} planSummary={planSummary} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} erpPhase={erpStatus.phase} onSync={() => syncErp()} />}
-            {tab === "bus" && <BusView t={t} unit="all" buses={effBuses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()} busInfo={busInfo} onSetBusField={setBusField} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
+            {tab === "live" && <LiveView t={t} unit={unit} buses={effBuses} records={effRecords} employees={employees} attendance={attendance} formulas={formulas} settings={settings} variables={variables} onOpenBusView={(id) => { setBusFocus(id); setTab("bus"); }} erpPhase={erpStatus.phase} onSync={() => syncErp()} />}
+            {tab === "bus" && <BusView t={t} unit="all" buses={effBuses} records={effRecords} employees={employees} run={run} attendance={attendance} formulas={formulas} settings={settings} variables={variables} busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()} busInfo={busInfo} onSetBusField={setBusField} toast={toast} focusBusId={busFocus} onBack={() => { setBusFocus(null); setTab("live"); }} />}
             {tab === "costs" && <CostReportView t={t} buses={effBuses} records={effRecords} employees={employees} attendance={attendance} settings={settings}
               busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()}
               ledger={ledger} onAddLedger={(e) => setLedger((L) => [...L, e])} onDelLedger={(id) => setLedger((L) => L.filter((x) => x.id !== id))}
               busInfo={busInfo} onSetBusField={setBusField} toast={toast} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={effBuses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
             {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} erpEmployees={employees} erpShifts={erpRoll} erpShiftDate={erpShiftDate} />}
-            {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} onSyncCosts={() => syncCosts()} costStatus={costStatus} costMeta={costMeta} toast={toast} themeName={themeName} setThemeName={setThemeName}
+            {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll}
+              gpsStatus={gpsStatus} gpsFeed={gpsFeed} onSyncGps={() => syncGps({ full: true, silent: false })}
+              dieselStatus={dieselStatus} diesel={diesel} onSyncDiesel={() => syncDiesel()} onExport={exportJSON} onSyncErp={syncErp} erpStatus={erpStatus} onSyncCosts={() => syncCosts()} costStatus={costStatus} costMeta={costMeta} toast={toast} themeName={themeName} setThemeName={setThemeName}
               formulas={formulas} variables={variables}
               onAddMetric={(f) => { setFormulas([...formulas, f]); toast("Metric added"); }}
               onUpdateMetric={(f) => { setFormulas(formulas.map((x) => (x.id === f.id ? f : x))); toast("Metric updated"); }}

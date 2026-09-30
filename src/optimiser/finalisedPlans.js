@@ -5,12 +5,14 @@
  * output final by definition. It is a candidate. The transport manager builds the
  * plan he will actually run in the Planner, and needs a way to say "this one".
  *
- * A service with no choice recorded falls back to a DEFAULT, and what that default
- * is depends on the service:
+ * A service with no choice recorded in this browser falls back, and what it falls back
+ * to depends on the service:
  *
- *   - the fixed-hour services (9 am, 7 am, Zenwear) fall back to their optimised
- *     plan, LABELLED as a default — so "nobody has decided yet" never looks like
- *     "somebody chose this";
+ *   - the fixed-hour services (9 am, 7 am, Zenwear) fall back to their BUILT-IN plan —
+ *     the manager's finalised plan, shipped with the app in src/finalisedDefaults.json so
+ *     no machine has to import it. It is a decision, not a default (builtIn: true). A
+ *     service missing from that manifest falls back to its optimised plan, LABELLED as a
+ *     default — so "nobody has decided yet" never looks like "somebody chose this";
  *
  *   - the three Rotational slots fall back to the MANAGER'S plan for whichever rider
  *     group is on that clock this week. The manager finalised nine plans (three fixed
@@ -38,6 +40,7 @@
 import * as store from "./store.js";
 import { SERVICES } from "./services.js";
 import { planUrlFor as rotationPlanUrl, describeSlot, groupOnSlot, getRotaWeek } from "./rotation.js";
+import BUILT_IN from "../finalisedDefaults.json" with { type: "json" };
 
 const KEY = "opt-finalised";
 
@@ -75,15 +78,18 @@ export function setFinalised(svcId, ref) {
   return write(map);
 }
 
-/** Drop the choice — the service reverts to its default (optimised, or the rotation plan). */
+/** Drop the choice — the service reverts to its built-in plan, the rotation plan, or the optimised one. */
 export function clearFinalised(svcId) {
   const map = getFinalised();
   delete map[svcId];
   return write(map);
 }
 
+/** The plan this service ships with (src/finalisedDefaults.json), or null. */
+export const builtInFor = (svc) => (svc && BUILT_IN.services[svc.id]) || null;
+
 /**
- * What stands for this service when nobody has chosen.
+ * What stands for this service when nobody has chosen in this browser.
  *
  * Rotational slots ask the rotation for THIS week's group plan. `getRotaWeek()` is the
  * week the dashboard is showing — the calendar week unless the week picker has pinned
@@ -102,6 +108,8 @@ export function baselineFor(svc) {
       };
     }
   }
+  const built = builtInFor(svc);
+  if (built) return { kind: "plan", file: built.file, name: built.name, builtIn: true, isDefault: false };
   return svc && svc.planUrl
     ? { kind: "plan", file: svc.planUrl, name: "Optimised", isDefault: true }
     : { kind: "none", name: "No plan", isDefault: true };
@@ -160,7 +168,7 @@ export function planSourceFor(svc) {
   if (!svc || svc.overall) return { url: null, label: "No plan", kind: "none", isDefault: true };
   const r = resolveFinalised(svc);
   const src = r.file ? r : baselineFor(svc);
-  return { url: src.file || null, label: src.name, kind: src.kind, isDefault: !!src.isDefault };
+  return { url: src.file || null, label: src.name, kind: src.kind, isDefault: !!src.isDefault, builtIn: !!src.builtIn };
 }
 
 /** Fetch the resolved plan body for a service, or null. Drafts are rebuilt from the store. */

@@ -27,9 +27,11 @@ import TrackImplView from "./TrackImplView.jsx";
 import { stopsForRiders, coverageOf } from "./serviceStops.js";
 import { serviceNeed, serviceIdFor, erpStatsFor, SERVICES } from "./services.js";
 import { getHiddenKpis, visibleKpis } from "./kpiPrefs.js";
+import { BUS_RANK, nextRank, rankBy, dirWords } from "./kpiRank.js";
+import { prefersReduced } from "../ui/motion.js";
 import { fleetCost, runCostIndex, fleetBasis } from "./fleetCost.js";
 import { canonVehicle } from "../erp.js";
-import { resolveFinalised, clearFinalised, downloadFinalised, importFinalised, planUrlFor, planSourceFor } from "./finalisedPlans.js";
+import { resolveFinalised, clearFinalised, downloadFinalised, importFinalised, planUrlFor, planSourceFor, baselineFor } from "./finalisedPlans.js";
 /* The Rotational plan a slot shows depends on the rota week (src/rotation.json), which the
    manager can pin from the header. The hook re-renders whatever reads it when the pin moves. */
 import RotaWeekPicker, { useRotaWeek, shiftWeek } from "./RotaWeekPicker.jsx";
@@ -1131,7 +1133,10 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
      here, but it is the manager's finalised plan for the group on that clock this week. Count
      it separately so the headline never claims a choice that was made in src/rotation.json. */
   const onRota = rows.filter((r) => r.fin.kind === "rotation").length;
-  const chosen = rows.filter((r) => !r.fin.isDefault && r.fin.kind !== "rotation").length;
+  /* Built in = the manager's plan that ships with the app (src/finalisedDefaults.json): decided,
+     but not in this browser, so there is nothing here to revert. */
+  const builtIn = rows.filter((r) => r.fin.builtIn).length;
+  const chosen = rows.filter((r) => !r.fin.isDefault && r.fin.kind !== "rotation" && !r.fin.builtIn).length;
   const inr1 = (n) => "₹" + (Math.round((n || 0) * 10) / 10).toLocaleString("en-IN");
 
   const doImport = (e) => {
@@ -1152,12 +1157,13 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
 
   return (
     <Card t={t} title="Finalised plans"
-      hint="Which plan each service actually runs. A service nobody has decided falls back to the optimiser's output, marked default. Changing any one of these moves every adjusted figure above, because a bus's standing cost is split across the runs it makes.">
+      hint="Which plan each service actually runs. With nothing finalised in this browser, 9 am, 7 am and Zenwear run the plan built into the app, and the Rotational slots run the manager's plan for the group on that clock this week. Changing any one of these moves every adjusted figure above, because a bus's standing cost is split across the runs it makes.">
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <span className="text-sm" style={{ color: t.muted }}>
-          <b style={{ color: t.text }}>{chosen}</b> of {SERVICES.length} chosen
+          <b style={{ color: t.text }}>{chosen}</b> of {SERVICES.length} chosen in this browser
+          {builtIn > 0 && <> · {builtIn} built in</>}
           {onRota > 0 && <> · {onRota} following the rota</>}
-          {" · "}{SERVICES.length - chosen - onRota} still on the optimised default
+          {SERVICES.length - chosen - builtIn - onRota > 0 && <> · {SERVICES.length - chosen - builtIn - onRota} on the optimised default</>}
         </span>
         <span className="ml-auto flex items-center gap-2">
           <Btn t={t} variant="ghost" onClick={() => { downloadFinalised(); toast && toast("Exported finalised_plans.json"); }}>
@@ -1205,7 +1211,7 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
                       finalised plan for whichever group is on this clock this week — the name
                       says which), and a choice somebody made in the Planner. */}
                   <span className="rounded-full px-2 py-0.5 text-xs font-semibold"
-                    title={fin.kind === "rotation" ? `Follows src/rotation.json · ${fin.file || ""}` : undefined}
+                    title={fin.kind === "rotation" ? `Follows src/rotation.json · ${fin.file || ""}` : fin.builtIn ? `Built into the app (src/finalisedDefaults.json) · ${fin.file}` : undefined}
                     style={fin.isDefault
                       ? { background: t.surface2, color: t.muted }
                       : fin.kind === "rotation"
@@ -1213,13 +1219,14 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
                       : { background: t.goodSoft, color: t.good }}>
                     {fin.isDefault ? "Optimised · default" : fin.name}
                   </span>
+                  {fin.builtIn && <span className="ml-1.5 text-[11px]" style={{ color: t.muted }}>built in</span>}
                   {/* Two different reasons a choice stopped resolving, and they need different
                       instructions: the plan is gone, or it predates storing its scored body. */}
                   {fin.lostDraft && (
                     <span className="ml-1.5 text-[11px]" style={{ color: t.watch }}
                       title={fin.needsRefinalise
                         ? `“${fin.lostDraft}” was finalised before its costs were captured — open it and press Finalise again`
-                        : "The finalised plan was deleted, so this fell back to the optimised one"}>
+                        : `The finalised plan was deleted, so this fell back to ${fin.builtIn ? "the built-in plan" : "the optimised one"}`}>
                       {fin.needsRefinalise ? `re-finalise “${fin.lostDraft}”` : `“${fin.lostDraft}” was deleted`}
                     </span>
                   )}
@@ -1233,9 +1240,9 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
                       for the finalised plan in that service's gallery and clicking it off. */}
                   {/* Nothing to revert on a rota row — there is no stored choice, the week
                       picker in the header is what moves it. */}
-                  {!fin.isDefault && fin.kind !== "rotation" && (
-                    <button type="button" onClick={() => { clearFinalised(svc.id); setTick((x) => x + 1); toast && toast(`${svc.name} back to the optimised plan`); }}
-                      title="Go back to the optimised plan"
+                  {!fin.isDefault && fin.kind !== "rotation" && !fin.builtIn && (
+                    <button type="button" onClick={() => { clearFinalised(svc.id); setTick((x) => x + 1); const base = baselineFor(svc); toast && toast(`${svc.name} back to ${base.builtIn ? `its built-in plan, ${base.name}` : base.kind === "rotation" ? base.name : "the optimised plan"}`); }}
+                      title={baselineFor(svc).builtIn ? `Go back to the built-in plan, ${baselineFor(svc).name}` : "Go back to the optimised plan"}
                       className="rounded-lg px-2 py-0.5 text-xs font-semibold mr-1.5"
                       style={{ border: "1px solid " + t.border, background: t.surface, color: t.muted, cursor: "pointer" }}>
                       Revert
@@ -1300,6 +1307,9 @@ function attachEffDemand(seq, target) {
 /* `svc` decides WHICH plan is drawn. Without it this read activePlanUrl() — the 9 am
    plan-variant picker — for every service, so Rotational, Zenwear and 7 am Morning all
    showed 9 am's 75 buses, 3,021 riders and ₹56.7/head as if they were their own. */
+/* Column heads of the routes table that rank it, and the KPI each one ranks by (kpiRank.js). */
+const COLUMN_RANK = { Stops: "avgstops", Riders: "people", Seats: "seats", "Km/day": "totdist", Trip: "ride", "₹/head": "cost" };
+
 function FleetPlanView({ t, svc, toast, onOpenService }) {
   const [data, setData] = useState(null);
   const view = "overall"; // Combined data only (owned/rental split shown within the KPIs)
@@ -1316,6 +1326,8 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
   const [stopsPanelOpen, setStopsPanelOpen] = useState(true); // master-map stop-order panel: expanded/minimized
   const [err, setErr] = useState(false);
   const [hiddenKpis] = useState(getHiddenKpis);
+  const [sortBy, setSortBy] = useState(null); // routes table ranked by a KPI: { key, dir } | null (set by pressing a KPI card or a column head)
+  const routesRef = useRef(null);
   const isOverall = !svc || !!svc.overall;
   /* The rota week is read here, not just inside planUrlFor, so a pin moved from the header
      re-renders this view and re-runs the load: planUrlFor reads the pin from storage and
@@ -1507,7 +1519,21 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
   const ROUTES_PER_PAGE = 20;
   const routePageCount = Math.max(1, Math.ceil(tableRows.length / ROUTES_PER_PAGE));
   const curRoutePage = Math.min(routePage, routePageCount - 1);
-  const pagedRows = tableRows.slice(curRoutePage * ROUTES_PER_PAGE, curRoutePage * ROUTES_PER_PAGE + ROUTES_PER_PAGE);
+  /* Pressing a KPI card ranks the routes by that figure (kpiRank.js) — the same figure the card
+     sums up, so "Max ride" puts the longest trips on top. Ranking happens before paging, so
+     page 1 is the top of the ranking, not the top of the current page. */
+  const ranked = sortBy && BUS_RANK[sortBy.key]
+    ? rankBy(tableRows, (r) => BUS_RANK[sortBy.key].value({ riders: r.riders, cap: r.cap, cost: r.cost, ride: r.ride, km: r.km, stops: r.stops }), sortBy.dir)
+    : null;
+  const orderedRows = ranked ? ranked.map((x) => x.item) : tableRows;
+  const rankOf = ranked ? new Map(ranked.map((x) => [x.item, x])) : null;
+  const pagedRows = orderedRows.slice(curRoutePage * ROUTES_PER_PAGE, curRoutePage * ROUTES_PER_PAGE + ROUTES_PER_PAGE);
+  const rankRoutes = (key, { scroll = true } = {}) => {
+    const next = nextRank(sortBy, key);
+    setSortBy(next); setRoutePage(0);
+    // the cards sit above the map; bring the ranked table into view so the press visibly did something
+    if (next && scroll) requestAnimationFrame(() => routesRef.current && routesRef.current.scrollIntoView({ behavior: prefersReduced() ? "auto" : "smooth", block: "start" }));
+  };
   const depot = data.params.depot;
   // --- master map: plot any set of routes together, each in its own colour ---
   const toggleSel = (name) => setSelRoutes((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; });
@@ -1586,31 +1612,6 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
           </div>
         );
       })()}
-      {/* Say WHAT is on screen. "Overall" silently meant 9 am General before, so a fleet-wide
-          reading of these KPIs was wrong by three services. */}
-      {isOverall && drawn.length > 0 && (
-        <div className="rounded-xl border px-3 py-2 text-xs flex flex-wrap items-center gap-x-3 gap-y-1"
-          style={{ background: t.surface2, borderColor: t.border, color: t.muted }}>
-          <span style={{ color: t.text, fontWeight: 600 }}>
-            {drawn.length} of {SERVICES.length} services planned
-          </span>
-          <span>{drawn.join(" · ")}</span>
-          {SERVICES.filter((x) => !x.planUrl).length > 0 && (
-            <span style={{ color: t.faint }}>
-              not shown: {SERVICES.filter((x) => !x.planUrl).map((x) => x.name).join(", ")} — no plan yet
-            </span>
-          )}
-          {fleetFc && fleetFc.shared > 0 && (
-            <span className="w-full" style={{ color: t.muted }}>
-              <b style={{ color: t.text }}>Adjusted</b> — loan, driver and maintenance counted once per
-              vehicle and split across its runs. {fleetFc.shared} of {fleetFc.vehicles} buses run more
-              than one service ({fleetFc.runs} runs in total), so charging each service in full would
-              add <b style={{ color: t.watch }}>{inr0(fleetFc.fleet.doubleCounted)}/day</b> of cost
-              that does not exist. Inside a service the figures stay standalone.
-            </span>
-          )}
-        </div>
-      )}
       {selActive && (
         <div className="flex flex-wrap items-center gap-2 text-xs rounded-xl px-3 py-2" style={{ background: t.primarySoft, color: t.primary, fontWeight: 600 }}>
           Metrics below reflect <b>{selRoutes.size}</b> selected bus{selRoutes.size === 1 ? "" : "es"} · {m.riders} riders · {m.seats} seats.
@@ -1649,7 +1650,16 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
         // separate reads, so they get the card gap the other clubs have rather than a hairline
         // Regroup after filtering so a hidden KPI closes the gap instead of leaving a
         // half-empty container behind it.
+        /* Every figure a route also has ranks the table by it; Owned / Rental keep filtering it. */
+        const rankable = (c) => {
+          const on = !!sortBy && sortBy.key === c.key;
+          return { ...c, label: on ? `${c.label} ${sortBy.dir === "desc" ? "↓" : "↑"}` : c.label, active: c.active || on,
+            onCardClick: () => rankRoutes(c.key),
+            cardHint: !on ? `Rank the routes below by ${BUS_RANK[c.key].label.toLowerCase()}, highest first`
+              : sortBy.dir === "desc" ? "Press for lowest first" : "Press to stop ranking" };
+        };
         const groups = [[cost, util], [avgride, maxride], [totDist, avgDist], [owned, rental], [seats, avgStops]]
+          .map((g) => g.map((c) => (BUS_RANK[c.key] ? rankable(c) : c)))
           .map((g) => visibleKpis(g, hiddenKpis)).filter((g) => g.length);
         // The chooser lives on the Planner, where the panel floats over the map and space is
         // scarce. This board just honours whatever was chosen there.
@@ -1832,6 +1842,7 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
           </Card>
         );
       })()}
+      <div ref={routesRef} style={{ scrollMarginTop: 80 }}>
       <Card t={t} title="Routes"
         right={
           <div className="flex items-center gap-2">
@@ -1839,6 +1850,19 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
             <SearchInput t={t} value={routeQuery} onChange={(e) => { setRouteQuery(e.target.value); setRoutePage(0); }} placeholder="Search bus, company or stop…" width={230} />
           </div>
         }>
+        {sortBy && BUS_RANK[sortBy.key] && (
+          <div className="flex flex-wrap items-center gap-2 mb-3 text-xs rounded-xl px-3 py-2" style={{ background: t.primarySoft, color: t.primary, fontWeight: 600 }}>
+            <span>Ranked by <b>{BUS_RANK[sortBy.key].label.toLowerCase()}</b>, {dirWords(sortBy.dir)}.</span>
+            <button type="button" onClick={() => { setSortBy({ ...sortBy, dir: sortBy.dir === "desc" ? "asc" : "desc" }); setRoutePage(0); }}
+              className="rounded-lg px-2 py-0.5" style={{ border: "1px solid " + t.border, background: t.surface, color: t.text, cursor: "pointer" }}>
+              {sortBy.dir === "desc" ? "Lowest first" : "Highest first"}
+            </button>
+            <button type="button" onClick={() => { setSortBy(null); setRoutePage(0); }} className="rounded-lg px-2 py-0.5"
+              style={{ border: "1px solid " + t.border, background: t.surface, color: t.text, cursor: "pointer" }}>
+              Clear
+            </button>
+          </div>
+        )}
         {typeFilter && (
           <div className="flex items-center gap-2 mb-3 text-xs rounded-xl px-3 py-2" style={{ background: t.primarySoft, color: t.primary, fontWeight: 600 }}>
             Showing only <b>{typeFilter === "own" ? "owned" : "rental"}</b> buses ({tableRows.length}).
@@ -1866,8 +1890,20 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
               <th className="py-2.5 px-2 text-left" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, borderTopLeftRadius: 10, borderBottomLeftRadius: 0 }}>
                 <input type="checkbox" title={allSelected ? "Clear map selection" : "Plot all routes"} checked={allSelected} onChange={toggleAll} style={{ accentColor: t.primary, width: 15, height: 15 }} />
               </th>
+              {ranked && (
+                <th className="py-2.5 px-2 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, color: t.primary }}>
+                  {BUS_RANK[sortBy.key].label} {sortBy.dir === "desc" ? "↓" : "↑"}
+                </th>
+              )}
               {["Bus", "Type", "Company", "Stops", "Riders", "Seats", "Km/day", "Trip", "₹/head", "Route"].map((h, i, arr) =><th key={i} className="py-2.5 px-2 text-left text-xs font-semibold uppercase tracking-wider" style={{ background: t.primarySoft, borderBottom: "2px solid " + t.border, color: (i === 9) ? t.techno : t.text, borderTopRightRadius: i === arr.length - 1 ? 10 : 0 }}>
-                {h === "Company" ? (
+                {COLUMN_RANK[h] ? (
+                  <button type="button" onClick={() => rankRoutes(COLUMN_RANK[h], { scroll: false })}
+                    title={sortBy && sortBy.key === COLUMN_RANK[h] ? (sortBy.dir === "desc" ? "Press for lowest first" : "Press to stop ranking") : `Rank by ${h}, highest first`}
+                    className="inline-flex items-center gap-1 uppercase tracking-wider font-semibold whitespace-nowrap"
+                    style={{ color: sortBy && sortBy.key === COLUMN_RANK[h] ? t.primary : "inherit", cursor: "pointer" }}>
+                    {h}{sortBy && sortBy.key === COLUMN_RANK[h] ? (sortBy.dir === "desc" ? " ↓" : " ↑") : ""}
+                  </button>
+                ) : h === "Company" ? (
                   <div className="relative inline-flex items-center gap-1.5">
                     <span>Company</span>
                     <button type="button" onClick={() => setCompanyMenuOpen((o) => !o)} title="Filter by company"
@@ -1908,6 +1944,16 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
                       {selRoutes.has(r.name) && <span className="inline-block rounded-full" style={{ width: 9, height: 9, background: masterColors[r.name] }} />}
                     </span>
                   </td>
+                  {ranked && (() => {
+                    const x = rankOf.get(r);
+                    return (
+                      <td className="py-2 px-2 tabular-nums whitespace-nowrap">
+                        {x && x.rank != null
+                          ? <><span style={{ color: t.primary, fontWeight: 700 }}>#{x.rank}</span> <span style={{ color: t.text, fontWeight: 600 }}>{BUS_RANK[sortBy.key].fmt(x.value)}</span></>
+                          : <span style={{ color: t.faint }}>—</span>}
+                      </td>
+                    );
+                  })()}
                   <td className="py-2 px-2" style={{ color: t.text }}>
                     {names[r.name] ? <span><b>{names[r.name]}</b> <span style={{ color: t.muted, fontSize: "0.72rem" }}>({r.name})</span></span> : r.name}
                     {/* A bus on several services carries a fraction of its standing cost here,
@@ -1962,6 +2008,7 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
           </div>
         )}
       </Card>
+      </div>
       <BackToTop t={t} />
     </div>
   );

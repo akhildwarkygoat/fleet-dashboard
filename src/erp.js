@@ -1,10 +1,11 @@
 /* ============================================================================
  * erp.js — live ERP ingestion for the fleet dashboard
  *
- * TWO endpoints, one per kind of data. Both are POSTed with an empty JSON body.
+ * THREE endpoints, one per kind of data. All are POSTed with an empty JSON body.
  *
  *   /api/general/VehicleEmpMapDetails         employee punch records
  *   /api/general/VehicleEmpMapProjectDetails  vehicle costing (approved cost lines)
+ *   /api/Vehicle/DieselDetails                diesel issued per vehicle per day
  *
  * Host: http://life.gainup.in:8089 (see vite.config.js). The old 172.16.10.169 address is
  * the same server on the office LAN — it does not resolve from outside, so the public
@@ -21,10 +22,14 @@
  * it covers and what was purchased. mapErpCosts() folds those into one read-only
  * cost profile per bus, which is what the Bus-wise cost card renders.
  *
+ * DIESEL FEED — one row per vehicle per day diesel was issued. mapErpDiesel() keeps the
+ * recent issues per vehicle; dailyCost.js turns them into a cost per day.
+ *
  * What the ERP DOES NOT carry (kept as explicit placeholders, never faked):
- *   - route / ride-time / per-bus km / stops  -> RUN_OPTIMISER
+ *   - route / ride-time / stops               -> RUN_OPTIMISER
+ *   - per-bus km                              -> the bus attendance app's GPS, else the plan
  *   - driver name / phone                     -> NEEDS_ERP
- *   - diesel and driver salary                -> absent from BOTH feeds (see ERP_COST_HEADS)
+ *   - driver salary                           -> only as a flat figure on diesel rows, not read
  * ==========================================================================*/
 import FROZEN_ROTA from "./rotationalRoster.json" with { type: "json" };
 import NON_ROTATING from "./nonRotatingRiders.json" with { type: "json" };
@@ -34,6 +39,7 @@ export const NEEDS_ERP = "Needs to be added to the ERP";
 
 const ERP_ENDPOINT = "/erp/general/VehicleEmpMapDetails";
 const ERP_COST_ENDPOINT = "/erp/general/VehicleEmpMapProjectDetails";
+const ERP_DIESEL_ENDPOINT = "/erp/Vehicle/DieselDetails";
 
 /* ---- Rotational roster: FROZEN, not read live ----
  * Rotational's three slots rotate one place every Monday, so a rider's Pun_Shift only says
@@ -89,6 +95,8 @@ async function erpPost(endpoint) {
 export const fetchErpRaw = () => erpPost(ERP_ENDPOINT);
 /* Raw costing payload (array of per-vehicle cost lines). Throws on non-2xx. */
 export const fetchErpCostRaw = () => erpPost(ERP_COST_ENDPOINT);
+/* Raw diesel payload (array of per-vehicle, per-day issues, ~8 MB back to 2017). Throws on non-2xx. */
+export const fetchErpDieselRaw = () => erpPost(ERP_DIESEL_ENDPOINT);
 
 /* "15-07-2026 00:00:00" -> "2026-07-15" (ISO, so it sorts + matches the date pickers) */
 function normDate(s) {
@@ -125,6 +133,10 @@ const PLAN_VEHICLE_ALIASES = {
   TN57BK3434: "TN57CK3434",
 };
 export const canonVehicle = (veh) => PLAN_VEHICLE_ALIASES[veh] || veh;
+/* One spelling per vehicle across feeds. The punch feed's VehName, the diesel feed's Vehno and the
+   bus attendance app's bus id name the same registration, not always in the same case or spacing
+   ("TN57 CL 3434", "tn57cl3434"). Used to JOIN feeds; bus ids themselves are left as the ERP sends them. */
+export const vehKey = (veh) => canonVehicle(String(veh || "").toUpperCase().replace(/[^A-Z0-9]/g, ""));
 
 const numOrNull = (v) => { const n = parseFloat(v); return isFinite(n) && n !== 0 ? n : null; };
 
@@ -274,6 +286,55 @@ export function mapErpCosts(rows, { asOf = Date.now() } = {}) {
     profiles,
     meta: { ...meta, heads: [...meta.heads].sort(), vehicles: Object.keys(profiles).length, fy, from: isoLocal(from), to: isoLocal(to) },
   };
+}
+
+/* ============================== DIESEL FEED ==============================
+ * Vehicle/DieselDetails returns one row per vehicle per day diesel was issued, back to 2017:
+ *
+ *   Vehno  EDATE  Diesel_Used (litres)  Diesel_Rate (Rs/L)  Amount (= rate x litres)  VehicleCategory
+ *
+ * Only owned vehicles appear: a hired bus is fuelled by its owner (Sep 2026: 46 owned buses with
+ * rows, 57 hired with none). Some buses are issued diesel every day, most every three to eight
+ * days, and an issue refills what was burnt since the previous one: the litres grow with the gap
+ * (median 57 L after one day, 99 L after four, 127 L after seven). Turning issues into a cost per
+ * day is dailyCost.js's job; this only folds the rows.
+ *
+ * Kept: the last `days` days, far more than any view needs, so the stored snapshot stays small
+ * next to the ~8 MB feed. Returns
+ *   issues  { vehKey: [[date, litres, amount], ...] }  oldest first, one entry per day
+ *   prices  [[date, Rs/L], ...]                        the day's rate (most common across rows)
+ */
+export function mapErpDiesel(rows, { asOf = Date.now(), days = 120 } = {}) {
+  const since = isoLocal(new Date(asOf - days * 864e5));
+  const byVeh = new Map();      // vehKey -> Map(date -> [litres, amount])
+  const rateVotes = new Map();  // date -> { rate: rows }
+  const meta = { rows: (rows || []).length, used: 0, vehicles: 0, litres: 0, amount: 0, from: "", to: "" };
+  for (const r of rows || []) {
+    const veh = vehKey(r.Vehno), d = normDate(r.EDATE);
+    const litres = numVal(r.Diesel_Used), rate = numVal(r.Diesel_Rate);
+    if (!veh || !d || d < since || litres <= 0) continue;
+    const amount = numVal(r.Amount) || litres * rate;
+    if (!byVeh.has(veh)) byVeh.set(veh, new Map());
+    const cell = byVeh.get(veh).get(d) || [0, 0];
+    cell[0] += litres; cell[1] += amount;
+    byVeh.get(veh).set(d, cell);
+    if (rate > 0) {
+      const v = rateVotes.get(d) || {};
+      v[rate] = (v[rate] || 0) + 1;
+      rateVotes.set(d, v);
+    }
+    meta.used++; meta.litres += litres; meta.amount += amount;
+    if (!meta.from || d < meta.from) meta.from = d;
+    if (d > meta.to) meta.to = d;
+  }
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const issues = {};
+  for (const [veh, byDate] of byVeh)
+    issues[veh] = [...byDate.keys()].sort().map((d) => [d, r2(byDate.get(d)[0]), r2(byDate.get(d)[1])]);
+  const prices = [...rateVotes.keys()].sort().map((d) => [d, +mode(rateVotes.get(d))]);
+  meta.vehicles = byVeh.size;
+  meta.litres = r2(meta.litres); meta.amount = r2(meta.amount);
+  return { issues, prices, meta };
 }
 
 /* The rows are folded per rider, which is what every other view needs — but it throws away

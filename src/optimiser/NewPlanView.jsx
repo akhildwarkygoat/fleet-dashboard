@@ -12,7 +12,7 @@ import { Btn, Empty, PALETTE } from "./ui.jsx";
 import NewPlanBoard from "./NewPlanBoard.jsx";
 import PlanGallery from "./PlanGallery.jsx";
 import { activePlanUrl, getActivePlanLabel } from "./planOptions.js";
-import { resolveFinalised, setFinalised, clearFinalised, planUrlFor, planSourceFor } from "./finalisedPlans.js";
+import { resolveFinalised, setFinalised, clearFinalised, planUrlFor, planSourceFor, baselineFor } from "./finalisedPlans.js";
 import { subscribeRotaWeek } from "./rotation.js";
 import { Save, Sparkles, RotateCcw, Download, Undo2, Redo2, Wand2, ArrowLeft, Sunset, Sunrise } from "lucide-react";
 import { downloadPlanJson, toSolverResult } from "./planExport.js";
@@ -57,8 +57,11 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
     [svc, rotaTick]                                                  // eslint-disable-line
   );
   const planLabel = !svc || svc.id === "s9" ? getActivePlanLabel()
-    : planSource && planSource.kind === "rotation" ? planSource.label
+    : planSource && (planSource.kind === "rotation" || !planSource.isDefault) ? planSource.label
     : `${svc.name} optimised`;
+  /* What the seed card is offering: the manager's rotation plan, a finalised plan (built in or
+     chosen), or the optimiser's output. */
+  const planKind = !planSource ? null : planSource.kind === "rotation" ? "rotation" : planSource.isDefault ? "optimised" : "final";
   const [solver, setSolver] = useState(null);
   const [solverLoaded, setSolverLoaded] = useState(false);
   useEffect(() => {
@@ -179,7 +182,8 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
       /* Un-finalising hands the slot back to whatever stands in — the rotation plan on a
          Rotational slot, the optimised plan elsewhere — and the toast has to say which. */
       clearFinalised(svc.id); setFinal(resolveFinalised(svc));
-      toast && toast(`${svc.name} back to the ${svc.slot ? "rotation" : "optimised"} plan`);
+      const base = baselineFor(svc);
+      toast && toast(`${svc.name} back to ${base.kind === "rotation" ? "the rotation plan" : base.builtIn ? `its built-in plan, ${base.name}` : "the optimised plan"}`);
       return;
     }
     let body = null;
@@ -228,6 +232,16 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
 
   const editor = usePlanEditor({ seed, fleet, depot, stopsById, metric, idxOf, demandOf, endpointsOf });
 
+  /* Every saved plan scored exactly as finalising scores it, so the gallery can rank plans by any
+     KPI (kpiRank.PLAN_RANK) with the same numbers the board and the finalised body carry. Only
+     while the gallery is on screen; a plan that cannot be scored (empty) ranks last. */
+  const draftBodies = useMemo(() => {
+    if (view !== "gallery" || !ready) return null;
+    const out = new Map();
+    for (const d of drafts) { try { out.set(d.id, scoreDraft(d)); } catch { out.set(d.id, null); } }
+    return out;
+  }, [view, ready, drafts, stopsById, idxOf, demandOf, allStops, endpointsOf, fleet, depot, metric, totalRiders]); // eslint-disable-line
+
   const meta = () => {
     const used = editor.perBus.filter((r) => r.stopIds.length);
     return { riders: used.reduce((n, r) => n + r.heads, 0), buses: used.length, stops: used.reduce((n, r) => n + r.stopIds.length, 0) };
@@ -247,7 +261,7 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
     setDroppedRoutes(dropped);
     setImportedPlan({ extras, demand });
     setSeed(seed); setCurrent(null); setDraftName(`Imported ${label} plan`); setView("editor");
-    toast && toast(`Imported the ${label} optimised plan` + (extras.length ? ` (${extras.length} stops carried from the plan file)` : ""));
+    toast && toast((planKind === "optimised" ? `Imported the ${label} optimised plan` : `Imported “${label}”`) + (extras.length ? ` (${extras.length} stops carried from the plan file)` : ""));
   };
   const deleteDraft = (d) => { store.deletePlanDraft(d.id); setDrafts(store.listPlanDrafts(svcId)); toast && toast("Plan deleted"); };
   // Prev-route seed: current_routes.json stores buses[].stops[] (ERP's actual allocation).
@@ -356,10 +370,10 @@ export default function NewPlanView({ t, toast, erpBuses, svc, svcStops }) {
             )}
           </div>
         )}
-        <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={planLabel} planKind={planSource ? planSource.kind : null} finalised={finalised} onFinalise={finalise}
+        <PlanGallery t={t} drafts={drafts} totalRiders={totalRiders} canImport={!!solver} planLabel={planLabel} planKind={planKind} finalised={finalised} onFinalise={finalise}
           stopsById={stopsById} depot={depot} busColor={busColor}
           onNewBlank={newBlank} onImport={importPlan} onOpen={openDraft} onDelete={deleteDraft} onImportFile={importFromFile}
-          onImportPrev={importPrevRoutes} prevPlan={prevRoutes} />
+          onImportPrev={importPrevRoutes} prevPlan={prevRoutes} bodies={draftBodies} />
       </div>
     );
   }

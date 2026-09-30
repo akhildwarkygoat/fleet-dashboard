@@ -25,7 +25,7 @@ Two solvers are available:
 npm install
 
 # Run the app
-npm run dev                 # → http://localhost:5173
+npm run dev                 # → http://localhost:5173 (the next free port if that is taken)
 
 # (optional) Python solver deps — only to regenerate the plan offline
 pip install -r requirements.txt
@@ -81,6 +81,33 @@ matrix (`public/road_matrix.json`). To fetch fresh road distances/geometry:
 The key is stored **only in your browser** (`localStorage`), never committed.
 Without a key the app falls back to the cached matrix (or straight-line estimates).
 
+### Bus attendance link and ERP diesel (km and diesel, costed two ways)
+
+Every cost on the dashboard is shown **two ways**, side by side (`src/dailyCost.js`):
+
+| | Diesel for owned buses | Source |
+|---|---|---|
+| **By km travelled** | km ÷ the bus's ERP mileage × the ERP's diesel price that day | GPS km from the bus attendance app: every trip has a leader who taps Start / End journey, and the app sums a bus's trips per day. A day it did not record falls back to the finalised plan's route km, and says so. |
+| **By diesel consumed** | what the ERP issued (`POST /api/Vehicle/DieselDetails`) | An issue refills what was burnt since the previous one, so it is spread evenly over those days (at most 7). Days after a bus's last fill show its average from its ERP fills over the previous 30 days, labelled "ERP average — waiting for next fill", until the next fill is entered. |
+
+Standing costs (the costing feed) are the same both ways. A hired bus costs its day tariff on
+the km driven either way: the ERP issues hired buses no diesel. Formulas keep `spend`, `cph` and
+`cpk` as the km figures and gain `spend_diesel`, `cph_diesel`, `cpk_diesel`, `variance_diesel`;
+the health score uses the km figure.
+
+**Linking the bus attendance app** (optional — without it km stays on the plan). In the bus
+attendance repo run `npm run fleet:link` once: it creates the shared key there and writes
+**`.bus_key`** here (`{"url": "http://127.0.0.1:3000", "key": "…"}`, gitignored, same rule as
+`.erp_key`). `BUS_API_URL` / `BUS_API_KEY` override it. The dev server passes only
+`GET /bus-api/fleet/*` through, adding the key, and the dashboard polls it every 30 s while open.
+`npm run dev:all` in the bus attendance repo starts both apps together, this one on **:5174**
+(the bus attendance app holds :5173). What the dashboard keeps in the browser — budgets, driver
+details, Track Implementation times, documents, saved plans — belongs to the address it was
+entered at, so data entered at :5173 does not show at :5174 and the other way round.
+
+The diesel feed is pulled with every ERP sync (and from Settings → Km & diesel); the last 120
+days are kept in the browser. On a static deployment neither source exists, and the dashboard says so.
+
 ---
 
 ## The dashboard
@@ -94,6 +121,26 @@ Without a key the app falls back to the cached matrix (or straight-line estimate
 | **Equations** | The cost & demand formulas, editable |
 | **Metrics** | KPI rollups |
 | **Settings** | Google key, model constants |
+
+Pressing a KPI ranks what sits under it by that figure — highest first, again for lowest first, a
+third time to stop (`src/optimiser/kpiRank.js`): the buses on the Planner and Fleet-plan boards
+(Owned / Rental narrow the list instead), and the saved plans on the Planner's Plans page.
+
+### Finalised plans ship with the app
+
+Every service runs a finalised plan without anyone importing a file:
+
+| Service | Runs, when nothing is finalised in this browser |
+|---|---|
+| 9 am General | *Finalised_plan_Done* — `public/finalised_plan.json` |
+| 7 am Morning | *7am Shift* — `public/plans/final/7am-shift.json` |
+| Zenwear | *Subulapuram Unit* — `public/plans/final/subulapuram-unit.json` |
+| Rotational · Day / Half night / Full night | the manager's plan for the group on that clock this week — nine plans in `public/plans/rot/`, stepped every Monday by `src/rotation.json` |
+
+The fixed-hour three are listed in `src/finalisedDefaults.json`. A plan finalised in the Planner still
+wins in that browser, and **Revert** on Overall → Fleet plan → Finalised plans goes back to the built-in
+one. To change a built-in plan for everyone: export it from the Planner, put the file in
+`public/plans/final/`, point `src/finalisedDefaults.json` at it, and commit.
 
 ---
 
@@ -291,7 +338,7 @@ its key (`opt-stops-*`, `opt-fleet-*`, `opt-depot-*`) or clear it in the console
 ## Tests
 
 ```bash
-npm test                                # engine invariant checks
+npm test                                # engine, rotation, daily cost, KPI ranking, finalised defaults
 node src/optimiser/layover.test.js      # parking / connection arithmetic
 node src/optimiser/fleetCost.test.js    # shared-bus costing invariant
 ```

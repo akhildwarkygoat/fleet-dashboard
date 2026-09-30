@@ -21,6 +21,9 @@ Thumbs.db
 # ERP username + password for /api/login — same rule. The dev server and refresh_routes.sh
 # read this; it is never sent to the browser, so the password stays off every dashboard machine.
 .erp_key
+# Shared key for the bus attendance app's GPS km feed ({"url", "key"}), same rule: read by the dev
+# server only. `npm run fleet:link` in the bus attendance repo writes it.
+.bus_key
 
 # ERP-derived data — contains employee PII (names + home GPS + attendance).
 # NEVER commit to a public repo. Regenerate locally with the build_*.py scripts.
