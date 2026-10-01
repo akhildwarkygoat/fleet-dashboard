@@ -8,7 +8,7 @@
 import React, { useState } from "react";
 import { ArrowDown, ArrowUp, Info } from "lucide-react";
 import { visibleKpis } from "../../../../optimiser/kpiPrefs.js";
-import { Aura, Button, CentreCard, Eyebrow, IconButton, Unit, cx } from "../../../ui.jsx";
+import { Aura, Button, CentreCard, Eyebrow, IconButton, Tile, Tiles, Unit, cx } from "../../../ui.jsx";
 import { count, kms, money, money1, percent, plural } from "../../../format.js";
 import { Count, Fact, Facts } from "../../bus/parts.jsx";
 import { HEALTH, utilHealth } from "../../../health.js";
@@ -145,20 +145,30 @@ function Hero({ f, dir, note, scope, onRank, onHow }) {
         className="absolute inset-0 rounded-hero focus-visible:outline-offset-[-4px]" />
       <IconButton label="How cost per head is worked out" icon={Info} variant="ghost" size="sm" onClick={onHow}
         className="absolute right-3 top-3 z-[1] sm:right-4 sm:top-4" />
-      <div className="pointer-events-none relative">
-        <Eyebrow className="flex items-center gap-1">Cost per head{dir && <Arrow dir={dir} />}</Eyebrow>
-        <p className="mt-3 text-[64px] font-bold leading-none tracking-[-0.03em] tabular-nums text-ink">
-          <Count value={m.cost_head} format={money1} /><Unit className="!text-[17px]">a day</Unit>
-        </p>
-        <p className="mt-4 text-[15px] text-ink-2">
-          <b className="font-semibold text-ink">{money(m.cost)}</b> a day for {plural(m.buses, "bus", "buses")}
-        </p>
-        <div className="mt-1 space-y-1 text-[13px] text-ink-3">
-          <p>{money(month)} a head a month · {wd} working days</p>
-          {split.length > 1 && <p>{split.join(" · ")} a day</p>}
-          {note && <p>{note}</p>}
-          <p>{scope}</p>
+      {/* Below xl the hero has the whole row: the breakdown sits beside the number as labelled tiles
+          instead of leaving the right half empty. From xl it shares the row, so it reads as lines. */}
+      <div className="pointer-events-none relative flex flex-col gap-x-10 gap-y-5 sm:flex-row xl:flex-col">
+        <div className="min-w-0 shrink-0">
+          <Eyebrow className="flex items-center gap-1">Cost per head{dir && <Arrow dir={dir} />}</Eyebrow>
+          <p className="mt-3 text-[64px] font-bold leading-none tracking-[-0.03em] tabular-nums text-ink">
+            <Count value={m.cost_head} format={money1} /><Unit className="!text-[17px]">a day</Unit>
+          </p>
+          <p className="mt-4 text-[15px] text-ink-2">
+            <b className="font-semibold text-ink">{money(m.cost)}</b> a day for {plural(m.buses, "bus", "buses")}
+          </p>
+          <div className="mt-1 space-y-1 text-[13px] text-ink-3">
+            <p className="sm:hidden xl:block">{money(month)} a head a month · {wd} working days</p>
+            {split.length > 1 && <p className="sm:hidden xl:block">{split.join(" · ")} a day</p>}
+            {note && <p>{note}</p>}
+            <p>{scope}</p>
+          </div>
         </div>
+        <Tiles className="hidden min-w-0 flex-1 grid-cols-2 content-center sm:grid xl:hidden">
+          <Tile label={`A head a month · ${wd} working days`} value={money(month)} />
+          <Tile label="Buses" value={count(m.buses)} />
+          {ow.buses > 0 && <Tile label={`Owned a day · ${plural(ow.buses, "bus", "buses")}`} value={money(ow.cost)} />}
+          {rt.buses > 0 && <Tile label={`Rental a day · ${plural(rt.buses, "bus", "buses")}`} value={money(rt.cost)} />}
+        </Tiles>
       </div>
     </section>
   );

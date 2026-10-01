@@ -3,11 +3,11 @@
    hidden, and stops are added to the selected bus by selecting them on the map. On a phone the
    panels sit under the map instead, and full screen scrolls down to them. */
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, BarChart3, Bus, Download, Maximize2, Minimize2, RotateCcw, Save, Scan, Sunrise, Sunset, Undo2, Redo2 } from "lucide-react";
+import { ArrowLeft, BarChart3, Bus, CircleCheck, Download, Maximize2, Minimize2, RotateCcw, Save, Scan, Sunrise, Sunset, Undo2, Redo2 } from "lucide-react";
 import GMap, { FIXED_SHIFT_COLOR, INFERRED_SLOT_COLOR } from "../../../../optimiser/GMap.jsx";
 import { UNADDED, usePlanBoard } from "../../../../optimiser/plannerState.js";
 import { NT } from "../../../legacyTheme.js";
-import { Alert, Button, Chip, IconButton, Input, cx } from "../../../ui.jsx";
+import { Alert, Button, Chip, IconButton, Input, Tag, cx } from "../../../ui.jsx";
 import { count, money, plural } from "../../../format.js";
 import { GlassButton, GlassNote } from "../shell/MapStage.jsx";
 import BusPanel from "./BusPanel.jsx";
@@ -71,7 +71,8 @@ function Legend({ board }) {
 
 export default function Editor({ hub, toast }) {
   const { editor, fleet, depot, stopsById, totalRiders, demandOf, period, setPeriod, svcId, endPrefs, setEndPrefs, draftName,
-    setDraftName, current, drafts, backToGallery, save, exportJson, clearBoard, estimated, droppedRoutes, droppedRiders, droppedCost } = hub;
+    setDraftName, current, drafts, backToGallery, save, saveAndFinalise, finalised, exportJson, clearBoard, estimated, droppedRoutes, droppedRiders, droppedCost } = hub;
+  const isFinal = !!(current && finalised && finalised.draftId === current.id);
   const list = useRef(null);
   const flip = useFlip(list);
   const board = usePlanBoard({ editor, fleet, depot, stopsById, totalRiders, demandOf, toast, period, svcId,
@@ -144,7 +145,10 @@ export default function Editor({ hub, toast }) {
             <IconButton label="Redo" icon={Redo2} variant="ghost" onClick={editor.redo} disabled={!editor.canRedo} />
             <ClearBoard onClear={clearBoard} />
             <Button variant="white" icon={Download} onClick={exportJson}>Export plan file</Button>
-            <Button variant="primary" icon={Save} onClick={save}>Save</Button>
+            <Button variant="secondary" icon={Save} onClick={() => save()}>Save</Button>
+            {isFinal
+              ? <Tag tone="ok" icon={CircleCheck} title="This plan is the one this service runs. Save keeps it up to date.">Finalised</Tag>
+              : <Button variant="primary" icon={CircleCheck} onClick={saveAndFinalise} title="Save this plan and make it the one this service runs">Finalise</Button>}
           </div>
         </div>
 
@@ -174,7 +178,7 @@ export default function Editor({ hub, toast }) {
               <GlassButton aria-label="Redo" title="Redo" icon={Redo2} onClick={editor.redo} disabled={!editor.canRedo}
                 className="w-9 justify-center !px-0 disabled:opacity-40" />
               {direction(true)}
-              <GlassButton icon={Save} onClick={save}>Save</GlassButton>
+              <GlassButton icon={Save} onClick={() => save()}>Save</GlassButton>
             </div>
           )}
           {desk && showFigures && (

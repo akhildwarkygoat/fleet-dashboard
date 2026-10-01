@@ -343,11 +343,27 @@ export function usePlanHub({ toast, erpBuses, svc, svcStops, keep }) {
   };
 
   // ---- editor actions ----
-  const save = () => {
+  /* Saving the finalised draft re-captures its body too, so the costs never run on an old copy. */
+  const save = ({ quiet = false } = {}) => {
     const id = store.savePlanDraft({ id: current && current.id, name: draftName, assignments: editor.assign, meta: meta(), svc: svcId });
     const name = (draftName || "").trim() || "Untitled plan";
     setCurrent({ id, name }); setDraftName(name); setDrafts(store.listPlanDrafts(svcId));
-    toast && toast("Plan saved");
+    if (svc && resolveFinalised(svc).draftId === id) {
+      const d = store.getPlanDraft(id), body = d ? scoreDraft(d) : null;
+      if (body) { setFinalised(svc.id, { kind: "draft", id, name, body }); setFinal(resolveFinalised(svc)); }
+    }
+    if (!quiet) toast && toast("Plan saved");
+    return { id, name };
+  };
+  /* Save the plan on the board and make it the one this service runs, in one step. */
+  const saveAndFinalise = () => {
+    if (!svc) return;
+    const { id, name } = save({ quiet: true });
+    const d = store.getPlanDraft(id), body = d ? scoreDraft(d) : null;
+    if (!body) { toast && toast("Plan saved, but it could not be scored to finalise. Add a stop to a bus and try again."); return; }
+    setFinalised(svc.id, { kind: "draft", id, name, body });
+    setFinal(resolveFinalised(svc));
+    toast && toast(`Saved and finalised "${name}" for ${svc.name} · ${body.overall.buses} buses · ₹${body.overall.cost_head}/head`);
   };
   const backToGallery = () => { setDrafts(store.listPlanDrafts(svcId)); setView("gallery"); };
   const reset = () => { setImportedPlan(null); setSeed(new Map(EMPTY)); };
@@ -367,7 +383,7 @@ export function usePlanHub({ toast, erpBuses, svc, svcStops, keep }) {
     depot, svcId, planSource, planLabel, planKind, solver, solverLoaded, fleet, prevRoutes, allStops, stopsById, demandOf,
     totalRiders, busColor, ready, estimated, view, period, setPeriod, drafts, finalised, finalise, current, draftName,
     setDraftName, endPrefs, setEndPrefs, editor, draftBodies, droppedRoutes, droppedRiders, droppedCost,
-    openDraft, newBlank, importPlan, deleteDraft, importPrevRoutes, importFromFile, save, backToGallery, clearBoard,
+    openDraft, newBlank, importPlan, deleteDraft, importPrevRoutes, importFromFile, save, saveAndFinalise, backToGallery, clearBoard,
     exportJson,
   };
 }

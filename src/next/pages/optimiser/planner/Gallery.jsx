@@ -204,7 +204,7 @@ export default function Gallery({ hub, svc }) {
         { label: "Buses", value: ov ? count(ov.buses) : count(solver.routes.length) },
         { label: "Cost / head", value: ov ? money1(ov.cost_head) : DASH },
       ]}
-      footer={<span className="px-1 text-[13px] text-ink-3">Opens a copy to edit</span>} />
+      footer={<span className="px-1 text-[13px] text-ink-3">Open a copy, edit it, then press Finalise</span>} />
   );
 
   return (
