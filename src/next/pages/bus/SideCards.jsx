@@ -7,6 +7,9 @@ import { bandFor, busStopRiders, driverPatch, evalFormula, fmtFormula, sortedBan
 import { Button, Card, CardTitle, CentreCard, DataTable, Empty, Eyebrow, Field, Input, Search, Tile, Tiles, cx, tdCls, thCls, trCls } from "../../ui.jsx";
 import { DASH, count, day, duration, kms, plural, squash } from "../../format.js";
 import { Fact, Facts, HeadCount, Missing, useFocusBack, useKept } from "./parts.jsx";
+import { SERVICES } from "../../../optimiser/services.js";
+
+const serviceName = (id) => (SERVICES.find((x) => x.id === id) || { name: id }).name;
 
 const PLAN_IT = "Plan the route in the Optimiser";
 const NotPlanned = () => <Missing title={PLAN_IT}>Not planned yet</Missing>;
@@ -32,6 +35,12 @@ export function BusDriverCard({ bus, hired, info, onSave }) {
         <Fact label="Route" title={stops && bus.route !== RUN_OPTIMISER ? bus.route : undefined}>
           {stops ? `${kms(bus.planKm)} km · ${plural(stops, "stop", "stops")}` : <NotPlanned />}
         </Fact>
+        {/* a bus on more than one shift: its day is every run added up, and that is what its km falls back to */}
+        {bus.planRuns && bus.planRuns.length > 1 && (
+          <Fact label="Runs a day" title={bus.planRuns.map((r) => `${serviceName(r.service)} · ${kms(r.km)} km`).join("\n")}>
+            {`${bus.planRuns.length} runs · ${kms(bus.planDayKm)} km`}
+          </Fact>
+        )}
         {!hired && <Fact label="Mileage">{+bus.mileage > 0 ? `${kms(+bus.mileage)} km/L` : <Missing>Not in the ERP</Missing>}</Fact>}
       </Facts>
 

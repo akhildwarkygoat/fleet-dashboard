@@ -1,8 +1,8 @@
 {
-  "_comment": "The plan each fixed-hour service runs when nobody has finalised one in this browser. Ships with the app, so every machine starts on the transport manager's finalised plans without importing anything. A choice finalised in a browser still wins there; Revert returns to this. The three Rotational slots are not listed on purpose: they follow src/rotation.json, the manager's nine group plans stepping one clock every Monday. Set 2026-09-30 from the Planner exports in Documents/Projects_Summer/Plans.",
+  "_comment": "The plan each fixed-hour service runs when nobody has finalised one in this browser. Ships with the app, so every machine starts on the transport manager's finalised plans without importing anything. A choice finalised in a browser still wins there; Revert returns to this. The three Rotational slots are not listed on purpose: they follow src/rotation.json, the manager's nine group plans stepping one clock every Monday. Set 2026-09-30 from the Planner exports in Documents/Projects_Summer/Plans; checked 2026-10-01 against 9 am final, 7am Shift and Subulapuram Unit (identical).",
   "set": "2026-09-30",
   "services": {
-    "s9": { "name": "Finalised_plan_Done", "file": "/finalised_plan.json", "from": "Plans/Finalised_plan_Done.json" },
+    "s9": { "name": "9 am final", "file": "/finalised_plan.json", "from": "Plans/9 am final.json" },
     "s7": { "name": "7am Shift", "file": "/plans/final/7am-shift.json", "from": "Plans/7am Shift.json" },
     "zen": { "name": "Subulapuram Unit", "file": "/plans/final/subulapuram-unit.json", "from": "Plans/Subulapuram Unit.json" }
   }

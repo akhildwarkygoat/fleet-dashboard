@@ -10,6 +10,9 @@ import { serviceIdFor, SERVICES } from "./optimiser/services.js";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
 import { fetchErpRaw, fetchErpCostRaw, fetchErpDieselRaw, mapErpToDashboard, mapErpCosts, mapErpDiesel, canonVehicle, vehKey, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 import { indexGps, priceOn, kmOn, dieselOn, variableCost, MAX_SPREAD_DAYS, RECENT_DAYS, LOW_GPS_SHARE } from "./dailyCost.js";
+import { loadPlanWeeks, planDayOf } from "./planRuns.js";
+import { planSourceForWeek, FINALISED_EVENT } from "./optimiser/finalisedPlans.js";
+import { mondayOf } from "./optimiser/rotation.js";
 import { fetchBusKm } from "./busApp.js";
 import { COST_TYPES, COST_TYPE_MAP, COST_PERIODS, perDay, lineDaily, profileDailySpend, profileDailyBudget } from "./costModel.js";
 import {
@@ -139,27 +142,36 @@ function mergeCostsIntoRecords(records, buses, attendance, busCosts, wd, run = {
   return [...byKey.values()];
 }
 
-/* ---- finalised route plan (public/finalised_plan.json) ----
-   The approved plan gives each bus its route: km/day, stops, riders, ride time. Its own cost
-   model was a fixed ₹1,934/day plus diesel at ₹100/L on its route km, and the slab tariff for
+/* ---- the plans in force (planRuns.js) ----
+   Every service's plan, the built-in default or whatever was finalised (the Rotational slots on
+   each week's group plan), gives each bus its runs: km/day, stops, riders, ride time. Their own
+   cost model was a fixed ₹1,934/day plus diesel at ₹100/L on route km, and the slab tariff for
    rentals. Here the assumed fixed part is REPLACED by the bus's real standing costs from the ERP
-   costing feed, and the km part is worked out per day (dailyCost.js): the plan's route km is only
-   the fallback for a day the bus attendance app did not record, and a rental keeps the plan's own
-   tariff figure on those days. */
+   costing feed, and the km part is worked out per day (dailyCost.js): the planned runs' km, all of
+   them added up, is only the fallback for a day the bus attendance app did not record, and a rental
+   keeps the plans' own hire on those days. */
 /* Bumped whenever a cost profile gains fields the card relies on. A profile stored under an
    older shape still renders, but a background resync is kicked off so the new fields arrive
    without the user having to press Resync. */
 const COST_SHAPE = 3;                 // 2 = per-line `detail` rows · 3 = financial-year window (was trailing 12 months)
 
-/* The plan's route onto each routed bus: summary, stops and the km/tariff dailyCost.js falls back to. */
-function withPlanRoutes(buses, planByVeh) {
-  if (!planByVeh || !planByVeh.size) return buses;
+/* The plans in force onto each bus: its planned day for every week loaded (planWeeks, which
+   dailyCost.js falls back to), and this week's runs for the route summary and stops. The summary
+   and stops are the first run's (9 am first, as services.js lists them); a bus that runs more than
+   once says how many runs and the day's km. */
+function withPlanRoutes(buses, planWeeks, thisWeek) {
+  if (!planWeeks) return buses;
+  const now = planWeeks[thisWeek];
   return buses.map((b) => {
-    const r = planByVeh.get(b.id);
-    if (!r) return b;
-    return { ...b, planKm: +r.km || 0, planType: r.type, planCost: r.type === "rent" ? +r.cost || 0 : null,
-      planStops: r.seq || [], planRide: r.ride, planRiders: r.riders,
-      route: `${r.stops} stops · ${r.km} km · ${r.ride} min ride` };
+    const weeks = {};
+    const key = vehKey(b.id);
+    for (const [w, day] of Object.entries(planWeeks)) weeks[w] = planDayOf(day.get(key));
+    const v = now && now.get(key);
+    if (!v) return { ...b, planWeeks: weeks };
+    const first = v.runs[0], dayKm = planDayOf(v).km;
+    return { ...b, planWeeks: weeks, planKm: first.km, planType: v.type, planCost: v.cost,
+      planStops: first.stops, planRide: first.ride, planRiders: first.riders, planRuns: v.runs, planDayKm: dayKm,
+      route: v.runs.length > 1 ? `${v.runs.length} runs · ${dayKm} km a day` : `${first.stops.length} stops · ${first.km} km · ${first.ride} min ride` };
   });
 }
 
@@ -2660,7 +2672,8 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   const gpsQuietUntil = useRef(0);                        // polls pause while only a restart or setup can help
   const [diesel, setDiesel] = useState(null);             // mapErpDiesel(...) — { issues, prices, meta }
   const [dieselStatus, setDieselStatus] = useState({ phase: "idle", at: null, msg: "" });
-  const [plan, setPlan] = useState(null);                 // finalised route plan (static asset)
+  const [planWeeks, setPlanWeeks] = useState(null);       // { monday → Map(vehicle → planned day) }, planRuns.js
+  const [planTick, setPlanTick] = useState(0);            // bumped when a finalised choice changes
   const [ledger, setLedger] = useState([]);              // allotted / received entries (not in the ERP)
   const [busInfo, setBusInfo] = useState({});             // vehicle -> { driver, phone, budgetAmount, budgetPeriod }
   const [formulas, setFormulas] = useState([]);
@@ -2739,15 +2752,28 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   useEffect(() => { if (loaded) Store.set("busInfo", busInfo); }, [busInfo, loaded]);
   useEffect(() => { if (loaded) Store.set("costLedger", ledger); }, [ledger, loaded]);
 
-  /* `plan` is the 9 am finalised plan only — it gives each bus its route, whose km and tariff stand
-     in on a day the bus attendance app did not record; a bus shared between services would
-     otherwise have one service's route silently overwrite another's. */
+  /* The plans in force, for every week the dashboard can show a day from: the last six weeks and
+     every day the punch feed carries. Re-read when a plan is finalised or reverted anywhere in the
+     app (FINALISED_EVENT), so the costs follow the choice at once. */
   useEffect(() => {
-    fetch("/finalised_plan.json")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((p) => { if (p && Array.isArray(p.routes)) setPlan(p); })
-      .catch(() => {});   // no plan file → dashboard runs exactly as before
+    const bump = () => setPlanTick((n) => n + 1);
+    window.addEventListener(FINALISED_EVENT, bump);
+    return () => window.removeEventListener(FINALISED_EVENT, bump);
   }, []);
+  const thisWeek = mondayOf(new Date());
+  const planWeekKey = useMemo(() => {
+    const weeks = new Set(Object.keys(attendance || {}).map(mondayOf));
+    for (let i = 0; i <= 6; i++) weeks.add(mondayOf(addDaysIso(localIso(), -7 * i)));
+    return [...weeks].filter(Boolean).sort().join(",");
+  }, [attendance]);
+  useEffect(() => {
+    let live = true;
+    const fetchJson = (url) => fetch(url).then((r) => (r.ok ? r.json() : null));
+    loadPlanWeeks(planWeekKey.split(","), SERVICES, planSourceForWeek, fetchJson)
+      .then((w) => { if (live) setPlanWeeks(w); })
+      .catch(() => {});   // no plan files → costs run on GPS km alone, as before any plan existed
+    return () => { live = false; };
+  }, [planWeekKey, planTick]);
   /* Per-SERVICE roll-up, DERIVED from the synced employees rather than captured during the
      sync: on a day that is already synced the stored snapshot is served and syncErp never
      runs, so anything captured only at sync time would be missing and every service would
@@ -2776,19 +2802,15 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
     return out;
   }, [employees, attendance, buses, erpShiftDate]);
 
-  const planByVeh = useMemo(() => {
-    const m = new Map();
-    (plan ? plan.routes : []).forEach((r) => m.set(canonVehicle(r.name), r));
-    return m;
-  }, [plan]);
+  const planByVeh = useMemo(() => (planWeeks && planWeeks[thisWeek]) || new Map(), [planWeeks, thisWeek]);
 
   // records the tabs actually read: each bus's ERP standing costs plus that day's km-variable cost,
   // both ways (mergeCostsIntoRecords). Buses first pick up their finalised-plan route, whose km and
   // tariff stand in on a day the bus attendance app did not record.
   const wd = effWorkingDays(settings);
   const { buses: effBuses, profiles: busCosts } = useMemo(
-    () => applyBusInfo(withPlanRoutes(buses, planByVeh), costProfiles, busInfo),
-    [buses, costProfiles, planByVeh, busInfo]);
+    () => applyBusInfo(withPlanRoutes(buses, planWeeks, thisWeek), costProfiles, busInfo),
+    [buses, costProfiles, planWeeks, thisWeek, busInfo]);
   const setBusField = useCallback((busId, patch) =>
     setBusInfo((prev) => ({ ...prev, [busId]: { ...prev[busId], ...patch } })), []);
   const gpsIdx = useMemo(() => (gpsFeed ? indexGps(gpsFeed.days) : null), [gpsFeed]);
@@ -2977,7 +2999,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   }, [loaded, settings.erpAuto, settings.erpRefreshMin, syncErp, syncCosts, syncDiesel]);
 
   return {
-    loaded, buses, employees, attendance, records, rotaHistory, plan, planByVeh, ledger, setLedger,
+    loaded, buses, employees, attendance, records, rotaHistory, planWeeks, planByVeh, ledger, setLedger,
     busInfo, setBusField, formulas, setFormulas, variables, setVariables, settings, setSettings,
     costProfiles, costMeta, costStatus, syncCosts, diesel, dieselStatus, syncDiesel,
     gpsFeed, gpsStatus, syncGps, gpsIdx, run, erpStatus, syncErp, erpShiftDate, erpRoll,

@@ -43,6 +43,8 @@ import { planUrlFor as rotationPlanUrl, describeSlot, groupOnSlot, getRotaWeek }
 import BUILT_IN from "../finalisedDefaults.json" with { type: "json" };
 
 const KEY = "opt-finalised";
+/** Fired on window whenever a finalised choice changes, so costs re-read the plans in force. */
+export const FINALISED_EVENT = "fleet:finalised";
 
 /* The Sep-2 "batch 1 of 3" files. They were cut on the PREVIOUS week's roster, so their
    "Day" file carried the group that is on Full night today; they are gone from public/.
@@ -68,6 +70,7 @@ export function getFinalised() {
 
 function write(map) {
   try { localStorage.setItem(KEY, JSON.stringify(map)); } catch { /* quota */ }
+  if (typeof window !== "undefined" && typeof Event === "function") window.dispatchEvent(new Event(FINALISED_EVENT));
   return map;
 }
 
@@ -143,6 +146,22 @@ export function resolveFinalised(svc) {
     return { kind: "plan", file: ref.file, name: ref.name || "Finalised", isDefault: false };
   }
   return baselineFor(svc);
+}
+
+/**
+ * Where a service's plan comes from in a given week: { body } for a finalised draft, { file }
+ * otherwise, null for none. A Rotational slot with no manual choice takes the group plan for
+ * THAT week, not the week the dashboard is showing, so a past day is costed on the plans that
+ * ran then (planRuns.js).
+ */
+export function planSourceForWeek(svc, week) {
+  const r = resolveFinalised(svc);
+  if (r.kind === "rotation") {
+    const file = rotationPlanUrl(svc.slot, week);
+    return file ? { file } : null;
+  }
+  if (r.kind === "draft") return { body: r.body };
+  return r.file ? { file: r.file } : null;
 }
 
 /**

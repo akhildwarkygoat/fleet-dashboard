@@ -20,6 +20,7 @@
  * ==========================================================================*/
 import { rentTariff } from "./optimiser/engine.js";
 import { vehKey } from "./erp.js";
+import { mondayOf } from "./optimiser/rotation.js";
 
 export const DIESEL_PER_LITRE = 100;    // Rs/L on a day the ERP gives no price: the plan editor's figure
 export const FALLBACK_KMPL = 100 / 18;  // km/L for a bus with no ERP mileage: the editor's Rs18/km template
@@ -45,24 +46,42 @@ export function priceOn(prices, date) {
   return best;
 }
 
+const NO_PLAN = { km: 0, cost: null, type: undefined };
+
+/**
+ * The plan that stands in for a bus on `date`: { km, cost, type }. When the plans in force were
+ * loaded for that week (bus.planWeeks, planRuns.js) it is every run the bus makes that week added
+ * up, or nothing if it has none; otherwise the bus's own plan fields.
+ */
+export function planOn(bus, date) {
+  const weeks = bus.planWeeks;
+  if (weeks) {
+    const w = mondayOf(date);
+    if (w in weeks) return weeks[w] || NO_PLAN;
+  }
+  return { km: +bus.planKm || 0, cost: bus.planCost == null ? null : +bus.planCost, type: bus.planType };
+}
+
 /**
  * The km a bus drove on `date`, and where the figure comes from:
  *   source "gps"   the bus attendance app recorded the day (its journeys, summed)
- *          "plan"  nothing recorded: the finalised plan's route km stands in
+ *          "plan"  nothing recorded: the planned runs' km stands in (planOn)
  *          null    neither
  * `inProgress` — today, or a journey still recording: the km will grow.
  * `partial`    — a finished day whose GPS km is well under plan: a trip probably went unrecorded.
+ * `plan`       — the plan the day was measured against.
  */
 export function kmOn(bus, date, gpsIdx, today) {
-  const planKm = +bus.planKm || 0;
+  const plan = planOn(bus, date);
+  const planKm = +plan.km || 0;
   const gps = gpsIdx ? gpsIdx.get(vehKey(bus.id) + "|" + date) : null;
   if (gps) {
     const km = +gps.km || 0;
     const inProgress = gps.active > 0 || (!!today && date >= today);
-    return { km, source: "gps", gps, planKm, inProgress, partial: !inProgress && planKm > 0 && km < LOW_GPS_SHARE * planKm };
+    return { km, source: "gps", gps, planKm, plan, inProgress, partial: !inProgress && planKm > 0 && km < LOW_GPS_SHARE * planKm };
   }
-  if (planKm) return { km: planKm, source: "plan", gps: null, planKm, inProgress: false, partial: false };
-  return { km: 0, source: null, gps: null, planKm, inProgress: false, partial: false };
+  if (planKm) return { km: planKm, source: "plan", gps: null, planKm, plan, inProgress: false, partial: false };
+  return { km: 0, source: null, gps: null, planKm, plan, inProgress: false, partial: false };
 }
 
 /* The days issue k refilled: from the day after the issue before it (at most MAX_SPREAD_DAYS
@@ -108,7 +127,7 @@ export function dieselOn(issues, date) {
 
 /**
  * A bus's km-variable cost on one day, both ways.
- * @param bus    { id, type, mileage, planKm, planType, planCost } — plan fields from the finalised plan
+ * @param bus    { id, type, mileage, planType } — planType from the plan it runs this week
  * @param day    kmOn(...)
  * @param diesel dieselOn(...) for this bus, or null when the diesel feed is not loaded
  * @param price  priceOn(...) for the day, or null
@@ -119,7 +138,8 @@ export function variableCost(bus, day, diesel, price) {
   if (hired) {
     if (!day.source) return { hired, byKm: null, byDiesel: null };
     // a plan day keeps the plan's own tariff figure; a GPS day prices the tariff on the km driven
-    const amount = day.source === "plan" && bus.planCost != null ? +bus.planCost : rentTariff(day.km);
+    const planCost = day.plan ? day.plan.cost : bus.planCost;
+    const amount = day.source === "plan" && planCost != null ? +planCost : rentTariff(day.km);
     const hire = { kind: "hire", amount, km: day.km, kmSource: day.source };
     return { hired, byKm: hire, byDiesel: hire };
   }
