@@ -43,6 +43,8 @@ const SLOT_SHIFTS = new Set(SERVICES.filter((s) => s.erpSlot && s.erpShift).map(
 gsap.registerPlugin(useGSAP, MotionPathPlugin);
 
 /* ============================ THEME ============================ */
+/* Light only (Akhil, 2026-10-01): the dark and neutral themes are gone. `t.dark` stays false so the
+   few dark-aware styles below simply never switch. */
 const THEMES = {
   light: {
     name: "light", label: "Light", dark: false, bg: "#eef2f7", surface: "#ffffff", surface2: "#f8fafc", raised: "#f1f5f9",
@@ -55,28 +57,6 @@ const THEMES = {
     gainup: "#0e7490", techno: "#7c3aed", zenwear: "#be1250",
     goodSoft: "rgba(4,120,87,.10)", watchSoft: "rgba(180,83,9,.12)", poorSoft: "rgba(190,18,60,.10)",
     grid: "#e8edf4", inputBg: "#f8fafc",
-  },
-  // Dark — Cool Grey neutrals + Blue (Vivid) primary, with palette semantic colours.
-  dark: {
-    name: "dark", label: "Dark", dark: true, bg: "#1a222c", surface: "#222e3a", surface2: "#2b3846", raised: "#374553",
-    border: "#3a4a59", text: "#f5f7fa", muted: "#9aa5b1", faint: "#616e7c",
-    primary: "#2186eb", primarySoft: "rgba(33,134,235,.18)", onPrimary: "#ffffff", primaryStrong: "#1c74cf",
-    good: "#3ebd93", watch: "#f7d070", poor: "#f87171",
-    gainup: "#2cb1bc", techno: "#8888fc", zenwear: "#f2648c",
-    goodSoft: "rgba(62,189,147,.14)", watchSoft: "rgba(247,208,112,.14)", poorSoft: "rgba(248,113,113,.16)",
-    grid: "#2b3846", inputBg: "#151d26",
-  },
-  // Neutral — light, low-chroma Cool Grey neutrals with a slate primary and muted semantic colours.
-  neutral: {
-    name: "neutral", label: "Neutral", dark: false, bg: "#eceff3", surface: "#ffffff", surface2: "#f5f7fa", raised: "#e4e7eb",
-    border: "#cbd2d9", text: "#1f2933", muted: "#616e7c", faint: "#9aa5b1",
-    // same blue identity as light/dark, pulled down in chroma — neutral is a quieter
-    // surface treatment of one brand, not a second brand
-    primary: "#3d6b99", primarySoft: "rgba(61,107,153,.12)", onPrimary: "#ffffff", primaryStrong: "#2f5679",
-    good: "#0f7a5f", watch: "#8d6a1a", poor: "#ba2525",
-    gainup: "#146b7d", techno: "#4c63b6", zenwear: "#a8325a",
-    goodSoft: "rgba(15,122,95,.10)", watchSoft: "rgba(141,106,26,.12)", poorSoft: "rgba(186,37,37,.10)",
-    grid: "#e6e9ed", inputBg: "#f5f7fa",
   },
 };
 
@@ -2452,26 +2432,6 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
   const saveKey = (val) => { setGoogleKey(val); toast(val ? "Google key saved — reloading" : "Using built-in key — reloading"); setTimeout(() => window.location.reload(), 700); };
   return (
     <div className="space-y-4">
-      <Card t={t} title="Appearance" hint="Pick a theme for the whole dashboard. It applies instantly and is saved automatically.">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {Object.values(THEMES).map((th) => {
-            const on = themeName === th.name;
-            return (
-              <button key={th.name} data-fx="swatch" onMouseDown={fxPress} onMouseEnter={fxLift} onMouseLeave={fxDrop} onClick={() => setThemeName(th.name)} className="rounded-xl p-3 text-left transition-colors"
-                style={{ background: th.surface, border: "2px solid " + (on ? t.primary : th.border), boxShadow: on ? `0 0 0 3px ${t.primarySoft}` : "none" }}>
-                <div className="flex items-center gap-1.5 mb-2">
-                  {[th.primary, th.good, th.watch, th.poor].map((c, i) => (
-                    <span key={i} className="w-4 h-4 rounded-full" style={{ background: c, border: "1px solid rgba(255,255,255,.18)" }} />
-                  ))}
-                </div>
-                <div className="text-sm font-semibold" style={{ color: th.text }}>{th.label || th.name}</div>
-                <div className="text-xs mt-0.5" style={{ color: on ? th.primary : th.muted }}>{on ? "● Active" : "Tap to use"}</div>
-              </button>
-            );
-          })}
-        </div>
-      </Card>
-
       <Card t={t} title="Google Maps API key" hint="Required for the map + road distances. Paste the Google Maps key you were given, then Save — the page reloads to apply it. It's stored only in your browser, never in the code.">
         <div className="flex flex-wrap items-end gap-3">
           <div style={{ flex: 1, minWidth: 280 }}>
