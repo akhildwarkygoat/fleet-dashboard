@@ -37,23 +37,30 @@ import {
   downloadTI, importTI, quotaUse, STATUS, ON_TIME_MIN,
 } from "./trackImpl.js";
 
-const WINDOWS = [["7", "7 days"], ["14", "14 days"], ["30", "30 days"], ["90", "3 months"], ["180", "6 months"]];
+export const WINDOWS = [["7", "7 days"], ["14", "14 days"], ["30", "30 days"], ["90", "3 months"], ["180", "6 months"]];
 /* A six-month window is 180 rows. The chart takes them; a table of 180 does not earn its
    scroll, so it is capped and the cap is STATED — a silently truncated table reads as
    "that is all there is". */
-const TABLE_ROWS = 60;
+export const TABLE_ROWS = 60;
 
 /** Signed minutes as a human string. Sign is meaning here, so it is never dropped. */
 const mins = (v) => (v == null ? "—" : v === 0 ? "on time" : `${v > 0 ? "+" : ""}${v} min`);
 
-export default function TrackImplView({ t, toast, svc }) {
+/* The board's colour rules, shared with the new look (src/next/pages/optimiser/TrackBoard.jsx). */
+export const VERY_LATE_MIN = 20;
+export const ON_TIME_TARGET = 80;
+export const LOW_COVERAGE = 50;
+/** "good" within the on-time tolerance, "poor" past VERY_LATE_MIN either way, "watch" between. */
+export const lateTone = (v) => (onTime(v) ? "good" : Math.abs(v) > VERY_LATE_MIN ? "poor" : "watch");
+
+/* Everything the board knows and does, apart from how it looks: the plans it marks against, the
+   runs they expect, the day, the trend, the per-bus roll-up and every write. The new look
+   (src/next/pages/optimiser/TrackBoard.jsx) calls this same hook. The day, the window and the
+   search are the caller's state; `confirmRest(ask)` asks `ask(left, svcs)` before a large bulk mark. */
+export function useTrackImpl({ svc, toast, date, win, q }) {
   const scoped = svc && !svc.overall ? [svc] : SERVICES;
-  const [date, setDate] = useState(() => fmtISO(new Date()));
   const [ti, setTi] = useState(getTI);
   const [plans, setPlans] = useState({});          // svcId -> plan body (or null once resolved)
-  const [win, setWin] = useState("14");
-  const [q, setQ] = useState("");
-  const [tab, setTab] = useState("today");
 
   /* The finalised plan is the thing being marked, so it is resolved the same way every
      other board resolves it. A draft's scored BODY is stored on the ref at finalise time,
@@ -152,15 +159,11 @@ export default function TrackImplView({ t, toast, svc }) {
          the button says "rest", and it used to mean "rest of what you can currently see";
        - past a handful it asks first, because in Overall mode this is 260 records across six
          services with no undo. */
-  const confirmRest = () => {
+  const confirmRest = (ask) => {
     const left = expected.filter((r) => !getEntry(date, r.svcId, r.veh, r.dir, ti));
     if (!left.length) { toast && toast("Every run on this day is already recorded"); return; }
     const svcs = [...new Set(left.map((r) => r.svc.name))];
-    if (left.length > 20 && !window.confirm(
-      `Mark ${left.length} runs across ${svcs.length} service${svcs.length === 1 ? "" : "s"} ` +
-      `(${svcs.join(", ")}) as having run to plan on ${date}?\n\n` +
-      `This records that the day is accounted for. It does NOT record times, and does not ` +
-      `count toward the on-time figures.`)) return;
+    if (left.length > 20 && !ask(left, svcs)) return;
     try {
       /* One write at the end, not one per run — 260 full stringify-and-store passes made the
          click take seconds and each one could hit the quota separately. */
@@ -184,6 +187,32 @@ export default function TrackImplView({ t, toast, svc }) {
     () => scoped.map((s) => plans[s.id]).filter((p) => p && p.meta && p.meta.kind === "rotation").map((p) => p.meta.name),
     [plans, svc && svc.id]);                                       // eslint-disable-line
 
+  const clear = (run) => setTi({ ...deleteEntry(date, run.svcId, run.veh, run.dir, getTI()) });
+  const importFile = (f) => {
+    f.text().then((txt) => {
+      try { const r = importTI(JSON.parse(txt)); setTi(getTI());
+            toast && toast(`Merged: ${r.added} new, ${r.updated} updated, ${r.kept} kept`); }
+      catch (err) { toast && toast(err.message || "Not a T.I export"); }
+    });
+  };
+
+  return { scoped, ti, setTi, plans, expected, rows, day, dates, series, perBus, save, confirmRest, clear, importFile,
+           quota, noPlans, assumedSvcs, rotationPlans };
+}
+
+export default function TrackImplView({ t, toast, svc }) {
+  const [date, setDate] = useState(() => fmtISO(new Date()));
+  const [win, setWin] = useState("14");
+  const [q, setQ] = useState("");
+  const [tab, setTab] = useState("today");
+  const { expected, rows, day, series, perBus, save, confirmRest: markRest, clear, importFile,
+          quota, noPlans, assumedSvcs, rotationPlans } = useTrackImpl({ svc, toast, date, win, q });
+  const confirmRest = () => markRest((left, svcs) => window.confirm(
+    `Mark ${left.length} runs across ${svcs.length} service${svcs.length === 1 ? "" : "s"} ` +
+    `(${svcs.join(", ")}) as having run to plan on ${date}?\n\n` +
+    `This records that the day is accounted for. It does NOT record times, and does not ` +
+    `count toward the on-time figures.`));
+
   return (
     <div className="flex flex-col gap-4">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -199,7 +228,7 @@ export default function TrackImplView({ t, toast, svc }) {
           sub={day.pickup.asserted
             ? `${day.pickup.onTimeN} timed + ${day.pickup.asserted} asserted, within ${ON_TIME_MIN} min`
             : day.pickup.n ? `${day.pickup.onTimeN} of ${day.pickup.n} within ${ON_TIME_MIN} min` : `within ${ON_TIME_MIN} min`}
-          accent={day.pickup.onTimePct == null ? undefined : day.pickup.onTimePct >= 80 ? t.good : t.poor} />
+          accent={day.pickup.onTimePct == null ? undefined : day.pickup.onTimePct >= ON_TIME_TARGET ? t.good : t.poor} />
         <Tile t={t} label="Recorded" value={`${day.recorded}/${expected.length}`}
           sub={[day.bulk ? `${day.bulk} asserted, not timed` : "", day.notRun ? `${day.notRun} did not run` : ""]
             .filter(Boolean).join(" · ") || "runs on this day"}
@@ -262,11 +291,7 @@ export default function TrackImplView({ t, toast, svc }) {
                 <input type="file" accept="application/json" className="hidden" onChange={(e) => {
                   const f = e.target.files && e.target.files[0];
                   if (!f) return;
-                  f.text().then((txt) => {
-                    try { const r = importTI(JSON.parse(txt)); setTi(getTI());
-                          toast && toast(`Merged: ${r.added} new, ${r.updated} updated, ${r.kept} kept`); }
-                    catch (err) { toast && toast(err.message || "Not a T.I export"); }
-                  });
+                  importFile(f);
                   e.target.value = "";
                 }} />
               </label>
@@ -332,7 +357,7 @@ export default function TrackImplView({ t, toast, svc }) {
                   <tbody>
                     {rows.map(({ run, entry }) => (
                       <RunRow key={`${run.svcId}|${run.veh}|${run.dir}`} t={t} run={run} entry={entry} save={save} date={date}
-                        onClear={() => setTi({ ...deleteEntry(date, run.svcId, run.veh, run.dir, getTI()) })} />
+                        onClear={() => clear(run)} />
                     ))}
                   </tbody>
                 </table>
@@ -389,7 +414,7 @@ export default function TrackImplView({ t, toast, svc }) {
                         </td>
                         <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>
                           {s.recorded}/{s.expected}
-                          {s.coverage != null && <span className="text-xs ml-1" style={{ color: s.coverage < 50 ? t.watch : t.faint }}>{s.coverage}%</span>}
+                          {s.coverage != null && <span className="text-xs ml-1" style={{ color: s.coverage < LOW_COVERAGE ? t.watch : t.faint }}>{s.coverage}%</span>}
                         </td>
                         <td className="py-2 px-3 tabular-nums font-semibold"
                           style={{ color: s.pickup.medianEnd == null ? t.faint : onTime(s.pickup.medianEnd) ? t.good : t.watch }}>
@@ -451,7 +476,7 @@ export default function TrackImplView({ t, toast, svc }) {
                         {b.bulk ? <span className="text-xs ml-1" style={{ color: t.faint }}>{b.bulk} asserted</span> : null}
                       </td>
                       <td className="py-2 px-3 tabular-nums font-semibold"
-                        style={{ color: b.pickup.medianEnd == null ? t.faint : onTime(b.pickup.medianEnd) ? t.good : Math.abs(b.pickup.medianEnd) > 20 ? t.poor : t.watch }}>
+                        style={{ color: b.pickup.medianEnd == null ? t.faint : t[lateTone(b.pickup.medianEnd)] }}>
                         {b.pickup.medianEnd == null ? "—" : mins(b.pickup.medianEnd)}
                       </td>
                       <td className="py-2 px-3 tabular-nums" style={{ color: t.muted }}>{b.drop.medianEnd == null ? "—" : mins(b.drop.medianEnd)}</td>
@@ -481,6 +506,19 @@ const dayLabel = (serviceDay, offset) => {
   return offset === 0 ? nice : offset === 1 ? `next day, ${nice}` : offset === -1 ? `previous day, ${nice}` : nice;
 };
 
+/** Save a typed actual start ("s") or end ("e"). Shared with the new look's run rows. */
+export function commitClock(save, run, which, raw) {
+  const txt = String(raw || "").trim();
+  if (!txt) { save(run, which === "s" ? { actualStart: null } : { actualEnd: null }); return; }
+  const m = parseClock(txt);
+  if (m == null) return;                                          // leave the bad text visible to be corrected
+  save(run, { ...(which === "s" ? { actualStart: m } : { actualEnd: m }), bulk: false });
+}
+
+/** Flip a run between ran and did not run; marking it not run clears its times. */
+export const toggleNotRun = (save, run, notRun) =>
+  save(run, notRun ? { status: STATUS.RAN } : { status: STATUS.NOT_RUN, actualStart: null, actualEnd: null });
+
 function RunRow({ t, run, entry, save, onClear, date }) {
   const v = variance(entry);
   const notRun = entry && entry.status === STATUS.NOT_RUN;
@@ -490,13 +528,7 @@ function RunRow({ t, run, entry, save, onClear, date }) {
                e: entry && entry.actualEnd != null ? fmtClock(entry.actualEnd) : "" });
   }, [entry && entry.actualStart, entry && entry.actualEnd]);       // eslint-disable-line
 
-  const commit = (which, raw) => {
-    const txt = String(raw || "").trim();
-    if (!txt) { save(run, which === "s" ? { actualStart: null } : { actualEnd: null }); return; }
-    const m = parseClock(txt);
-    if (m == null) return;                                          // leave the bad text visible to be corrected
-    save(run, { ...(which === "s" ? { actualStart: m } : { actualEnd: m }), bulk: false });
-  };
+  const commit = (which, raw) => commitClock(save, run, which, raw);
   const box = {
     background: t.inputBg, border: "1px solid " + t.border, color: t.text,
     width: 74, textAlign: "center",
@@ -544,7 +576,7 @@ function RunRow({ t, run, entry, save, onClear, date }) {
           className="rounded-lg px-2 py-1.5 text-sm tabular-nums outline-none" style={box} />
       </td>
       <td className="py-2 px-3 tabular-nums whitespace-nowrap"
-        style={{ color: !v.clockValid ? t.faint : onTime(v.endVar) ? t.good : Math.abs(v.endVar) > 20 ? t.poor : t.watch }}>
+        style={{ color: !v.clockValid ? t.faint : t[lateTone(v.endVar)] }}>
         {v.clockValid ? mins(v.endVar) : "—"}
         {entry && entry.bulk && (
           <span className="text-[10px] block" style={{ color: t.faint }}>ran to plan (not timed)</span>
@@ -567,7 +599,7 @@ function RunRow({ t, run, entry, save, onClear, date }) {
       <td className="py-2 px-2 whitespace-nowrap">
         <button type="button" aria-pressed={!!notRun}
           title={notRun ? "Mark this bus as having run" : "Mark this bus as not run today"}
-          onClick={() => save(run, notRun ? { status: STATUS.RAN } : { status: STATUS.NOT_RUN, actualStart: null, actualEnd: null })}
+          onClick={() => toggleNotRun(save, run, notRun)}
           className="rounded-lg px-1.5 py-0.5 text-[10px] font-semibold"
           style={{ background: notRun ? t.watchSoft : "transparent", color: notRun ? t.watch : t.faint,
                    border: "1px solid " + (notRun ? t.watch : t.border), cursor: "pointer" }}>

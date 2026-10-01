@@ -69,7 +69,9 @@ export function RotationStrip({ t, week, className = "" }) {
   );
 }
 
-export default function RotaWeekPicker({ t, toast }) {
+/** The picker's state and its two moves, shared with the new look's week picker (src/next).
+ *  `announce(week, thisWeek)` is told which week is shown after each move. */
+export function useRotaWeekPicker(announce) {
   const week = useRotaWeek();
   const thisWeek = mondayOf(new Date());
   /* Tracked on the event, not read at render: a pin set on Friday for "next Monday" becomes
@@ -79,18 +81,23 @@ export default function RotaWeekPicker({ t, toast }) {
   useEffect(() => subscribeRotaWeek(() => setPinned(isRotaWeekPinned())), []);
   const previewing = week !== thisWeek;
 
-  const announce = (w) => {
+  const step = (days) => {
+    const next = shiftWeek(week, days);
+    setRotaWeek(next === thisWeek ? null : next);
+    announce(next, thisWeek);
+  };
+  const reset = () => { setRotaWeek(null); announce(thisWeek, thisWeek); };
+  return { week, thisWeek, pinned, previewing, step, reset };
+}
+
+export default function RotaWeekPicker({ t, toast }) {
+  const announce = (w, thisWeek) => {
     if (!toast) return;
     const r = rotationFor(w);
     toast(`Rotational plans now showing the ${fmtWeek(w)}${w === thisWeek ? " (this week)" : ""} — ` +
           STRIP.map((id) => `${slotOf(id).name} ${groupLabel(r.bySlot[id])}`).join(", "));
   };
-  const step = (days) => {
-    const next = shiftWeek(week, days);
-    setRotaWeek(next === thisWeek ? null : next);
-    announce(next);
-  };
-  const reset = () => { setRotaWeek(null); announce(thisWeek); };
+  const { week, pinned, previewing, step, reset } = useRotaWeekPicker(announce);
 
   const navBtn = { color: t.muted, cursor: "pointer", background: "transparent", border: "none" };
 

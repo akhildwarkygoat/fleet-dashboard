@@ -6,262 +6,38 @@
  * remove them from that bus (click several for multi-select). The KPI tiles scope
  * to the active bus while one is selected, else to the whole plan.
  * ==========================================================================*/
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { gsap } from "gsap";
 import { Flip } from "gsap/Flip";
-import { PALETTE } from "./ui.jsx";
 import GMap from "./GMap.jsx";
-import { routeGeometry } from "./roadGeom.js";
-import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarChart3, Bus, SlidersHorizontal, MapPin } from "lucide-react";
-import { KPI_DEFS, getHiddenKpis, setHiddenKpis, visibleKpis } from "./kpiPrefs.js";
-import ParkPicker, { useParkPoints, parkLabel } from "./ParkPicker.jsx";
-import { parkForRoute, startForRoute, setRoutePark, setRouteStart } from "./parkPrefs.js";
-import { BUS_RANK, TYPE_KEYS, nextRank, rankBy, dirWords } from "./kpiRank.js";
+import { X, Trash2, Wand2, MousePointerClick, Maximize2, Minimize2, EyeOff, BarChart3, Bus, SlidersHorizontal } from "lucide-react";
+import { KPI_DEFS, visibleKpis } from "./kpiPrefs.js";
+import ParkPicker, { parkLabel } from "./ParkPicker.jsx";
+import { BUS_RANK, TYPE_KEYS, dirWords } from "./kpiRank.js";
 import { prefersReduced, springTween } from "../ui/motion.js";
+import { usePlanBoard, planTiles, UNADDED, ADDED, START_COLOR, PARK_COLOR } from "./plannerState.js";
 
 gsap.registerPlugin(Flip);
 
-const UNADDED = "#f87171"; // light red — stop not yet on any bus
-const ADDED = "#4ade80";   // light green — stop assigned to a bus
-
-/* S = where the bus starts this run · P = where it parks when the run is done.
-   Green reads as "go", amber as "stand" — and neither is any route colour in PALETTE, so an
-   end pin can never be mistaken for a bus's own stops. */
-export const START_COLOR = "#16a34a";
-export const PARK_COLOR = "#b45309";
-
 export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, totalRiders, demandOf, toast, period = "evening", svcId = "plan", parkPrefs, setParkPrefs }) {
-  // Assignments are stored in EVENING traversal order (factory → s1 → … → sn). Morning is the
-  // same chain ridden backwards (sn → … → s1 → factory), so morning clicks PREPEND: the first
-  // stop you click is where the bus starts, and each next click adds the stop after it on the
-  // way to the factory. Costs/KPIs are direction-free (chain km already counts both runs).
-  const morning = period === "morning";
-  const [activeBus, setActiveBus] = useState(null);
-  const [busQuery, setBusQuery] = useState("");
-  const busColor = useMemo(() => { const m = {}; fleet.forEach((b, i) => (m[b.id] = PALETTE[i % PALETTE.length])); return m; }, [fleet]);
-  const busById = useMemo(() => { const m = {}; fleet.forEach((b) => (m[b.id] = b)); return m; }, [fleet]);
-
-  const busOfStop = useMemo(() => {
-    const m = new Map();
-    for (const [busId, ids] of editor.assign) ids.forEach((id) => m.set(id, busId));
-    return m;
-  }, [editor.assign]);
-
-  /* ---- where each bus starts and parks ----
-     Per bus, per service, so one registration can start and park differently on its Day run
-     and its night one. The state lives in NewPlanView because the SCORING depends on it — km,
-     ride time and cost are all measured between these two points — so the board receives it
-     rather than owning it. Changing an end therefore moves the pins and the numbers together.
-
-     Clicking a stop on the map is the other half of the answer: a village worth parking in is
-     usually a stop the route already serves, and picking it off a list of 1,134 names is a
-     worse way to say "that one" than pointing at it. */
-  const parkPoints = useParkPoints();
-  /* One state, not two. While `picking` is set the map is choosing that endpoint — there is no
-     separate "armed" step to forget, and therefore no window in which a click means something
-     other than what the open panel says it means. */
-  const [picking, setPicking] = useState(null);       // { busId, which: "start"|"park" } | null
-  const nameOf = (busId) => (busById[busId] || {}).name || busId;
-  /* One lookup per end, both from parkPrefs. The storage key format was being rebuilt by hand
-     here as well as in the hook that scores the plan; a third copy would have been the one that
-     drifted, and a drifted key reads as "no choice made" rather than failing. */
-  const specOf = (busId, which) =>
-    (which === "start" ? startForRoute : parkForRoute)(svcId, nameOf(busId), parkPrefs);
-
-  const setEnd = (busId, which, spec) => {
-    const name = nameOf(busId);
-    setParkPrefs(which === "start" ? setRouteStart(svcId, name, spec) : setRoutePark(svcId, name, spec));
-    setPicking(null);
-    const where = !spec || spec.kind === "auto" ? (which === "start" ? "the factory" : "where its route ends")
-      : spec.kind === "depot" ? "the factory" : spec.name;
-    toast && toast(`${name} ${which === "start" ? "starts from" : "parks at"} ${where}`);
-  };
-
-  /* S and P for the ACTIVE bus only. 97 buses would be 194 pins; while you are working on one,
-     its two ends are what you need to see.
-       evening — the bus leaves its start (S) and finishes out in the villages (P)
-       morning — it starts where it parked (S) and delivers to the factory (P)
-     The same two points swap letters with the direction, which is what the labels are for. */
-  const endPins = useMemo(() => {
-    if (!activeBus) return [];
-    const r = editor.perBus.find((x) => x.bus.id === activeBus);
-    if (!r || !r.stops.length) return [];
-    /* Read the points the ROW WAS SCORED WITH rather than re-deriving them here — two
-       derivations of the same thing drift, and then the pin and the cost disagree. */
-    const label = (pt, fallback) => (pt && (pt.name || pt.label)) || fallback;
-    const startPt = r.start || depot;
-    const parkPt = r.park || r.stops[r.stops.length - 1];
-    const [S, P] = morning ? [parkPt, startPt] : [startPt, parkPt];
-    const est = r.estimatedEnds ? "\n(straight-line estimate — this point is not on the road matrix)" : "";
-    return [
-      { lat: S.lat, lng: S.lng, label: "S", color: START_COLOR,
-        title: `Starts at ${label(S, "the factory")}${est}` },
-      { lat: P.lat, lng: P.lng, label: "P", color: PARK_COLOR,
-        title: `Ends at ${label(P, "its last stop")}` +
-               (morning ? "" : " — and waits here until its next run") + est },
-    ];
-  }, [activeBus, editor.perBus, depot, morning]);
-
-  const allStops = useMemo(() => [...stopsById.values()], [stopsById]);
-  const assignedHeads = editor.perBus.reduce((n, r) => n + r.heads, 0);
-  const progress = totalRiders ? (assignedHeads / totalRiders) * 100 : 0;
-  const busesUsed = editor.perBus.filter((r) => r.stopIds.length).length;
-  const unassignedCount = allStops.length - busOfStop.size;
-
-  // map stops — coloured by their assigned bus (grey if none)
-  // With a bus active, hide stops that belong to OTHER buses — only show what's assignable
-  // (unassigned = red) plus this bus's own stops (green). With no bus active, show everything.
-  // Each assigned stop is coloured by its OWNING bus (so its dot matches that bus's route line and
-  // its card) and carries the bus name/colour for the hover tooltip. Unassigned stops stay red.
-  const mapStops = useMemo(() => allStops
-    .filter((s) => { const b = busOfStop.get(s.id); return !activeBus || !b || b === activeBus; })
-    .map((s) => {
-      const b = busOfStop.get(s.id);
-      return { ...s, route: b || "un", headcount: demandOf(s),
-        busName: b ? (busById[b] && busById[b].name) || "" : null,
-        busColor: b ? busColor[b] : null };
-    }), [allStops, busOfStop, demandOf, activeBus, busById, busColor]);
-  const routeColors = useMemo(() => ({ ...busColor, un: UNADDED }), [busColor]);
-
-  // route lines to draw — all buses normally, but ONLY the active bus while one is selected
-  // (so lines don't trace to the now-hidden other-bus stops).
-  const shownRoutes = useMemo(() => editor.perBus.filter((r) => r.stops.length && (!activeBus || r.bus.id === activeBus)), [editor.perBus, activeBus]);
-  const routeSig = useMemo(() => shownRoutes.map((r) => r.bus.id + ":" + r.stopIds.join(",")).join("|"), [shownRoutes]);
-  const [roadPolys, setRoadPolys] = useState([]);
-  useEffect(() => {
-    let live = true;
-    Promise.all(shownRoutes.map(async (r) => ({ color: busColor[r.bus.id], points: await routeGeometry(depot, r.stops) })))
-      .then((p) => { if (live) setRoadPolys(p.filter((x) => x.points.length)); });
-    return () => { live = false; };
-  }, [routeSig]); // eslint-disable-line
-  const straightPolys = useMemo(() => shownRoutes.map((r) => ({ color: busColor[r.bus.id], points: [[depot.lat, depot.lng], ...r.stops.map((s) => [s.lat, s.lng])] })), [shownRoutes, depot, busColor]);
-  const polylines = roadPolys.length ? roadPolys : straightPolys;
-
-  // click a stop on the map → append it to the active bus IN CLICK ORDER (no auto-sequence, so the
-  // route chain matches the order you built it), or (if already on it) remove JUST that stop —
-  // the rest of the route stays. Use the bus card's ↯ to re-optimise the order after a removal.
-  const onStopClick = (stopId) => {
-    /* THE PICKER BEING OPEN IS ITSELF THE MODE. While you are choosing where a bus starts or
-       parks, a click on the map means "there" — it never adds the stop to the route or takes it
-       off. Saying where to leave a bus is not the same as saying who it carries, and an earlier
-       cut that needed a separate "pick on map" press made every click before that press do the
-       wrong thing silently. */
-    if (picking) {
-      const s = stopsById.get(stopId);
-      if (s) setEnd(picking.busId, picking.which, { kind: "stop", lat: s.lat, lng: s.lng, name: s.name });
-      return;
-    }
-    const owner = busOfStop.get(stopId); // bus this stop is currently on (undefined if unassigned)
-    if (activeBus) {
-      const list = editor.assign.get(activeBus) || [];
-      const i = list.indexOf(stopId);
-      if (i >= 0) { editor.unassignStop(stopId); return; }
-      // clicked a stop that belongs to a DIFFERENT bus → jump focus to its bus instead of adding
-      if (owner && owner !== activeBus) { setActiveBus(owner); return; }
-      // evening builds outward from the factory (append); morning builds toward it (prepend, so
-      // the first click is the route start and each next click sits closer to the factory)
-      if (morning) editor.insertStopAt(stopId, activeBus, 0);
-      else editor.assignStop(stopId, activeBus, { sequence: false });
-      return;
-    }
-    // no bus active: clicking an already-assigned stop selects (highlights + tops) its bus, so you
-    // can instantly see and work on it. Clicking an unassigned stop still needs a target bus first.
-    if (owner) { setActiveBus(owner); return; }
-    toast && toast("Pick a bus first, then click stops on the map");
-  };
-
-  // KPI scope — active bus if one is picked, else the whole plan
-  const row = activeBus ? editor.perBus.find((r) => r.bus.id === activeBus) : null;
-  const k = editor.live ? editor.live.kpis : null;
-  const busName = row ? row.bus.name : "";
-  // people-weighted average ride across the used buses (mirrors the Fleet-plan avg-ride metric)
-  const usedRows = editor.perBus.filter((r) => r.stopIds.length);
-  const rideHeads = usedRows.reduce((n, r) => n + r.heads, 0) || 1;
-  const avgRide = usedRows.reduce((n, r) => n + r.ride * r.heads, 0) / rideHeads;
-
-  /* The Planner now carries the SAME metric set as the Fleet-plan board, filtered by the
-     shared preference. It previously showed four of the ten, so figures you were steering by
-     while building a plan disappeared the moment you opened the finished one. Keys match
-     kpiPrefs.KPI_DEFS; the maths mirrors the Fleet-plan definitions exactly (ride and
-     distance are people-weighted, distance is halved to one-way). */
-  const [hiddenKpis, setHidden] = useState(getHiddenKpis);
-  const [kpiMenu, setKpiMenu] = useState(false);
-  const ownRows = usedRows.filter((r) => r.bus.type === "own");
-  const rentRows = usedRows.filter((r) => r.bus.type === "rent");
-  const seatSum = (list) => list.reduce((n, r) => n + (+r.cap || 0), 0);
-  const totKm = usedRows.reduce((n, r) => n + (+r.km || 0), 0);
-  const maxRide = usedRows.reduce((mx, r) => Math.max(mx, r.ride), 0);
-  const distPP = usedRows.reduce((n, r) => n + (r.km / 2) * r.heads, 0) / rideHeads;
-  const avgStops = usedRows.length ? usedRows.reduce((n, r) => n + r.stopIds.length, 0) / usedRows.length : 0;
-  const dash = "—";
-
-  const tiles = row ? [
-    { key: "people", label: `Riders · ${busName}`, value: `${row.heads} / ${row.cap}`, sub: row.overCap ? "over capacity" : row.overSeats ? "over seats" : "seats filled", accent: row.overCap ? t.poor : row.overSeats ? t.watch : null, dc: row.overCap ? t.poor : row.overSeats ? t.watch : t.muted },
-    { key: "util", label: "Utilisation", value: `${Math.round(row.fill * 100)}%`, sub: `${row.stops.length} stops`, accent: row.fill >= 0.85 ? t.good : t.watch },
-    { key: "cost", label: "Cost / head — this bus", value: row.heads ? `₹${(row.cost / row.heads).toFixed(1)}` : dash, sub: `₹${Math.round(row.cost)} / day` },
-    { key: "ride", label: morning ? "Ride (first stop → factory)" : "Ride (to last stop)", value: `${Math.round(row.ride)} min`, sub: row.km ? `${row.km.toFixed(1)} km/day` : "", accent: row.ride < 100 ? t.good : t.poor },
-    { key: "totdist", label: "Total dist", value: row.km ? `${row.km.toFixed(1)} km` : dash, sub: "this bus" },
-    { key: "avgstops", label: "Stops", value: row.stopIds.length, sub: "on this bus" },
-  ] : [
-    { key: "people", label: "People", value: `${assignedHeads} / ${totalRiders}`, sub: `${progress.toFixed(0)}% assigned`, dc: progress >= 99.5 ? t.good : t.muted },
-    /* Say WHICH question this answers. It is the board on screen, costed standalone — every
-       bus charged in full to this service. The Finalised-plans table answers two different
-       questions about a different plan (the finalised one, alone AND adjusted for buses shared
-       with other services), and the two were read as a contradiction because neither said so. */
-    { key: "cost", label: "Cost / head — this plan, alone", value: k && k.heads ? `₹${k.costPerHeadDay.toFixed(1)}` : dash,
-      sub: k ? `₹${Math.round(k.totalCost).toLocaleString("en-IN")} / day · ${k.heads} on a bus` : "" },
-    { key: "util", label: "Avg util", value: k ? `${k.utilisation.toFixed(0)}%` : dash, sub: `${busesUsed} bus${busesUsed === 1 ? "" : "es"} used`, accent: k && k.utilisation >= 85 ? t.good : t.watch },
-    { key: "avgride", label: "Avg ride", value: usedRows.length ? `${Math.round(avgRide)} min` : dash, sub: `${unassignedCount} stops left`, accent: usedRows.length && avgRide <= 60 ? t.good : t.poor },
-    { key: "ride", label: "Max ride", value: usedRows.length ? `${Math.round(maxRide)} min` : dash, sub: "longest trip", accent: usedRows.length && maxRide <= 110 ? t.good : t.poor },
-    { key: "totdist", label: "Total dist", value: usedRows.length ? `${Math.round(totKm).toLocaleString("en-IN")} km` : dash, sub: "whole plan" },
-    { key: "avgdist", label: "Dist / person", value: usedRows.length ? `${distPP.toFixed(1)} km` : dash, sub: "one-way" },
-    { key: "owned", label: "Owned", value: ownRows.length, sub: `${seatSum(ownRows).toLocaleString("en-IN")} seats` },
-    { key: "rental", label: "Rental", value: rentRows.length, sub: `${seatSum(rentRows).toLocaleString("en-IN")} seats` },
-    { key: "seats", label: "Seats", value: seatSum(usedRows).toLocaleString("en-IN"), sub: `${assignedHeads} riders` },
-    { key: "avgstops", label: "Stops / bus", value: usedRows.length ? avgStops.toFixed(1) : dash, sub: "average" },
-  ];
-  const shownTiles = visibleKpis(tiles, hiddenKpis);
-
-  /* Pressing a tile ranks the bus list by that figure (kpiRank.js): highest first, then lowest
-     first, then back to normal. Owned / Rental narrow the list to that kind of bus instead. The
-     cards slide to their new places, so the eye follows a bus rather than losing it. */
-  const [rank, setRank] = useState(null);                  // { key, dir } | null
-  const [typeOnly, setTypeOnly] = useState(null);          // "own" | "rent" | null
   const busGridRef = useRef(null);
   const flipFrom = useRef(null);
   const captureFlip = () => { if (busGridRef.current && !prefersReduced()) flipFrom.current = Flip.getState(busGridRef.current.children); };
-  const pressKpi = (key) => {
-    if (!TYPE_KEYS[key] && !BUS_RANK[key]) return;
-    captureFlip();
-    if (TYPE_KEYS[key]) setTypeOnly((cur) => (cur === TYPE_KEYS[key] ? null : TYPE_KEYS[key]));
-    else setRank((cur) => nextRank(cur, key));
-  };
-  const clearRank = () => { captureFlip(); setRank(null); setTypeOnly(null); };
+  // the board's state, actions and figures live in plannerState.js, shared with the new look
+  const board = usePlanBoard({ editor, fleet, depot, stopsById, totalRiders, demandOf, toast, period, svcId, parkPrefs, setParkPrefs, beforeReorder: captureFlip });
+  const {
+    morning, activeBus, setActiveBus, busQuery, setBusQuery, busColor, parkPoints, picking, setPicking, nameOf, specOf, setEnd,
+    endPins, busesUsed, mapStops, routeColors, polylines, onStopClick, busName, hiddenKpis, toggleKpi, showAllKpis,
+    rank, typeOnly, pressKpi, clearRank, kpiOn, kpiTitle, busList,
+  } = board;
+  const [kpiMenu, setKpiMenu] = useState(false);
+  const tiles = planTiles(board, t);
+  const shownTiles = visibleKpis(tiles, hiddenKpis);
   useLayoutEffect(() => {
     if (!flipFrom.current) return;
     Flip.from(flipFrom.current, { ...springTween("move"), nested: true, onEnter: (els) => gsap.fromTo(els, { opacity: 0 }, { opacity: 1, duration: 0.2 }) });
     flipFrom.current = null;
   }, [rank, typeOnly]);
-  const kpiOn = (key) => (TYPE_KEYS[key] ? typeOnly === TYPE_KEYS[key] : !!rank && rank.key === key);
-  const kpiTitle = (key) => TYPE_KEYS[key]
-    ? (kpiOn(key) ? "Show every bus again" : `Show only ${key === "owned" ? "owned" : "rental"} buses`)
-    : !BUS_RANK[key] ? undefined
-    : !kpiOn(key) ? `Rank the buses by ${BUS_RANK[key].label.toLowerCase()}, highest first`
-    : rank.dir === "desc" ? "Press for lowest first" : "Press to stop ranking";
-
-  const busList = useMemo(() => {
-    const q = busQuery.trim().toLowerCase();
-    const list = editor.perBus.filter((r) => (!q || r.bus.name.toLowerCase().includes(q)) && (!typeOnly || r.bus.type === typeOnly));
-    if (rank && BUS_RANK[rank.key]) {
-      const def = BUS_RANK[rank.key];
-      // a bus with no stops has nothing to rank; it keeps its place at the end
-      return rankBy(list, (r) => (r.stopIds.length
-        ? def.value({ riders: r.heads, cap: r.cap, cost: r.cost, ride: r.ride, km: r.km, stops: r.stopIds.length })
-        : null), rank.dir);
-    }
-    // Pin the active bus to the top so a stop you just clicked is right there for easy access.
-    return list.sort((a, b) => (b.bus.id === activeBus) - (a.bus.id === activeBus)).map((item) => ({ item, value: null, rank: null }));
-  }, [editor.perBus, busQuery, activeBus, rank, typeOnly]);
 
   // fill most of the viewport — the New-plan tab opens as a big map cockpit; a toggle blows it up to
   // true fullscreen (covers the header/tabs). Height tracks the window so it stays right on resize.
@@ -365,7 +141,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                 <div className="absolute right-0 mt-1.5 rounded-2xl p-2 w-64" style={{ zIndex: 41, ...glass }}>
                   <div className="flex items-center justify-between px-1.5 pb-1.5">
                     <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: t.muted }}>Stats to show</span>
-                    <button type="button" onClick={() => { setHiddenKpis(new Set()); setHidden(new Set()); }}
+                    <button type="button" onClick={showAllKpis}
                       className="text-[10px] rounded-lg px-2 py-0.5 font-semibold"
                       style={{ border: "1px solid " + t.border, background: glassBtn, color: t.text, cursor: "pointer" }}>All</button>
                   </div>
@@ -375,11 +151,7 @@ export default function NewPlanBoard({ t, editor, fleet, depot, stopsById, total
                         onMouseEnter={(e) => { e.currentTarget.style.background = glassInner; }}
                         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
                         <input type="checkbox" checked={!hiddenKpis.has(d.key)} style={{ marginTop: 3, cursor: "pointer" }}
-                          onChange={() => {
-                            const next = new Set(hiddenKpis);
-                            next.has(d.key) ? next.delete(d.key) : next.add(d.key);
-                            setHiddenKpis(next); setHidden(next);
-                          }} />
+                          onChange={() => toggleKpi(d.key)} />
                         <span>
                           <span className="text-[11px] font-semibold block" style={{ color: t.text }}>{d.label}</span>
                           <span className="text-[10px]" style={{ color: t.muted }}>{d.hint}</span>

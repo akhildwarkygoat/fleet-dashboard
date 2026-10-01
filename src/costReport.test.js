@@ -3,7 +3,10 @@
  * What the Costs page and its export promise: the right days for a day / week / month, every cost head
  * counted once per bus-day, both totals, cost per head over people carried, an unknown diesel figure
  * kept unknown rather than shown as a low total, and a workbook with the four sheets. */
-import { periodRange, costRows, sumRows, groupRows, costWorkbook } from "./costReport.js";
+import {
+  periodRange, shiftPeriod, latestDate, datesIn, costRows, sumRows, groupRows, costWorkbook,
+  costHeadNames, companyTotals, busCount, costLines, shareOf,
+} from "./costReport.js";
 
 let pass = 0, fail = 0;
 const ok = (cond, label, detail = "") => { if (cond) pass++; else { fail++; console.log(`  FAIL: ${label}${detail ? " — " + detail : ""}`); } };
@@ -18,6 +21,10 @@ const near = (a, b) => Math.abs(a - b) < 1e-6;
   ok(periodRange("week", "2026-10-04").from === "2026-09-28", "Sunday belongs to the week before it starts");
   const m = periodRange("month", "2026-02-14");
   ok(m.from === "2026-02-01" && m.to === "2026-02-28", "a month is its calendar month", `${m.from}..${m.to}`);
+  ok(shiftPeriod("2026-01-31", "month", 1) === "2026-02-01" && shiftPeriod("2026-03-15", "month", -1) === "2026-02-01", "a month step lands on the 1st");
+  ok(shiftPeriod("2026-10-01", "week", -1) === "2026-09-24" && shiftPeriod("2026-12-31", "day", 1) === "2027-01-01", "week and day steps");
+  ok(latestDate(["2026-09-01", "2026-09-30"]) === "2026-09-30", "opens on the latest date with data");
+  ok(datesIn(["2026-08-31", "2026-09-01", "2026-09-30", "2026-10-01"], periodRange("month", "2026-09-10")).join() === "2026-09-01,2026-09-30", "only the dates inside the period");
 }
 
 /* ---- rows and sums ---- */
@@ -44,6 +51,19 @@ const near = (a, b) => Math.abs(a - b) < 1e-6;
   ok(both.totalDiesel === null && both.cphDiesel === null && both.dieselMissing, "a day without diesel figures keeps the diesel total unknown");
   ok(near(both.totalKm, 3800 + 300 + 900) && both.days === 2 && both.riders === 98, "the period adds every bus-day");
   ok(groupRows(rows, "company").map(([c]) => c).join() === "Gainup,Zenwear", "grouped by company");
+  ok(near(day1.cpkDiesel, (1800 + 1700) / 170) && both.cpkDiesel === null, "cost per km by diesel, unknown while diesel is unknown");
+  ok(busCount(rows) === 2, "buses covered");
+  const cos = companyTotals(rows, heads);
+  ok(cos.map((x) => `${x.c}:${x.buses}`).join() === "Gainup:1,Zenwear:1" && near(cos[1].s.totalKm, 1700), "company totals");
+  ok(costHeadNames(busCosts).taxes === "Taxes" && costHeadNames(null) && !Object.keys(costHeadNames(null)).length, "head names from the cost profiles");
+
+  const lines1 = costLines(day1, heads, { taxes: "Taxes", insurance: "Insurance" }, (n) => String(Math.round(n)));
+  ok(lines1.map((l) => l.key).join() === "dieselKm,dieselIssued,hire,taxes,insurance", "cost lines in page order", lines1.map((l) => l.key).join());
+  ok(lines1[0].sub === "20 L" && lines1[1].alt && lines1[3].label === "Taxes", "litres, the alternative diesel line, head names");
+  const linesAll = costLines(both, heads, {}, String);
+  ok(linesAll[1].amount === null && linesAll[1].sub === "diesel feed not loaded for every day", "an unknown diesel line stays, marked");
+  ok(!costLines({ ...day1, hire: 0 }, heads, {}, String).some((l) => l.key === "hire"), "an empty line is left out");
+  ok(shareOf(25, 200) === "12.5%" && shareOf(1, 3) === "33.3%" && shareOf(null, 5) === "—" && shareOf(5, 0) === "—", "shares to one decimal");
 
   const wb = costWorkbook({ rows, heads, period: periodRange("week", "2026-10-01"), wd: 312, headNames: { taxes: "Taxes", insurance: "Insurance" } });
   ok(wb.SheetNames.join("|") === "Totals|Summary by bus|Bus by day|How costs work", "workbook sheets", wb.SheetNames.join("|"));

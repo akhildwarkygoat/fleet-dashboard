@@ -3184,8 +3184,6 @@ export {
   busMedianCph, busRangeFigures, busStopRiders,
 };
 
-// The new look shows these two in their old form until their own turn comes (src/next/pages/LegacyPage.jsx).
-export { CompareView, SettingsView };
 
 // Small constants the new Settings page reuses.
 export { OPS, DIGITS };

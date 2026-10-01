@@ -153,63 +153,54 @@ function SearchInput({ t, value, onChange, placeholder, width = 240 }) {
   );
 }
 
-function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverage, calibrate = true, svc }) {
-  const colorMap = routeColorMap(routes);
-  const [selectedId, setSelectedId] = useState(null);
-  const [checked, setChecked] = useState(() => new Set()); // multi-select: ticked stops shown on the map
-  const toggleCheck = (id) => setChecked((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const [q, setQ] = useState("");        // search box
-  const [page, setPage] = useState(0);
+/* The Stops board's figures and lookups, exported so the new look (src/next) reads the same ones. */
+
+// stop-level metrics. "People" = the ALLOCATED roster — every ERP rider on the 71 buses
+// who has a GPS location (3,021 today). The network's per-stop headcounts are derived
+// straight from the ERP feed, so this is the one baseline the Planner, Previous-routes
+// and the optimiser all share. (avgDist still weights by effective daily riders.)
+// `dep` is the service's own depot.
+const JUNE_ALLOTTED = 2360, BUFFER = 0.03;
+export function stopMetrics(stops, dep, calibrate) {
+  let raw = 0, dSum = 0, aSum = 0, hSum = 0;
+  for (const s of stops) { const hc = s.headcount || 0; raw += hc; }
+  const regToActive = calibrate && raw ? Math.min(1, JUNE_ALLOTTED / raw) : 1;
+  let effective = 0;
+  for (const s of stops) {
+    const hc = s.headcount || 0;
+    const eff = Math.max(hc > 0 ? 1 : 0, Math.round(hc * regToActive * (1 - (s.absentee || 0) + BUFFER)));
+    effective += eff; hSum += eff; aSum += (s.absentee || 0) * eff;
+    if (s.lat != null && s.lng != null) dSum += havKm(dep.lat, dep.lng, s.lat, s.lng) * eff;
+  }
+  const people = raw;   // the allocated roster, not a plan snapshot or an attendance estimate
+  return {
+    totalStops: stops.length, totalPeople: people, rawPeople: raw,
+    avgPerStop: stops.length ? people / stops.length : 0,
+    avgDist: hSum ? dSum / hSum : 0, avgAbsentee: hSum ? aSum / hSum : 0,
+  };
+}
+
+// Per-stop EFFECTIVE daily riders (registered × active-rate × absentee/buffer) — the same
+// calibration the KPIs/fleet plan use, so map dots + cluster totals read ~2,141, not the raw
+// 3,054 registered roster. Keyed by stop id.
+export function effectiveHeads(stops, calibrate) {
+  const raw = stops.reduce((a, s) => a + (s.headcount || 0), 0);
+  const regToActive = calibrate && raw ? Math.min(1, JUNE_ALLOTTED / raw) : 1;
+  const m = new Map();
+  for (const s of stops) {
+    const hc = s.headcount || 0;
+    m.set(s.id, Math.max(hc > 0 ? 1 : 0, Math.round(hc * regToActive * (1 - (s.absentee || 0) + BUFFER))));
+  }
+  return m;
+}
+
+/* Which vehicle serves each stop, from THIS service's plan — for a Rotational slot that is
+   the plan of whichever group is on the clock in the rota week, so it is re-read when the
+   week changes; 9 am keeps its variant picker, and the Overall/no-service mounts (no svc)
+   read the picker's plan as they always did. Match by stop name, else by coords. */
+export function useStopVehicles(svc) {
   const [stopVeh, setStopVeh] = useState({});
   const [planDemand, setPlanDemand] = useState(null); // authoritative effective riders from the plan (2,141)
-  const PER = 20;
-  // a service routes from ITS OWN depot — Zenwear runs out of Subbulapuram, ~59 km
-  // south of the Batlagundu factory, so distances measured from the wrong one are useless
-  const dep = depot || store.getDepot();
-
-  // stop-level metrics. "People" = the ALLOCATED roster — every ERP rider on the 71 buses
-  // who has a GPS location (3,021 today). The network's per-stop headcounts are derived
-  // straight from the ERP feed, so this is the one baseline the Planner, Previous-routes
-  // and the optimiser all share. (avgDist still weights by effective daily riders.)
-  const JUNE_ALLOTTED = 2360, BUFFER = 0.03;
-  const metrics = useMemo(() => {
-    let raw = 0, dSum = 0, aSum = 0, hSum = 0;
-    for (const s of stops) { const hc = s.headcount || 0; raw += hc; }
-    const regToActive = calibrate && raw ? Math.min(1, JUNE_ALLOTTED / raw) : 1;
-    let effective = 0;
-    for (const s of stops) {
-      const hc = s.headcount || 0;
-      const eff = Math.max(hc > 0 ? 1 : 0, Math.round(hc * regToActive * (1 - (s.absentee || 0) + BUFFER)));
-      effective += eff; hSum += eff; aSum += (s.absentee || 0) * eff;
-      if (s.lat != null && s.lng != null) dSum += havKm(dep.lat, dep.lng, s.lat, s.lng) * eff;
-    }
-    const people = raw;   // the allocated roster, not a plan snapshot or an attendance estimate
-    return {
-      totalStops: stops.length, totalPeople: people, rawPeople: raw,
-      avgPerStop: stops.length ? people / stops.length : 0,
-      avgDist: hSum ? dSum / hSum : 0, avgAbsentee: hSum ? aSum / hSum : 0,
-    };
-  }, [stops, planDemand]); // eslint-disable-line
-
-  // Per-stop EFFECTIVE daily riders (registered × active-rate × absentee/buffer) — the same
-  // calibration the KPIs/fleet plan use, so map dots + cluster totals read ~2,141, not the raw
-  // 3,054 registered roster. Keyed by stop id.
-  const effHead = useMemo(() => {
-    const raw = stops.reduce((a, s) => a + (s.headcount || 0), 0);
-    const regToActive = calibrate && raw ? Math.min(1, JUNE_ALLOTTED / raw) : 1;
-    const m = new Map();
-    for (const s of stops) {
-      const hc = s.headcount || 0;
-      m.set(s.id, Math.max(hc > 0 ? 1 : 0, Math.round(hc * regToActive * (1 - (s.absentee || 0) + BUFFER))));
-    }
-    return m;
-  }, [stops]);
-  const withEffHead = (arr) => arr.map((s) => ({ ...s, headcount: effHead.get(s.id) ?? s.headcount }));
-
-  /* Which vehicle serves each stop, from THIS service's plan — for a Rotational slot that is
-     the plan of whichever group is on the clock in the rota week, so it is re-read when the
-     week changes; 9 am keeps its variant picker, and the Overall/no-service mounts (no svc)
-     read the picker's plan as they always did. Match by stop name, else by coords. */
   useEffect(() => {
     let gen = 0;
     const load = () => {
@@ -232,41 +223,68 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
     const off = subscribeRotaWeek(load);
     return () => { gen++; off(); };
   }, [svc && svc.id]);
-  /* Which vehicle to show against a stop.
-     `s.busName` is the ERP's own answer for THIS service — the bus its riders are actually
-     mapped to — and it wins whenever it exists. stopVeh is only a fallback for the curated 9 am
-     network, whose stops carry no rider-derived bus.
-     It used to be the other way round, and the cost was severe: stopVeh was built from ONE
-     globally-selected plan (default /solver_result.json, the 9 am plan), matched on stop NAME,
-     so any rotational or Zenwear stop sharing a name with a 9 am stop displayed the 9 am plan's
-     bus — 519 of 788 stops showed a registration no rider standing there is assigned to.
-     (stopVeh now comes from the service's own plan, but the ERP answer still wins.)
-     Coordinate before name, too: a village name covers many pickup points (Nilakottai spans 23),
-     so the name key was last-write-wins across unrelated stops. */
-  const vehFor = (s) => s.busName
+  return { stopVeh, planDemand };
+}
+
+/* Which vehicle to show against a stop.
+   `s.busName` is the ERP's own answer for THIS service — the bus its riders are actually
+   mapped to — and it wins whenever it exists. stopVeh is only a fallback for the curated 9 am
+   network, whose stops carry no rider-derived bus.
+   It used to be the other way round, and the cost was severe: stopVeh was built from ONE
+   globally-selected plan (default /solver_result.json, the 9 am plan), matched on stop NAME,
+   so any rotational or Zenwear stop sharing a name with a 9 am stop displayed the 9 am plan's
+   bus — 519 of 788 stops showed a registration no rider standing there is assigned to.
+   (stopVeh now comes from the service's own plan, but the ERP answer still wins.)
+   Coordinate before name, too: a village name covers many pickup points (Nilakottai spans 23),
+   so the name key was last-write-wins across unrelated stops. */
+export const vehicleFor = (stopVeh, s) => s.busName
     || (s.lat != null && s.lng != null ? stopVeh["c:" + (+s.lat).toFixed(4) + "," + (+s.lng).toFixed(4)] : "")
     || stopVeh["n:" + (s.name || "").toLowerCase().trim()]
     || "";
 
-  /* Search filter + pagination.
-     Registrations are matched with the spaces and hyphens stripped from BOTH sides, so
-     "tn57 cj" and "TN57-CJ3434" both find TN57CJ3434 — the number gets written several ways
-     between the ERP, the manager's sheet and whoever is typing.
-     Every vehicle at the stop is searchable, not just the one the badge shows: a stop served
-     by two buses would otherwise be unfindable by its second one. */
-  const filtered = useMemo(() => {
-    const raw = q.trim().toLowerCase();
-    if (!raw) return viewStops;
-    const plain = raw.replace(/[\s-]/g, "");
-    return viewStops.filter((x) => {
-      if ((x.name || "").toLowerCase().includes(raw)) return true;
-      if ((x.village || "").toLowerCase().includes(raw)) return true;
-      if ((x.route || "").toLowerCase().includes(raw)) return true;
-      if (!plain) return false;
-      const regs = [vehFor(x), x.busName, ...(Array.isArray(x.buses) ? x.buses.map(([b]) => b) : [])];
-      return regs.some((r) => r && String(r).toLowerCase().replace(/[\s-]/g, "").includes(plain));
-    });
-  }, [viewStops, q, stopVeh]);
+/* Search filter.
+   Registrations are matched with the spaces and hyphens stripped from BOTH sides, so
+   "tn57 cj" and "TN57-CJ3434" both find TN57CJ3434 — the number gets written several ways
+   between the ERP, the manager's sheet and whoever is typing.
+   Every vehicle at the stop is searchable, not just the one the badge shows: a stop served
+   by two buses would otherwise be unfindable by its second one. */
+export function searchStops(viewStops, q, vehFor) {
+  const raw = q.trim().toLowerCase();
+  if (!raw) return viewStops;
+  const plain = raw.replace(/[\s-]/g, "");
+  return viewStops.filter((x) => {
+    if ((x.name || "").toLowerCase().includes(raw)) return true;
+    if ((x.village || "").toLowerCase().includes(raw)) return true;
+    if ((x.route || "").toLowerCase().includes(raw)) return true;
+    if (!plain) return false;
+    const regs = [vehFor(x), x.busName, ...(Array.isArray(x.buses) ? x.buses.map(([b]) => b) : [])];
+    return regs.some((r) => r && String(r).toLowerCase().replace(/[\s-]/g, "").includes(plain));
+  });
+}
+
+/* Riders at the ticked stops, counted as the map's dots count them (effective heads). */
+export const selectedRiders = (viewStops, checked, effHead) =>
+  viewStops.filter((s) => checked.has(s.id)).reduce((a, s) => a + (effHead.get(s.id) ?? s.headcount ?? 0), 0);
+
+function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverage, calibrate = true, svc }) {
+  const colorMap = routeColorMap(routes);
+  const [selectedId, setSelectedId] = useState(null);
+  const [checked, setChecked] = useState(() => new Set()); // multi-select: ticked stops shown on the map
+  const toggleCheck = (id) => setChecked((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const [q, setQ] = useState("");        // search box
+  const [page, setPage] = useState(0);
+  const { stopVeh, planDemand } = useStopVehicles(svc);
+  const PER = 20;
+  // a service routes from ITS OWN depot — Zenwear runs out of Subbulapuram, ~59 km
+  // south of the Batlagundu factory, so distances measured from the wrong one are useless
+  const dep = depot || store.getDepot();
+
+  const metrics = useMemo(() => stopMetrics(stops, dep, calibrate), [stops, planDemand]); // eslint-disable-line
+  const effHead = useMemo(() => effectiveHeads(stops, calibrate), [stops]); // eslint-disable-line
+  const withEffHead = (arr) => arr.map((s) => ({ ...s, headcount: effHead.get(s.id) ?? s.headcount }));
+
+  const vehFor = (s) => vehicleFor(stopVeh, s);
+  const filtered = useMemo(() => searchStops(viewStops, q, vehFor), [viewStops, q, stopVeh]); // eslint-disable-line
   useEffect(() => { setPage(0); }, [q]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PER));
   const pageSafe = Math.min(page, pageCount - 1);
@@ -284,7 +302,7 @@ function StopsView({ t, toast, stops, viewStops, routes, refresh, depot, coverag
 
       {checked.size > 0 && (
         <div className="flex items-center gap-2 text-xs rounded-xl px-3 py-2" style={{ background: t.primarySoft, color: t.primary, fontWeight: 600 }}>
-          Map showing {checked.size} selected stop{checked.size === 1 ? "" : "s"} ({viewStops.filter((s) => checked.has(s.id)).reduce((a, s) => a + (effHead.get(s.id) ?? s.headcount ?? 0), 0)} riders)
+          Map showing {checked.size} selected stop{checked.size === 1 ? "" : "s"} ({selectedRiders(viewStops, checked, effHead)} riders)
           <button type="button" onClick={() => setChecked(new Set())} className="rounded-lg px-2 py-0.5"
             style={{ border: "1px solid " + t.border, background: t.surface, color: t.text, cursor: "pointer" }}>
             Clear — show all
@@ -889,8 +907,8 @@ function BackToTop({ t }) {
 /* ---- shared Leaflet map bits (keyless OSM tiles, no Google key needed) ------- */
 const OSM_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "© OpenStreetMap";
-const FIRST_STOP_COLOR = "#10b981"; // emerald — the route's first stop
-const LAST_STOP_COLOR = "#ef4444";  // red — the route's last stop (parks overnight)
+export const FIRST_STOP_COLOR = "#10b981"; // emerald — the route's first stop
+export const LAST_STOP_COLOR = "#ef4444";  // red — the route's last stop (parks overnight)
 /* A small coloured disc with a white number/label — the stop-headcount dot. */
 function dotIcon(color, label, { size = 22, fontSize = 11 } = {}) {
   return L.divIcon({
@@ -996,8 +1014,9 @@ function RouteMap({ t, depot, route }) {
 /* Master map: several routes on ONE Leaflet/OSM map, each in its own colour,
    following real roads. Built like RouteMap (keyless OSM tiles + OSRM road geometry
    per route); remounted via a `key` on the selected-route set so it rebuilds only
-   when the selection changes (not on every dashboard re-render). */
-function MasterRouteMap({ t, depot, routes, colors, height = 460, showStops = true, scrollWheelZoom = false }) {
+   when the selection changes (not on every dashboard re-render). Exported so the new look
+   (src/next) draws the same map. */
+export function MasterRouteMap({ t, depot, routes, colors, height = 460, showStops = true, scrollWheelZoom = false }) {
   const elRef = useRef(null);
   const mapRef = useRef(null);
   const [err, setErr] = useState(false);
@@ -1111,15 +1130,15 @@ function KpiCell({ t, c }) {
 }
 /* Six services, what each is actually running, and what that does to the fleet. The board
    exists because a service quietly defaulting to the optimiser's output looks identical to
-   one somebody chose — and the difference is the whole point of finalising. */
-function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
-  const [tick, setTick] = useState(0);
+   one somebody chose — and the difference is the whole point of finalising.
+   finalisationSummary is what the board shows, exported so the new look (src/next) counts the
+   same way. Call it on every render: see the note on `rows`. */
+export function finalisationSummary(fc) {
   /* Derived here from fc, not passed in: this used to read a `mixedBasis` state that lived in
      FleetPlanView and was never set, so the reference threw and took the whole Overall board
      down with it. */
   const noStandingSvcs = (fc && fc.services ? fc.services : []).filter((s) => s.declaredBasis === "running-only");
   const mixedBasis = noStandingSvcs.length > 0 && (fc && fc.services ? fc.services : []).some((s) => s.declaredBasis !== "running-only");
-  const fileRef = useRef(null);
   /* Not memoised on purpose: resolveFinalised reads localStorage, so the rows must be rebuilt
      on every render. `tick` exists only to force that render after Revert or Import — do not
      wrap this in useMemo without adding tick to its deps, or a reverted service keeps showing
@@ -1137,6 +1156,12 @@ function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
      but not in this browser, so there is nothing here to revert. */
   const builtIn = rows.filter((r) => r.fin.builtIn).length;
   const chosen = rows.filter((r) => !r.fin.isDefault && r.fin.kind !== "rotation" && !r.fin.builtIn).length;
+  return { noStandingSvcs, mixedBasis, rows, onRota, builtIn, chosen };
+}
+function FinalisationBoard({ t, fc, drawn, onOpen, toast }) {
+  const [tick, setTick] = useState(0);
+  const { noStandingSvcs, mixedBasis, rows, onRota, builtIn, chosen } = finalisationSummary(fc);
+  const fileRef = useRef(null);
   const inr1 = (n) => "₹" + (Math.round((n || 0) * 10) / 10).toLocaleString("en-IN");
 
   const doImport = (e) => {
@@ -1309,25 +1334,14 @@ function attachEffDemand(seq, target) {
    showed 9 am's 75 buses, 3,021 riders and ₹56.7/head as if they were their own. */
 /* Column heads of the routes table that rank it, and the KPI each one ranks by (kpiRank.js). */
 const COLUMN_RANK = { Stops: "avgstops", Riders: "people", Seats: "seats", "Km/day": "totdist", Trip: "ride", "₹/head": "cost" };
+/* The routes table's company per bus, for the new look (src/next). */
+export { companyOf as fleetPlanCompanyOf, loadBusCo as fleetPlanBusCo };
 
-function FleetPlanView({ t, svc, toast, onOpenService }) {
+/* The board's plan for `svc`, loaded as below. Exported so the new look (src/next) loads the
+   same plan the same way. */
+export function useFleetPlan(svc) {
   const [data, setData] = useState(null);
-  const view = "overall"; // Combined data only (owned/rental split shown within the KPIs)
-  const [names, setNames] = useState(() => { try { return JSON.parse(localStorage.getItem("opt-route-names") || "{}"); } catch { return {}; } }); // custom route names, keyed by bus
-  const [busCo] = useState(loadBusCo); // bus -> company (read-only here; edited in the Companies tab)
-  const [explain, setExplain] = useState(null); // which KPI tile's calculation is open (cost|buses|util|ride|null)
-  const [selRoutes, setSelRoutes] = useState(() => new Set()); // bus names plotted on the master map
-  const [showStops, setShowStops] = useState(true); // master map: toggle stop-dot visibility
-  const [routePage, setRoutePage] = useState(0); // routes table pagination (20 / page)
-  const [typeFilter, setTypeFilter] = useState(null); // routes table filter: null | "own" | "rent" (set by clicking Owned/Rental KPI)
-  const [companyFilter, setCompanyFilter] = useState(null); // routes table Company-column filter: null | company name
-  const [companyMenuOpen, setCompanyMenuOpen] = useState(false); // Company-filter dropdown open state
-  const [routeQuery, setRouteQuery] = useState(""); // routes table search box
-  const [stopsPanelOpen, setStopsPanelOpen] = useState(true); // master-map stop-order panel: expanded/minimized
   const [err, setErr] = useState(false);
-  const [hiddenKpis] = useState(getHiddenKpis);
-  const [sortBy, setSortBy] = useState(null); // routes table ranked by a KPI: { key, dir } | null (set by pressing a KPI card or a column head)
-  const routesRef = useRef(null);
   const isOverall = !svc || !!svc.overall;
   /* The rota week is read here, not just inside planUrlFor, so a pin moved from the header
      re-renders this view and re-runs the load: planUrlFor reads the pin from storage and
@@ -1482,24 +1496,13 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
      Monday's rota would be a wasted round trip on a file the rota cannot move. */
   const rotaDep = isOverall || isRota ? week : null;
   useEffect(() => { load(); return () => { gen.current++; }; }, [planSrc, isOverall, rotaDep]);
-  const inr0 = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
+  return { data, err, load, drawn, fleetFc, isOverall, isRota, week, planSource };
+}
 
-  if (err) return (
-    <Empty t={t}
-      title={svc && !svc.overall && !svc.planUrl ? `${svc.name} — to be planned`
-        : isRota && planSource && planSource.kind === "rotation" ? `${svc.name} — no plan file for ${planSource.label}`
-        : "No solver plan yet"}
-      sub={svc && !svc.overall && !svc.planUrl
-        ? "This service has no finalised plan yet, so there are no routes, costs or ride times to show. Build one from the Planner tab, or run the optimiser for it."
-        : isRota && planSource && planSource.kind === "rotation"
-        /* Name the file: the rota says which group runs this clock in the chosen week, so the
-           only thing that can be wrong is that its plan is not on disk. */
-        ? `The rota puts ${planSource.label} on this clock, but ${planSource.url || "its plan file"} could not be loaded. Check public/plans/rot/, or pick another rota week in the header.`
-        : "Run  python optimize.py  in the fleet-dashboard folder to generate the global fleet plan, then reload."}>
-      {(!svc || svc.overall || svc.planUrl) && <Btn t={t} onClick={load}><RotateCcw size={15} /> Reload</Btn>}
-    </Empty>);
-  if (!data) return <Card t={t}><div className="py-6 text-center" style={{ color: t.muted }}>Loading solver plan…</div></Card>;
-
+/* What the board shows once the plan is loaded: the routes after its filters, search, ranking and
+   page, what is on the master map, and the KPI figures for whatever is in scope. Exported so the
+   new look (src/next) shows the same figures; the arguments are the board's own state. */
+export function fleetPlanFigures(data, { view, busCo, names, typeFilter, companyFilter, routeQuery, routePage, sortBy, selRoutes }) {
   const rows = data.routes.filter((r) => (view === "overall" ? true : r.type === (view === "owned" ? "own" : "rent")));
   // distinct companies present — options for the Company-column filter dropdown
   const companyOptions = [...new Set(rows.map((r) => companyOf(busCo, r.name)))].sort();
@@ -1514,7 +1517,6 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
     const first = r.seq[0]?.name || "", last = r.seq[r.seq.length - 1]?.name || "";
     return [r.name, names[r.name] || "", companyOf(busCo, r.name), r.type, first, last].some((x) => String(x).toLowerCase().includes(rq));
   }) : filteredRows;
-  const applyTypeFilter = (type) => { setTypeFilter((f) => (f === type ? null : type)); setRoutePage(0); };
   // routes table pagination — 20 buses per page
   const ROUTES_PER_PAGE = 20;
   const routePageCount = Math.max(1, Math.ceil(tableRows.length / ROUTES_PER_PAGE));
@@ -1528,17 +1530,9 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
   const orderedRows = ranked ? ranked.map((x) => x.item) : tableRows;
   const rankOf = ranked ? new Map(ranked.map((x) => [x.item, x])) : null;
   const pagedRows = orderedRows.slice(curRoutePage * ROUTES_PER_PAGE, curRoutePage * ROUTES_PER_PAGE + ROUTES_PER_PAGE);
-  const rankRoutes = (key, { scroll = true } = {}) => {
-    const next = nextRank(sortBy, key);
-    setSortBy(next); setRoutePage(0);
-    // the cards sit above the map; bring the ranked table into view so the press visibly did something
-    if (next && scroll) requestAnimationFrame(() => routesRef.current && routesRef.current.scrollIntoView({ behavior: prefersReduced() ? "auto" : "smooth", block: "start" }));
-  };
   const depot = data.params.depot;
   // --- master map: plot any set of routes together, each in its own colour ---
-  const toggleSel = (name) => setSelRoutes((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; });
   const allSelected = tableRows.length > 0 && tableRows.every((r) => selRoutes.has(r.name));
-  const toggleAll = () => setSelRoutes(() => (allSelected ? new Set() : new Set(tableRows.map((r) => r.name))));
   const selRows = rows.filter((r) => selRoutes.has(r.name));
   const masterColors = {}; selRows.forEach((r, i) => (masterColors[r.name] = PALETTE[i % PALETTE.length]));
   const masterKey = selRows.map((r) => r.name).join(","); // remount the map only when the selection changes
@@ -1575,6 +1569,59 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
   const rSum = metricRows.reduce((acc, r) => acc + r.riders, 0) || 1;
   const wAvgRide = metricRows.reduce((acc, r) => acc + r.ride * r.riders, 0) / rSum;       // avg time, weighted by people
   const wDistPP = metricRows.reduce((acc, r) => acc + (r.km / 2) * r.riders, 0) / rSum;      // avg one-way km a person's bus runs
+  const a = data.assumptions || {};
+  const month = m.cost_head * wd; // cost per head over a month of working days
+  return { rows, companyOptions, filteredRows, filtersActive, rq, tableRows, ROUTES_PER_PAGE, routePageCount, curRoutePage,
+    ranked, rankOf, pagedRows, depot, allSelected, selRows, masterColors, masterKey, selActive, wd, month, m, ow, rt, wAvgRide, wDistPP, a };
+}
+
+function FleetPlanView({ t, svc, toast, onOpenService }) {
+  const { data, err, load, drawn, fleetFc, isOverall, isRota, week, planSource } = useFleetPlan(svc);
+  const view = "overall"; // Combined data only (owned/rental split shown within the KPIs)
+  const [names, setNames] = useState(() => { try { return JSON.parse(localStorage.getItem("opt-route-names") || "{}"); } catch { return {}; } }); // custom route names, keyed by bus
+  const [busCo] = useState(loadBusCo); // bus -> company (read-only here; edited in the Companies tab)
+  const [explain, setExplain] = useState(null); // which KPI tile's calculation is open (cost|buses|util|ride|null)
+  const [selRoutes, setSelRoutes] = useState(() => new Set()); // bus names plotted on the master map
+  const [showStops, setShowStops] = useState(true); // master map: toggle stop-dot visibility
+  const [routePage, setRoutePage] = useState(0); // routes table pagination (20 / page)
+  const [typeFilter, setTypeFilter] = useState(null); // routes table filter: null | "own" | "rent" (set by clicking Owned/Rental KPI)
+  const [companyFilter, setCompanyFilter] = useState(null); // routes table Company-column filter: null | company name
+  const [companyMenuOpen, setCompanyMenuOpen] = useState(false); // Company-filter dropdown open state
+  const [routeQuery, setRouteQuery] = useState(""); // routes table search box
+  const [stopsPanelOpen, setStopsPanelOpen] = useState(true); // master-map stop-order panel: expanded/minimized
+  const [hiddenKpis] = useState(getHiddenKpis);
+  const [sortBy, setSortBy] = useState(null); // routes table ranked by a KPI: { key, dir } | null (set by pressing a KPI card or a column head)
+  const routesRef = useRef(null);
+  const inr0 = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
+
+  if (err) return (
+    <Empty t={t}
+      title={svc && !svc.overall && !svc.planUrl ? `${svc.name} — to be planned`
+        : isRota && planSource && planSource.kind === "rotation" ? `${svc.name} — no plan file for ${planSource.label}`
+        : "No solver plan yet"}
+      sub={svc && !svc.overall && !svc.planUrl
+        ? "This service has no finalised plan yet, so there are no routes, costs or ride times to show. Build one from the Planner tab, or run the optimiser for it."
+        : isRota && planSource && planSource.kind === "rotation"
+        /* Name the file: the rota says which group runs this clock in the chosen week, so the
+           only thing that can be wrong is that its plan is not on disk. */
+        ? `The rota puts ${planSource.label} on this clock, but ${planSource.url || "its plan file"} could not be loaded. Check public/plans/rot/, or pick another rota week in the header.`
+        : "Run  python optimize.py  in the fleet-dashboard folder to generate the global fleet plan, then reload."}>
+      {(!svc || svc.overall || svc.planUrl) && <Btn t={t} onClick={load}><RotateCcw size={15} /> Reload</Btn>}
+    </Empty>);
+  if (!data) return <Card t={t}><div className="py-6 text-center" style={{ color: t.muted }}>Loading solver plan…</div></Card>;
+
+  const { rows, companyOptions, filtersActive, rq, tableRows, ROUTES_PER_PAGE, routePageCount, curRoutePage, ranked, rankOf, pagedRows,
+    depot, allSelected, selRows, masterColors, masterKey, selActive, wd, month, m, ow, rt, wAvgRide, wDistPP, a } =
+    fleetPlanFigures(data, { view, busCo, names, typeFilter, companyFilter, routeQuery, routePage, sortBy, selRoutes });
+  const applyTypeFilter = (type) => { setTypeFilter((f) => (f === type ? null : type)); setRoutePage(0); };
+  const rankRoutes = (key, { scroll = true } = {}) => {
+    const next = nextRank(sortBy, key);
+    setSortBy(next); setRoutePage(0);
+    // the cards sit above the map; bring the ranked table into view so the press visibly did something
+    if (next && scroll) requestAnimationFrame(() => routesRef.current && routesRef.current.scrollIntoView({ behavior: prefersReduced() ? "auto" : "smooth", block: "start" }));
+  };
+  const toggleSel = (name) => setSelRoutes((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; });
+  const toggleAll = () => setSelRoutes(() => (allSelected ? new Set() : new Set(tableRows.map((r) => r.name))));
   const rename = (bus, label) => setNames((prev) => { const n = { ...prev, [bus]: label }; try { localStorage.setItem("opt-route-names", JSON.stringify(n)); } catch {} return n; });
   // Google Maps directions: factory -> stops in pickup order -> LAST stop
   // (no return-to-factory leg — it duplicated the origin and misled ride checks).
@@ -1584,8 +1631,6 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
   const gmaps = (r) => { const lastS = r.seq[r.seq.length - 1]; return "https://www.google.com/maps/dir/?api=1&origin=" + depot[0] + "," + depot[1] +
     "&destination=" + lastS.lat + "," + lastS.lng +
     "&waypoints=" + r.seq.slice(0, -1).map((s) => s.lat + "," + s.lng).join("|") + "&travelmode=driving"; };
-
-  const a = data.assumptions || {};
 
   return (
     <div className="space-y-4">
@@ -1633,7 +1678,7 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
       {(() => {
         const clickable = (explainKey, cell) => ({ ...cell, key: cell.key || explainKey, active: explain === explainKey, onClick: () => setExplain((e) => (e === explainKey ? null : explainKey)) });
         // related KPIs clubbed within one shared container, all on a single row
-        const cost = clickable("cost", { label: "Cost / head", value: "₹" + m.cost_head.toFixed(1), sub: inr0(m.cost_head * wd) + "/mo" });
+        const cost = clickable("cost", { label: "Cost / head", value: "₹" + m.cost_head.toFixed(1), sub: inr0(month) + "/mo" });
         const util = clickable("util", { label: "Utilisation", value: m.util.toFixed(0), unit: "%", sub: `${m.riders} riders`, accent: m.util >= 85 ? t.good : t.poor });
         const avgride = clickable("avgride", { label: "Avg ride", value: Math.round(wAvgRide), unit: "min", sub: "people-wtd", accent: wAvgRide <= 60 ? t.good : t.poor });
         const maxride = clickable("ride", { label: "Max ride", value: Math.round(m.max_ride), unit: "min", sub: "longest trip", accent: m.max_ride <= 110 ? t.good : t.poor });
@@ -1768,7 +1813,7 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
                 ? <>Riders carried = <b>{m.riders}</b> ({data.params.stops} stops × {a.demand_per_stop}; demand/stop = ceil(headcount × (1 − {a.absentee_pct}% absentee + {a.buffer_pct}% buffer))).</>
                 : <>Riders carried = <b>{m.riders}</b> across {data.params?.stops ?? "—"} stops.</>,
               <>Cost / head = total ÷ riders = {inr0(m.cost)} ÷ {m.riders} = <b style={{ color: t.primary, fontSize: "1.05em" }}>₹{m.cost_head.toFixed(1)}</b>.</>,
-              <>Per month = ₹{m.cost_head.toFixed(1)} × {wd} working days = <b>{inr0(m.cost_head * wd)}</b>.</>,
+              <>Per month = ₹{m.cost_head.toFixed(1)} × {wd} working days = <b>{inr0(month)}</b>.</>,
             ].filter(Boolean),
             /* Only emit a chip whose value the file actually carries — a chip reading
                "Diesel ₹undefined/km" is worse than no chip. */
@@ -2211,14 +2256,12 @@ function SimulatorView({ t }) {
   );
 }
 
-export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShifts, erpShiftDate }) {
-  const [sub, setSub] = useState("stops");
-  // Which service is being planned (or Overall). Asked on every entry to the tab (state
-  // only, deliberately not persisted) — the board IS the switcher, so no header toggles.
-  const [svc, setSvc] = useState(null);
+/* Everything the tab works out about the service being planned: the stop networks, the buses it
+   runs, the plan options and what it still needs. A hook so the new look's OptimiserPage (which
+   keeps the service and the sub-tab in the address) reads exactly what this tab reads. */
+export function useOptimiserState({ svc, erpBuses, erpEmployees, erpShifts }) {
   // the Fleet-plan/Companies views read units through companyOf, which needs today's ERP fleet
   useEffect(() => { setLiveBusUnits(erpBuses); }, [erpBuses]);
-  const pickSvc = (s) => { setSvc(s); setSub(s.overall ? "timings" : "stops"); };
   const [version, setVersion] = useState(0);
   const refresh = () => setVersion((v) => v + 1);
   // keep the stop network in sync with the live-ERP merged stops (public/merged_stops.json,
@@ -2291,11 +2334,22 @@ export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShif
     else { setActivePlan(opts[0]); setPlanId(opts[0].id); }
   }); }, []);
   const pickPlan = (o) => { setActivePlan(o); setPlanId(o.id); };
-  if (!svc) return <ServiceBoard t={t} onPick={pickSvc} shifts={erpShifts} shiftDate={erpShiftDate} />;
-  const svcNeed = svc.overall ? null : serviceNeed(svc, erpShifts);
+  const svcNeed = svc && !svc.overall ? serviceNeed(svc, erpShifts) : null;
   // Only a service with NO riders is un-openable. "Needs a plan" must not block entry —
   // reviewing the stop network is precisely how you get to a plan.
-  const hasRiders = svc.overall || !!erpStatsFor(svc, erpShifts);
+  const hasRiders = !!svc && (svc.overall || !!erpStatsFor(svc, erpShifts));
+  return { refresh, stops, fleet, depot, routes, svcStops, svcCoverage, overallStops, svcErpBuses, planOpts, planId, pickPlan, svcNeed, hasRiders };
+}
+
+export default function OptimiserTab({ t, toast, erpBuses, erpEmployees, erpShifts, erpShiftDate }) {
+  const [sub, setSub] = useState("stops");
+  // Which service is being planned (or Overall). Asked on every entry to the tab (state
+  // only, deliberately not persisted) — the board IS the switcher, so no header toggles.
+  const [svc, setSvc] = useState(null);
+  const pickSvc = (s) => { setSvc(s); setSub(s.overall ? "timings" : "stops"); };
+  const { refresh, stops, routes, svcStops, svcCoverage, overallStops, svcErpBuses, planOpts, planId, pickPlan, svcNeed, hasRiders } =
+    useOptimiserState({ svc, erpBuses, erpEmployees, erpShifts });
+  if (!svc) return <ServiceBoard t={t} onPick={pickSvc} shifts={erpShifts} shiftDate={erpShiftDate} />;
   if (!hasRiders) {
     return (
       <div className="max-w-xl mx-auto py-10 flex flex-col items-center gap-4 text-center">

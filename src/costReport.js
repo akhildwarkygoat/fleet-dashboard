@@ -35,10 +35,27 @@ export function periodRange(kind, anchor) {
   return { from: anchor, to: anchor, label: nice(anchor, { weekday: "short", day: "numeric", month: "short", year: "numeric" }), file: `day-${anchor}` };
 }
 
+/** `iso` moved one day, week or month back (dir -1) or forward (dir 1); a month lands on its 1st. */
+export function shiftPeriod(iso, kind, dir) {
+  const d = new Date(iso + "T00:00:00Z");
+  if (kind === "month") d.setUTCMonth(d.getUTCMonth() + dir, 1);
+  else d.setUTCDate(d.getUTCDate() + dir * (kind === "week" ? 7 : 1));
+  return d.toISOString().slice(0, 10);
+}
+/** The page opens on the latest date with data (today when there is none). `dates` is sorted. */
+export const latestDate = (dates) => dates[dates.length - 1] || new Date().toISOString().slice(0, 10);
+/** The dates with data that fall inside a period. */
+export const datesIn = (dates, period) => dates.filter((d) => d >= period.from && d <= period.to);
+
 /* standing heads: the ERP costing feed's types in the dashboard's own order, then any head the ERP added later */
 const HEAD_ORDER = ["taxes", "insurance", "fc", "maint", "rto", "tires", "tiremaint", "adblue", "driver", "diesel"];
 export const headLabel = (type, lines) =>
   (COST_TYPE_MAP[type] && COST_TYPE_MAP[type].label) || (lines || []).find((l) => l.type === type)?.label || type.replace(/^erp:/, "").replace(/-/g, " ");
+/** Every standing head in the fleet's cost profiles → its name (the page and the spreadsheet use these). */
+export function costHeadNames(busCosts) {
+  const lines = Object.values(busCosts || {}).flatMap((p) => (p && p.lines) || []);
+  return Object.fromEntries([...new Set(lines.map((l) => l.type))].map((h) => [h, headLabel(h, lines)]));
+}
 
 /** ₹ per working day of each standing head for one bus's cost profile. */
 function standingByHead(profile, wd) {
@@ -98,6 +115,7 @@ export function sumRows(rows, heads) {
   s.cphKm = s.riders ? s.totalKm / s.riders : null;
   s.cphDiesel = s.riders && s.totalDiesel != null ? s.totalDiesel / s.riders : null;
   s.cpkKm = s.km ? s.totalKm / s.km : null;
+  s.cpkDiesel = s.km && s.totalDiesel != null ? s.totalDiesel / s.km : null;
   return s;
 }
 
@@ -107,6 +125,28 @@ export function groupRows(rows, key) {
   for (const r of rows) { const k = r[key] || "—"; if (!m.has(k)) m.set(k, []); m.get(k).push(r); }
   return [...m.entries()].sort(([a], [b]) => String(a).localeCompare(String(b)));
 }
+
+/** How many buses the rows cover. */
+export const busCount = (rows) => new Set(rows.map((r) => r.busId)).size;
+
+/** Each company: how many buses it ran and its sums. */
+export const companyTotals = (rows, heads) =>
+  groupRows(rows, "company").map(([c, rs]) => ({ c, buses: busCount(rs), s: sumRows(rs, heads) }));
+
+/** The cost lines of a period's sums (sumRows), in page order: diesel both ways, hire, then each standing
+ *  head. Empty lines are left out; an unknown diesel figure stays (amount null). `alt` marks diesel as
+ *  issued, the other way of counting the same diesel. `num` writes the litres. */
+export function costLines(all, heads, headNames, num) {
+  return [
+    { key: "dieselKm", label: "Diesel — by km travelled", amount: all.dieselKm, sub: `${num(all.dieselKmLitres)} L` },
+    { key: "dieselIssued", label: "Diesel — as issued", amount: all.dieselIssued, sub: all.dieselIssued == null ? "diesel feed not loaded for every day" : `${num(all.dieselIssuedLitres)} L`, alt: true },
+    { key: "hire", label: "Hire (rented buses)", amount: all.hire },
+    ...heads.map((h) => ({ key: h, label: headNames[h] || h, amount: all.standing[h] })),
+  ].filter((l) => l.amount == null || l.amount > 0);
+}
+
+/** A share of a total to one decimal ("12.3%"); "—" when the part is not known or the total is 0. */
+export const shareOf = (a, b) => (a != null && b ? Math.round((a / b) * 1000) / 10 + "%" : "—");
 
 /* ---- what every cost is: one place for the page and the spreadsheet ---- */
 export function costExplainers(wd) {
@@ -134,6 +174,10 @@ export function costExplainers(wd) {
     { key: "riders", title: "Riders", what: "People who came on the bus that day.", how: "From the ERP's attendance punches for the employees mapped to the bus." },
   ];
 }
+/** The explainers by key, for each cost line's "what it is". */
+export const costExplainerMap = (wd) => Object.fromEntries(costExplainers(wd).map((e) => [e.key, e]));
+/** "What it is" for a standing head the explainers do not name (one the ERP added later). */
+export const OTHER_HEAD_WHAT = "A cost line from the ERP costing feed, spread over the working days of the year.";
 
 /* ---- the spreadsheet ---- */
 const r2 = (n) => (n == null ? null : Math.round(n * 100) / 100);

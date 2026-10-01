@@ -19,6 +19,9 @@ const OSM_ATTR = "© OpenStreetMap";
 const DEFAULT_CENTER = [10.35, 78.0]; // Tamil Nadu interior (fallback until fitBounds runs)
 const DEFAULT_ZOOM = 9;
 
+/* `plain` (the new look) words a tooltip without emoji or dashes; the old look keeps its own. */
+const plainTip = (html) => html.replace(/&#\d{4,6};\s?/g, "").replace(" — stepped from", ", so taken from").replace(/ — /g, ", ");
+
 const esc = (x) => String(x || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
 /* Riders who never rotate. A deep purple, deliberately darker and less pink than both the
@@ -82,7 +85,7 @@ const makeCluster = (primary, onPrimary) => (cluster) => {
   return L.divIcon({ html, className: "gmap-cluster", iconSize: [size, size] });
 };
 
-export default function GMap({ t, stops, routeColors, depot, polylines, pins, selectedId, onSelect, dropPinMode, onDropPin, height = 460, scrollWheelZoom = false, autoFit = true }) {
+export default function GMap({ t, stops, routeColors, depot, polylines, pins, selectedId, onSelect, dropPinMode, onDropPin, height = 460, scrollWheelZoom = false, autoFit = true, plain = false, fitSignal = 0 }) {
   const elRef = useRef(null), mapRef = useRef(null);
   const clusterRef = useRef(null), polyLayerRef = useRef(null), depotRef = useRef(null);
   const pinsRef = useRef([]);             // the S/E end pins, kept outside the cluster group
@@ -196,7 +199,7 @@ export default function GMap({ t, stops, routeColors, depot, polylines, pins, se
         : "";
 
 
-      mk.bindTooltip(
+      const tip =
         `<div style="font:600 12px/1.35 Inter,system-ui,sans-serif;max-width:230px"><b>${esc(s.name)}</b>` +
         (s.village ? `<br><span style="color:#64748b">${esc(s.village)}</span>` : "") +
         (realN != null ? `<br><span style="color:#0e7490">&#128101; ${realN} rider${realN === 1 ? "" : "s"}</span>${seatNote}` : "") +
@@ -204,9 +207,8 @@ export default function GMap({ t, stops, routeColors, depot, polylines, pins, se
         note +
         inferNote +
         nameLines +
-        `</div>`,
-        { direction: "top", offset: [0, -12] }
-      );
+        `</div>`;
+      mk.bindTooltip(plain ? plainTip(tip) : tip, { direction: "top", offset: [0, -12] });
       mk.on("click", () => onSelRef.current && onSelRef.current(s.selId));
       markersRef.current[s.key] = { marker: mk, color, headcount: n, selId: s.selId };
       batch.push(mk);
@@ -302,6 +304,9 @@ export default function GMap({ t, stops, routeColors, depot, polylines, pins, se
         .bindTooltip(p.title || p.label, { direction: "top", offset: [0, -38] })
         .addTo(map));
   }, [pins]);
+
+  // a new `fitSignal` (any changed truthy value) fits the map to every stop again
+  useEffect(() => { if (fitSignal) fit(); }, [fitSignal]); // eslint-disable-line
 
   useEffect(() => { if (elRef.current) elRef.current.style.cursor = dropPinMode ? "crosshair" : ""; }, [dropPinMode]);
 

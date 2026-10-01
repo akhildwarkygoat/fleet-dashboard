@@ -40,6 +40,13 @@ export const parkLabel = (spec, which = "park") =>
     : spec.kind === "depot" ? "Factory"
     : spec.name || `node ${spec.idx}`;
 
+/** The places matching a search, nearest the depot first, at most 40 of them. */
+export function parkMatches(points, q) {
+  const ql = q.trim().toLowerCase();
+  const src = ql ? points.filter((p) => p.name.toLowerCase().includes(ql)) : points;
+  return [...src].sort((a, b) => (a.depotKm ?? 1e9) - (b.depotKm ?? 1e9)).slice(0, 40);
+}
+
 /**
  * @param which   "start" | "park" — which end of the run is being set. The two differ only in
  *                what their default means: a run starts at the factory and ends wherever its
@@ -47,11 +54,7 @@ export const parkLabel = (spec, which = "park") =>
  */
 export default function ParkPicker({ t, busName, which = "park", current, points, onPick, onClose, glass, glassInner }) {
   const [q, setQ] = useState("");
-  const list = useMemo(() => {
-    const ql = q.trim().toLowerCase();
-    const src = ql ? points.filter((p) => p.name.toLowerCase().includes(ql)) : points;
-    return [...src].sort((a, b) => (a.depotKm ?? 1e9) - (b.depotKm ?? 1e9)).slice(0, 40);
-  }, [points, q]);
+  const list = useMemo(() => parkMatches(points, q), [points, q]);
   const cur = current || { kind: "auto" };
   const isStart = which === "start";
   const chip = (active) => ({

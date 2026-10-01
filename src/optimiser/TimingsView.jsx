@@ -24,13 +24,25 @@ import { planUrlFor, resolveFinalised } from "./finalisedPlans.js";
 import { ROTATION, getRotaWeek, rotationFor, subscribeRotaWeek, fmtWeek } from "./rotation.js";
 
 /* ---------------- service picker ---------------- */
+/* What the board says about one service, shared with the new look's ServicePicker (src/next):
+   its slice of the ERP roll-up, what it still needs, and whether it has a plan to open. */
+export function serviceCard(s, shifts) {
+  const stats = erpStatsFor(s, shifts);
+  const need = serviceNeed(s, shifts);
+  const planned = !!s.planUrl && !!stats;
+  return { stats, need, planned };
+}
+export const servicesWithRiders = (shifts) => SERVICES.filter((s) => erpStatsFor(s, shifts)).length;
+/* Every rider in a service; each rider is in exactly one service, so the slices add up. */
+export const ridersInServices = (shifts) => SERVICES.reduce((a, s) => a + ((erpStatsFor(s, shifts) || {}).riders || 0), 0);
+
 export function ServiceBoard({ t, onPick, shifts, shiftDate }) {
   const [meta, setMeta] = useState(null);   // finalised-plan headline for the planned card
   useEffect(() => {
     fetch("/finalised_plan.json").then((r) => (r.ok ? r.json() : null))
       .then((p) => p && p.overall && setMeta(p.overall)).catch(() => {});
   }, []);
-  const withRiders = SERVICES.filter((s) => erpStatsFor(s, shifts)).length;
+  const withRiders = servicesWithRiders(shifts);
 
   return (
     <div className="max-w-2xl mx-auto flex flex-col gap-6 py-8">
@@ -60,9 +72,7 @@ export function ServiceBoard({ t, onPick, shifts, shiftDate }) {
         <div className="text-[10px] font-bold uppercase tracking-widest mb-2.5 px-1" style={{ color: t.faint }}>Services</div>
         <div className="grid sm:grid-cols-2 gap-3">
           {SERVICES.map((s) => {
-            const stats = erpStatsFor(s, shifts);
-            const need = serviceNeed(s, shifts);
-            const planned = !!s.planUrl && !!stats;
+            const { stats, need, planned } = serviceCard(s, shifts);
             const badge = planned ? ["Planned", t.goodSoft, t.good]
               : stats ? ["In the ERP", t.primarySoft, t.primary]
               : ["Not yet", t.surface2, t.faint];
@@ -114,8 +124,8 @@ export function ServiceBoard({ t, onPick, shifts, shiftDate }) {
 }
 
 /* ---------------- Timings ---------------- */
-const AX_START = 4 * 60, AX_END = 30 * 60;             // 04:00 → 06:00 next day (covers the full-night slot)
-const pct = (min) => ((min - AX_START) / (AX_END - AX_START)) * 100;
+export const AX_START = 4 * 60, AX_END = 30 * 60;      // 04:00 → 06:00 next day (covers the full-night slot)
+export const pct = (min) => ((min - AX_START) / (AX_END - AX_START)) * 100;
 
 /* Minutes-from-midnight onto the 04:00→06:00 axis, at or after `after`. A full-night run
    ending at 06:00 belongs at 1800 on this axis, not at 360 where it would draw before the
@@ -182,9 +192,16 @@ function dropRuns(conn, on) {
     .filter(Boolean);
 }
 
-export function TimingsView({ t, shifts }) {
+export const groupLabel = (gid) => (gid && ROTATION.groups[gid] && ROTATION.groups[gid].label) || (gid ? `Group ${gid}` : "—");
+
+/* Everything the clock draws, shared with the new look's TimingsBoard (src/next): the plans for
+   the rota week, the shipped layover model re-priced against the chosen parking, the filters, and
+   one row per bus with its collisions counted. `loading` says which fetches are still out; the
+   view below does not read it. */
+export function useTimings() {
   const [plans, setPlans] = useState({});               // service id -> plan json
   const [conn, setConn] = useState(null);               // bus_connections.json, if built
+  const [loading, setLoading] = useState({ plans: true, conn: true });
   /* Read once on mount. Switching to this subtab remounts the view, so a park changed in the
      Planner is picked up the next time the clock is looked at. */
   const [prefs] = useState(getParkPrefs);
@@ -206,24 +223,28 @@ export function TimingsView({ t, shifts }) {
     let gen = 0;
     const load = () => {
       const my = ++gen;
+      let left = 0;
       setPlans({});
       setRotaWeek(getRotaWeek());
       SERVICES.forEach((s) => {
         const url = planUrlFor(s);
         if (!url) return;
+        left++;
         fetch(url + "?ts=" + Date.now()).then((r) => (r.ok ? r.json() : null))
           .then((p) => { if (my === gen && p && Array.isArray(p.routes)) setPlans((prev) => ({ ...prev, [s.id]: p })); })
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => { if (my === gen && --left === 0) setLoading((l) => ({ ...l, plans: false })); });
       });
+      setLoading((l) => ({ ...l, plans: left > 0 }));
     };
     load();
     const off = subscribeRotaWeek(load);
-    fetch("/bus_connections.json").then((r) => (r.ok ? r.json() : null)).then(setConn).catch(() => {});
+    fetch("/bus_connections.json").then((r) => (r.ok ? r.json() : null)).then(setConn).catch(() => {})
+      .finally(() => setLoading((l) => ({ ...l, conn: false })));
     return () => { gen++; off(); };
   }, []);
   /* Which rider group runs which slot this week — a calendar function of the manifest. */
   const rota = useMemo(() => rotationFor(rotaWeek), [rotaWeek]);
-  const groupLabel = (gid) => (gid && ROTATION.groups[gid] && ROTATION.groups[gid].label) || (gid ? `Group ${gid}` : "—");
 
   const allRuns = useMemo(() => SERVICES.flatMap((s) => runsFromPlan(plans[s.id], s)), [plans]);
   /* Re-price the shipped model against the parking the manager has actually chosen.
@@ -305,6 +326,30 @@ export function TimingsView({ t, shifts }) {
   const totalClashes = rows.reduce((s, r) => s + r.clashes, 0);
   const liveCount = SERVICES.filter((s) => plans[s.id]).length;
   const waiting = SERVICES.filter((s) => !plans[s.id]);
+  return { conn, loading, on, setOn, toggleSvc, q, setQ, clashOnly, setClashOnly, showLayovers, setShowLayovers, rotaWeek, rota,
+    allRuns, pinnedHome, layovers, dropsByVeh, visible, rows, shown, totalClashes, liveCount, waiting };
+}
+
+/* One Rotational slot as the slots table reads it: its riders, the group on its clock this week,
+   and whether a finalised plan outranks the rotation. */
+export function slotRow(sl, rota, shifts) {
+  const svc = SERVICES.find((s) => s.slot === sl.id);
+  const st = svc && erpStatsFor(svc, shifts);
+  const gid = rota && rota.bySlot ? rota.bySlot[sl.id] : null;
+  /* A finalised draft or hand-picked file on this slot outranks the rotation on the
+     Fleet plan, Overall and T.I. This clock only draws FILES: a hand-picked file is
+     drawn here too, but a draft has none, so the clock falls back to the rota plan —
+     say which, otherwise the clock and this table would disagree about the plan.
+     resolveFinalised, not planSourceFor: the latter deliberately names the file
+     UNDER a draft. */
+  const fin = svc ? resolveFinalised(svc) : null;
+  const overridden = !!fin && fin.kind !== "rotation" && !fin.isDefault;
+  return { svc, st, gid, fin, overridden };
+}
+
+export function TimingsView({ t, shifts }) {
+  const { conn, on, toggleSvc, q, setQ, clashOnly, setClashOnly, showLayovers, setShowLayovers, rotaWeek, rota,
+    allRuns, pinnedHome, layovers, dropsByVeh, visible, rows, shown, totalClashes, liveCount, waiting } = useTimings();
 
   /* ---- zoom + hover time readout ----
      Scrolling over the chart stretches the clock horizontally (anchored at the cursor,
@@ -592,17 +637,7 @@ export function TimingsView({ t, shifts }) {
             </tr></thead>
             <tbody>
               {ROTATION_SLOTS.map((sl) => {
-                const svc = SERVICES.find((s) => s.slot === sl.id);
-                const st = svc && erpStatsFor(svc, shifts);
-                const gid = rota && rota.bySlot ? rota.bySlot[sl.id] : null;
-                /* A finalised draft or hand-picked file on this slot outranks the rotation on the
-                   Fleet plan, Overall and T.I. This clock only draws FILES: a hand-picked file is
-                   drawn here too, but a draft has none, so the clock falls back to the rota plan —
-                   say which, otherwise the clock and this table would disagree about the plan.
-                   resolveFinalised, not planSourceFor: the latter deliberately names the file
-                   UNDER a draft. */
-                const fin = svc ? resolveFinalised(svc) : null;
-                const overridden = !!fin && fin.kind !== "rotation" && !fin.isDefault;
+                const { st, gid, fin, overridden } = slotRow(sl, rota, shifts);
                 return (
                   <tr key={sl.id} style={{ borderTop: "1px solid " + t.border }}>
                     <td className="py-2 px-3 font-semibold whitespace-nowrap" style={{ color: t.text }}>

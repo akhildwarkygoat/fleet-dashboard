@@ -5,50 +5,38 @@
 import React, { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { Card, Btn, Tile, Segmented, Empty } from "./ui/kit.jsx";
-import { PERIODS, periodRange, costRows, sumRows, groupRows, costExplainers, headLabel, downloadCosts } from "./costReport.js";
+import {
+  PERIODS, periodRange, shiftPeriod, latestDate, datesIn, costRows, sumRows, costHeadNames, companyTotals, busCount,
+  costLines, shareOf, costExplainers, costExplainerMap, OTHER_HEAD_WHAT, downloadCosts,
+} from "./costReport.js";
 
 const inr = (n) => (n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN"));
 const inr1 = (n) => (n == null ? "—" : "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 1 }));
 const num = (n) => Math.round(n || 0).toLocaleString("en-IN");
-const pctOf = (a, b) => (a != null && b ? Math.round((a / b) * 1000) / 10 + "%" : "—");
-const shift = (iso, kind, dir) => {
-  const d = new Date(iso + "T00:00:00Z");
-  if (kind === "month") d.setUTCMonth(d.getUTCMonth() + dir, 1);
-  else d.setUTCDate(d.getUTCDate() + dir * (kind === "week" ? 7 : 1));
-  return d.toISOString().slice(0, 10);
-};
 
 /** dates: every date with data (sorted); ridersOn(busId, date): riders carried that day. */
 export default function CostsView({ t, buses, records, busCosts, wd, dates, ridersOn, unitColor }) {
-  const latest = dates[dates.length - 1] || new Date().toISOString().slice(0, 10);
+  const latest = latestDate(dates);
   const [kind, setKind] = useState("month");
   const [anchor, setAnchor] = useState(latest);
   const period = periodRange(kind, anchor);
 
-  const headNames = useMemo(() => {
-    const lines = Object.values(busCosts || {}).flatMap((p) => (p && p.lines) || []);
-    return Object.fromEntries([...new Set(lines.map((l) => l.type))].map((h) => [h, headLabel(h, lines)]));
-  }, [busCosts]);
+  const headNames = useMemo(() => costHeadNames(busCosts), [busCosts]);
   const { rows, heads } = useMemo(() => costRows({
     buses, records, busCosts, wd, riders: ridersOn,
-    dates: dates.filter((d) => d >= period.from && d <= period.to),
+    dates: datesIn(dates, period),
   }), [buses, records, busCosts, wd, ridersOn, dates, period.from, period.to]);
   const all = useMemo(() => sumRows(rows, heads), [rows, heads]);
-  const companies = useMemo(() => groupRows(rows, "company").map(([c, rs]) => ({ c, buses: new Set(rs.map((r) => r.busId)).size, s: sumRows(rs, heads) })), [rows, heads]);
-  const explain = useMemo(() => Object.fromEntries(costExplainers(wd).map((e) => [e.key, e])), [wd]);
+  const companies = useMemo(() => companyTotals(rows, heads), [rows, heads]);
+  const explain = useMemo(() => costExplainerMap(wd), [wd]);
 
-  const lines = [
-    { key: "dieselKm", label: "Diesel — by km travelled", amount: all.dieselKm, sub: `${num(all.dieselKmLitres)} L` },
-    { key: "dieselIssued", label: "Diesel — as issued", amount: all.dieselIssued, sub: all.dieselIssued == null ? "diesel feed not loaded for every day" : `${num(all.dieselIssuedLitres)} L`, alt: true },
-    { key: "hire", label: "Hire (rented buses)", amount: all.hire },
-    ...heads.map((h) => ({ key: h, label: headNames[h] || h, amount: all.standing[h] })),
-  ].filter((l) => l.amount == null || l.amount > 0);
+  const lines = costLines(all, heads, headNames, num);
 
   const picker = kind === "month"
     ? <input type="month" value={anchor.slice(0, 7)} onChange={(e) => e.target.value && setAnchor(e.target.value + "-01")} className="rounded-xl px-3 py-2 text-sm tabular-nums" style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }} aria-label="Month" />
     : <input type="date" value={anchor} onChange={(e) => e.target.value && setAnchor(e.target.value)} className="rounded-xl px-3 py-2 text-sm tabular-nums" style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }} aria-label={kind === "week" ? "Any day in the week" : "Day"} />;
   const arrow = (dir, Icon, label) => (
-    <button type="button" onClick={() => setAnchor(shift(anchor, kind, dir))} aria-label={label} title={label}
+    <button type="button" onClick={() => setAnchor(shiftPeriod(anchor, kind, dir))} aria-label={label} title={label}
       className="rounded-xl p-2" style={{ border: "1px solid " + t.border, color: t.text, background: t.surface }}><Icon size={16} /></button>
   );
 
@@ -68,7 +56,7 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
 
       {!rows.length ? <Empty t={t} title="No data in this period" sub={`Nothing was recorded between ${period.from} and ${period.to}. Pick another ${kind}.`} /> : <>
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-          <Tile t={t} label="Total cost · by km" value={inr(all.totalKm)} sub={`${all.days} day${all.days === 1 ? "" : "s"} · ${new Set(rows.map((r) => r.busId)).size} buses`} />
+          <Tile t={t} label="Total cost · by km" value={inr(all.totalKm)} sub={`${all.days} day${all.days === 1 ? "" : "s"} · ${busCount(rows)} buses`} />
           <Tile t={t} label="Total cost · by diesel" value={inr(all.totalDiesel)} sub={all.totalDiesel == null ? "diesel feed not loaded for every day" : "diesel as the ERP issued it"} />
           <Tile t={t} label="Cost per head" value={inr1(all.cphKm)} sub={`by diesel ${inr1(all.cphDiesel)}`} />
           <Tile t={t} label="Riders carried" value={num(all.riders)} sub="people × days" />
@@ -85,8 +73,8 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
                 <tr key={l.key} style={{ borderTop: "1px solid " + t.border }}>
                   <td className="py-2.5 pr-4 font-semibold" style={{ color: t.text }}>{l.label}{l.sub && <div className="text-xs font-normal" style={{ color: t.muted }}>{l.sub}</div>}</td>
                   <td className="py-2.5 pr-4 text-right tabular-nums font-semibold" style={{ color: t.text }}>{inr(l.amount)}</td>
-                  <td className="py-2.5 pr-4 text-right tabular-nums" style={{ color: t.muted }}>{l.alt ? "—" : pctOf(l.amount, all.totalKm)}</td>
-                  <td className="py-2.5" style={{ color: t.muted }}>{(explain[l.key] || {}).what || "A cost line from the ERP costing feed, spread over the working days of the year."}</td>
+                  <td className="py-2.5 pr-4 text-right tabular-nums" style={{ color: t.muted }}>{l.alt ? "—" : shareOf(l.amount, all.totalKm)}</td>
+                  <td className="py-2.5" style={{ color: t.muted }}>{(explain[l.key] || {}).what || OTHER_HEAD_WHAT}</td>
                 </tr>))}
                 <tr style={{ borderTop: "2px solid " + t.border }}>
                   <td className="py-2.5 pr-4 font-bold" style={{ color: t.text }}>Total · by km</td>

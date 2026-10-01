@@ -5,14 +5,13 @@
  * your saved drafts. Each saved draft is a card with a lightweight map PREVIEW
  * (an SVG of its routes), its name, last-edited time and a quick summary.
  * ==========================================================================*/
-import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useLayoutEffect, useMemo, useRef } from "react";
 import { gsap } from "gsap";
 import { Flip } from "gsap/Flip";
 import { Plus, Sparkles, MapPinned, Trash2, Clock, Users, Bus, FileUp, History, CheckCircle2, Circle } from "lucide-react";
-import { PALETTE } from "./ui.jsx";
-import { KPI_DEFS, getHiddenKpis } from "./kpiPrefs.js";
-import { PLAN_RANK, nextRank, rankBy, dirWords } from "./kpiRank.js";
+import { PLAN_RANK, dirWords } from "./kpiRank.js";
 import { prefersReduced, springTween } from "../ui/motion.js";
+import { usePlanRanking, isFinalOf, prevRouteLines, readPlanFile } from "./plannerState.js";
 
 gsap.registerPlugin(Flip);
 
@@ -28,7 +27,7 @@ function relTime(ts) {
 
 /* A tiny SVG "map" of a plan's routes — depot→stops polyline per bus, fit to view.
  * Cheap to render (no Leaflet), so a whole gallery of them stays snappy. */
-function PlanThumb({ t, assignments, stopsById, depot, busColor, lines }) {
+export function PlanThumb({ t, assignments, stopsById, depot, busColor, lines }) {
   const W = 300, H = 150, pad = 16;
   const routes = [], pts = [];
   if (lines) {
@@ -73,41 +72,25 @@ function PlanThumb({ t, assignments, stopsById, depot, busColor, lines }) {
 export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, busColor, onNewBlank, onImport, onOpen, onDelete, canImport, planLabel, planKind, onImportFile, onImportPrev, prevPlan, finalised, onFinalise, bodies }) {
   /* Rank the saved plans by any KPI the boards show (the same hidden-KPI preference applies):
      highest first, then lowest first, then back to newest first. Each plan is scored the way
-     finalising scores it (NewPlanView.scoreDraft), so a figure here matches the board. */
-  const [rank, setRank] = useState(null);                  // { key, dir } | null
-  const [hidden] = useState(getHiddenKpis);
-  const chips = KPI_DEFS.filter((d) => PLAN_RANK[d.key] && !hidden.has(d.key));
+     finalising scores it (usePlanHub's scoreDraft), so a figure here matches the board. */
   const gridRef = useRef(null);
   const flipFrom = useRef(null);
-  const press = (key) => {
-    if (gridRef.current && !prefersReduced()) flipFrom.current = Flip.getState(gridRef.current.children);
-    setRank((cur) => (key ? nextRank(cur, key) : null));
-  };
+  const captureFlip = () => { if (gridRef.current && !prefersReduced()) flipFrom.current = Flip.getState(gridRef.current.children); };
+  // the ranking's state and order live in plannerState.js, shared with the new look
+  const { rank, chips, press, ranked } = usePlanRanking(drafts, bodies, captureFlip);
   useLayoutEffect(() => {
     if (!flipFrom.current) return;
     Flip.from(flipFrom.current, springTween("move"));
     flipFrom.current = null;
   }, [rank]);
-  const ranked = useMemo(() => {
-    if (!rank) return drafts.map((d) => ({ item: d, value: null, rank: null }));
-    const def = PLAN_RANK[rank.key];
-    return rankBy(drafts, (d) => { const b = bodies && bodies.get(d.id); return b ? def.value(b) : null; }, rank.dir);
-  }, [drafts, rank, bodies]);
   // hidden file input for "Import plan file" — reads a plan JSON exported by a teammate
   const fileRef = useRef(null);
   const prevMeta = prevPlan && prevPlan.meta;
   /* Which candidate is the finalised one. `isDefault` means nobody chose — the optimised
      plan is standing in — and that must read differently from a deliberate choice. */
-  const isFinal = (kind, id) => !!finalised && !finalised.isDefault &&
-    (kind === "draft" ? finalised.draftId === id : finalised.kind === "plan");
+  const isFinal = (kind, id) => isFinalOf(finalised, kind, id);
   // thumbnail polylines for the permanent prev-route card (drawn straight from the ERP feed)
-  const prevLines = useMemo(() => {
-    if (!prevPlan || !Array.isArray(prevPlan.buses)) return null;
-    return prevPlan.buses.map((b, i) => ({
-      color: PALETTE[i % PALETTE.length],
-      coords: (b.stops || []).filter((s) => s.lat != null && s.lng != null).map((s) => [s.lat, s.lng]),
-    })).filter((l) => l.coords.length);
-  }, [prevPlan]);
+  const prevLines = useMemo(() => prevRouteLines(prevPlan), [prevPlan]);
   /* The ERP's previous allocation is not a saved plan and has no score, so while the plans are
      ranked it follows them rather than sitting above #1. */
   const prevCard = prevLines && (
@@ -132,13 +115,7 @@ export default function PlanGallery({ t, drafts, totalRiders, stopsById, depot, 
       </div>
     </div>
   );
-  const onFile = async (e) => {
-    const f = e.target.files && e.target.files[0];
-    e.target.value = ""; // allow picking the same file again
-    if (!f || !onImportFile) return;
-    try { onImportFile(JSON.parse(await f.text()), f.name); }
-    catch { onImportFile(null, f.name); } // parent shows the "not a plan file" toast
-  };
+  const onFile = (e) => readPlanFile(e, onImportFile);
   return (
     <div className="space-y-5">
       <div>
