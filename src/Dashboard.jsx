@@ -884,8 +884,14 @@ function LiveView({ t, unit, buses, records, employees, attendance, formulas, se
 const DOC_CATEGORIES = ["RC", "Insurance", "Permit", "Fitness", "Pollution", "Driver licence", "Other"];
 const MAX_DOC_BYTES = 3 * 1024 * 1024; // 3 MB/file — kept small so localStorage doesn't overflow
 const fmtBytes = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B");
+/* Where a bus's documents live in this browser, and how one file is stored there. Shared with the
+   new look, so both looks read and write the same files. */
+const busDocsKey = (busId) => "bus-docs-" + busId;
+function busDocRecord(f, cat, dataUrl) {
+  return { id: uid(), name: f.name, type: f.type || "file", size: f.size, category: cat, addedAt: new Date().toISOString().slice(0, 10), dataUrl };
+}
 function BusDocuments({ t, busId, busLabel, toast }) {
-  const key = "bus-docs-" + busId;
+  const key = busDocsKey(busId);
   const [docs, setDocs] = useState([]);
   const [cat, setCat] = useState(DOC_CATEGORIES[0]);
   const fileRef = useRef(null);
@@ -900,7 +906,7 @@ function BusDocuments({ t, busId, busLabel, toast }) {
       if (f.size > MAX_DOC_BYTES) { toast && toast(`${f.name} is too large (max ${fmtBytes(MAX_DOC_BYTES)})`); if (--pending === 0) persist(next); return; }
       const reader = new FileReader();
       reader.onload = () => {
-        next = [...next, { id: uid(), name: f.name, type: f.type || "file", size: f.size, category: cat, addedAt: new Date().toISOString().slice(0, 10), dataUrl: reader.result }];
+        next = [...next, busDocRecord(f, cat, reader.result)];
         if (--pending === 0) { if (persist(next)) toast && toast("Document(s) added"); }
       };
       reader.onerror = () => { if (--pending === 0) persist(next); };
@@ -1035,20 +1041,19 @@ function SourceDot({ t, phase, children, title }) {
 /* One bus, day by day: the km it travelled and the diesel the ERP issued, each priced — the two
    ways every cost on this page is worked out. Computed straight from the feeds for the 14 days up to
    the selected date, so it reaches past the ERP's ~11-day punch window. */
-function KmDieselCard({ t, bus, endDate, run }) {
-  const days = useMemo(() => {
-    if (!endDate) return [];
-    const issues = run.diesel ? run.diesel.issues[vehKey(bus.id)] || [] : null;
-    return Array.from({ length: 14 }, (_, i) => addDaysIso(endDate, -i)).map((d) => {
-      const day = kmOn(bus, d, run.gpsIdx, run.today);
-      const cost = variableCost(bus, day, issues && dieselOn(issues, d), run.diesel ? priceOn(run.diesel.prices, d) : null);
-      return { d, day, cost };
-    });
-  }, [bus, endDate, run]);
-  if (!endDate) return null;
-  const hired = days.length && days[0].cost.hired;
+/* The card's rows and totals, shared with the new look: each day's km and both costs, km per litre
+   where both are measured, how the cost as issued compares with the cost by km, and the 14-day sums. */
+function busKmDieselDays(bus, endDate, run) {
+  if (!endDate) return { days: [], hired: false, sum: null };
+  const issues = run.diesel ? run.diesel.issues[vehKey(bus.id)] || [] : null;
+  const rows = Array.from({ length: 14 }, (_, i) => addDaysIso(endDate, -i)).map((d) => {
+    const day = kmOn(bus, d, run.gpsIdx, run.today);
+    const cost = variableCost(bus, day, issues && dieselOn(issues, d), run.diesel ? priceOn(run.diesel.prices, d) : null);
+    return { d, day, cost };
+  });
+  const hired = rows.length && rows[0].cost.hired;
   const sum = { km: 0, gps: 0, plan: 0, byKm: 0, byDiesel: 0, litres: 0, bothKm: 0, bothL: 0, both: 0 };
-  days.forEach(({ day, cost }) => {
+  rows.forEach(({ day, cost }) => {
     sum.km += day.km; if (day.source === "gps") sum.gps++; else if (day.source === "plan") sum.plan++;
     if (cost.byKm) sum.byKm += cost.byKm.amount;
     if (cost.byDiesel) { sum.byDiesel += cost.byDiesel.amount; if (!hired) sum.litres += cost.byDiesel.litres; }
@@ -1057,6 +1062,19 @@ function KmDieselCard({ t, bus, endDate, run }) {
       sum.bothKm += day.km; sum.bothL += cost.byDiesel.litres; sum.both++;
     }
   });
+  sum.kmpl = sum.both ? sum.bothKm / sum.bothL : null;
+  const days = rows.map((r) => {
+    const { day } = r, k = r.cost.byKm, dz = r.cost.byDiesel;
+    const kmpl = !hired && day.source === "gps" && !day.inProgress && dz && dz.source === "issued" && dz.litres > 0 ? day.km / dz.litres : null;
+    const vsKm = !hired && dz && k && k.amount > 0 && dz.source !== "none"
+      ? { up: dz.amount >= k.amount, pct: Math.abs(((dz.amount - k.amount) / k.amount) * 100) } : null;
+    return { ...r, kmpl, vsKm };
+  });
+  return { days, hired, sum };
+}
+function KmDieselCard({ t, bus, endDate, run }) {
+  const { days, hired, sum } = useMemo(() => busKmDieselDays(bus, endDate, run), [bus, endDate, run]);
+  if (!endDate) return null;
   const th = "py-2 px-3 text-xs font-semibold uppercase tracking-wider whitespace-nowrap";
   const sub = (txt, tone) => <div className="text-[11px] mt-0.5 leading-snug whitespace-nowrap" style={{ color: tone || t.muted }}>{txt}</div>;
   return (
@@ -1075,9 +1093,8 @@ function KmDieselCard({ t, bus, endDate, run }) {
             <th className={th + " text-right"}>km / L</th>
           </tr></thead>
           <tbody>
-            {days.map(({ d, day, cost }) => {
+            {days.map(({ d, day, cost, kmpl, vsKm }) => {
               const k = cost.byKm, dz = cost.byDiesel;
-              const kmpl = !hired && day.source === "gps" && !day.inProgress && dz && dz.source === "issued" && dz.litres > 0 ? day.km / dz.litres : null;
               return (
                 <tr key={d} style={{ borderTop: "1px solid " + t.border }}>
                   <td className="py-2 px-3 align-top whitespace-nowrap" style={{ color: t.text }}>
@@ -1103,9 +1120,9 @@ function KmDieselCard({ t, bus, endDate, run }) {
                   </td>
                   <td className="py-2 px-3 text-right align-top tabular-nums">
                     <div className="font-semibold" style={{ color: dz ? t.text : t.faint }}>{dz ? `${!hired && dz.source === "estimate" ? "≈" : ""}${inr(dz.amount)}` : "—"}</div>
-                    {!hired && dz && k && k.amount > 0 && dz.source !== "none" && (day.inProgress
+                    {vsKm && (day.inProgress
                       ? sub("km still growing")
-                      : sub(`${dz.amount >= k.amount ? "+" : "−"}${Math.abs(((dz.amount - k.amount) / k.amount) * 100).toFixed(0)}% vs by km`))}
+                      : sub(`${vsKm.up ? "+" : "−"}${vsKm.pct.toFixed(0)}% vs by km`))}
                   </td>
                   <td className="py-2 px-3 text-right align-top tabular-nums" style={{ color: kmpl != null ? t.text : t.faint }}>{kmpl != null ? km1(kmpl) : "—"}</td>
                 </tr>
@@ -1118,7 +1135,7 @@ function KmDieselCard({ t, bus, endDate, run }) {
         <span>14 days: <b style={{ color: t.text }}>{km1(sum.km)} km</b> · GPS on {sum.gps} days{sum.plan ? `, plan on ${sum.plan}` : ""}</span>
         <span>{hired ? "Tariff" : "By km"} <b style={{ color: t.text }}>{inr(sum.byKm)}</b>{!hired && <> · as issued <b style={{ color: t.text }}>{run.diesel ? inr(sum.byDiesel) : "—"}</b>{run.diesel ? ` (${km1(sum.litres)} L)` : ""}</>}</span>
         {!hired && (sum.both
-          ? <span>Actual <b style={{ color: t.text }}>{km1(sum.bothKm / sum.bothL)} km/L</b> over {sum.both} day{sum.both === 1 ? "" : "s"} with GPS km and an issue{+bus.mileage > 0 ? ` · the ERP says ${km1(+bus.mileage)}` : ""}</span>
+          ? <span>Actual <b style={{ color: t.text }}>{km1(sum.kmpl)} km/L</b> over {sum.both} day{sum.both === 1 ? "" : "s"} with GPS km and an issue{+bus.mileage > 0 ? ` · the ERP says ${km1(+bus.mileage)}` : ""}</span>
           : <span>Actual km/L appears once a GPS-recorded day is covered by a real issue.</span>)}
       </div>
       <p className="text-xs mt-2" style={{ color: t.faint }}>
@@ -1175,10 +1192,13 @@ function variableLines(rec, date) {
   return out;
 }
 
-function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncCosts, budget, onSetBudget }) {
-  const [open, setOpen] = useState({});          // line id -> expanded
-  const [editBudget, setEditBudget] = useState(false);
-  const [draft, setDraft] = useState({ amount: "", period: "month" });
+/* "Per month" for "month". */
+function costPeriodLabel(p) { return (COST_PERIODS.find(([v]) => v === p) || [, p])[1]; }
+/* A cost line in ₹ per working day: the exact figure a worked-out line carries, else its normalised amount. */
+function costLineDaily(l, wd) { return l.daily != null ? l.daily : lineDaily(l, wd); }
+/* The cost card's figures for one bus on one day, shared with the new look: the ERP lines, the day's
+   km-variable lines, and the totals a day and a month, and against the budget, both ways. */
+function busCostFigures(profile, day, date, wd) {
   const lines = (profile && profile.lines) || [];
   const vlines = variableLines(day, date);
   const standing = profileDailySpend(profile, wd);
@@ -1187,7 +1207,19 @@ function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncC
   const vKm = vlines.find((l) => l.id !== "var-issued"), vIssued = vlines.find((l) => l.id === "var-issued");
   const totKm = standing + (vKm ? vKm.daily : 0);
   const totDiesel = hired ? totKm : vIssued && vIssued.daily != null ? standing + vIssued.daily : null;
-  const periodLabel = (p) => (COST_PERIODS.find(([v]) => v === p) || [, p])[1];
+  return { lines, vlines, standing, dailyBudget, hired, vKm, vIssued, totKm, totDiesel,
+    monthKm: totKm * wd / 12, monthDiesel: totDiesel == null ? null : totDiesel * wd / 12,
+    varianceKm: dailyBudget - totKm, varianceDiesel: totDiesel == null ? null : dailyBudget - totDiesel };
+}
+/* A budget as typed into the card, in the shape busInfo keeps it. */
+function budgetPatch(draft) { return { budgetAmount: draft.amount === "" ? "" : +draft.amount || 0, budgetPeriod: draft.period }; }
+
+function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncCosts, budget, onSetBudget }) {
+  const [open, setOpen] = useState({});          // line id -> expanded
+  const [editBudget, setEditBudget] = useState(false);
+  const [draft, setDraft] = useState({ amount: "", period: "month" });
+  const { lines, vlines, dailyBudget, hired, totKm, totDiesel, monthKm, monthDiesel, varianceKm, varianceDiesel } = busCostFigures(profile, day, date, wd);
+  const periodLabel = costPeriodLabel;
   const busy = costPhase === "syncing";
   const windowLabel = costMeta && costMeta.fy ? `FY ${costMeta.fy} (${costMeta.from} → ${costMeta.to})` : "the current financial year";
 
@@ -1220,7 +1252,7 @@ function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncC
           <td className="py-2 px-3 text-right tabular-nums" style={{ color: t.muted }}>{spec.qty && !l.missing ? (l.quantity ?? "—") : "—"}</td>
           <td className="py-2 px-3 text-right" style={{ color: t.muted }}>{periodLabel(l.period || spec.period)}</td>
           <td className="py-2 px-3 text-right tabular-nums font-semibold" style={{ color: l.missing ? t.faint : t.text }}>
-            {l.missing ? "—" : inr(l.daily != null ? l.daily : lineDaily(l, wd))}
+            {l.missing ? "—" : inr(costLineDaily(l, wd))}
           </td>
         </tr>
         {isOpen && (
@@ -1293,7 +1325,7 @@ function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncC
                   style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }}>
                   {COST_PERIODS.map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
                 </select>
-                <Btn t={t} className="!px-3 !py-1.5" onClick={() => { onSetBudget({ budgetAmount: draft.amount === "" ? "" : +draft.amount || 0, budgetPeriod: draft.period }); setEditBudget(false); }}>Save</Btn>
+                <Btn t={t} className="!px-3 !py-1.5" onClick={() => { onSetBudget(budgetPatch(draft)); setEditBudget(false); }}>Save</Btn>
                 <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={() => setEditBudget(false)}>Cancel</Btn>
               </div>
             ) : (
@@ -1334,11 +1366,11 @@ function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncC
 
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mt-3 text-sm" style={{ color: t.muted }}>
             <div>Total spend /day {hired ? <b className="tabular-nums" style={{ color: t.text }}>{inr(totKm)}</b> : <Both t={t} km={totKm} diesel={totDiesel} />}</div>
-            <div>/mo {hired ? <b className="tabular-nums" style={{ color: t.text }}>{inr(totKm * wd / 12)}</b> : <Both t={t} km={totKm * wd / 12} diesel={totDiesel == null ? null : totDiesel * wd / 12} />}</div>
+            <div>/mo {hired ? <b className="tabular-nums" style={{ color: t.text }}>{inr(monthKm)}</b> : <Both t={t} km={monthKm} diesel={monthDiesel} />}</div>
             {dailyBudget > 0 && (
               <div className="ml-auto">Variance /day {hired
-                ? <b className="tabular-nums" style={{ color: dailyBudget - totKm >= 0 ? t.good : t.poor }}>{inr(dailyBudget - totKm)}</b>
-                : <Both t={t} km={dailyBudget - totKm} diesel={totDiesel == null ? null : dailyBudget - totDiesel} color={(v) => (v >= 0 ? t.good : t.poor)} />}</div>
+                ? <b className="tabular-nums" style={{ color: varianceKm >= 0 ? t.good : t.poor }}>{inr(varianceKm)}</b>
+                : <Both t={t} km={varianceKm} diesel={varianceDiesel} color={(v) => (v >= 0 ? t.good : t.poor)} />}</div>
             )}
           </div>
           <div className="text-xs mt-3" style={{ color: t.muted }}>
@@ -1366,7 +1398,7 @@ function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncC
                   style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }}>
                   {COST_PERIODS.map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
                 </select>
-                <Btn t={t} className="!px-3 !py-1.5" onClick={() => { onSetBudget({ budgetAmount: draft.amount === "" ? "" : +draft.amount || 0, budgetPeriod: draft.period }); setEditBudget(false); }}>Save</Btn>
+                <Btn t={t} className="!px-3 !py-1.5" onClick={() => { onSetBudget(budgetPatch(draft)); setEditBudget(false); }}>Save</Btn>
                 <Btn t={t} variant="ghost" className="!px-3 !py-1.5" onClick={() => setEditBudget(false)}>Cancel</Btn>
               </div>
             ) : (
@@ -1379,13 +1411,15 @@ function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncC
   );
 }
 
+/* Driver details as typed into the card, in the shape busInfo keeps them. */
+function driverPatch(draft) { return { driver: draft.driver.trim(), phone: draft.phone.trim() }; }
 /* Driver name + phone. Neither is in the ERP feed, so they are entered here and kept on this
    device against the vehicle — the ERP placeholder shows only while nothing has been entered. */
 function DriverCard({ t, bus, info, onSave }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState({ driver: "", phone: "" });
   const start = () => { setDraft({ driver: (info && info.driver) || "", phone: (info && info.phone) || "" }); setEditing(true); };
-  const save = () => { onSave({ driver: draft.driver.trim(), phone: draft.phone.trim() }); setEditing(false); };
+  const save = () => { onSave(driverPatch(draft)); setEditing(false); };
   const field = (label, key, props) => (
     <div>
       <label className="text-xs" style={{ color: t.muted }} htmlFor={`drv-${key}-${bus.id}`}>{label}</label>
@@ -1728,6 +1762,35 @@ function CostReportView({ t, buses, records, employees, attendance, settings, bu
 }
 
 /* ============================ BUS-WISE (Unit → Bus → details) ============================ */
+/* The fleet's median cost per head, each bus on its own latest day with data: what a bus's health is
+   graded against. Shared with the new look. */
+function busMedianCph(buses, records, employees, attendance, wd) {
+  return median(buses.map((b) => { const d = busLatestDate(records, employees, attendance, b.id); return d ? metricsFor(resolveRec(records, employees, attendance, b.id, d), b, wd).cph : 0; }).filter((n) => n > 0));
+}
+/* One bus over the chosen dates: every figure the bus page shows, shared with the new look. */
+function busRangeFigures(bus, records, employees, attendance, settings, range, wd, medCph) {
+  const rngDates = datesInRange(records, attendance, range.from, range.to).filter((d) => busHasData(records, employees, attendance, bus.id, d));
+  const pairs = rngDates.map((d) => ({ bus, rec: resolveRec(records, employees, attendance, bus.id, d) }));
+  const agg = aggregate(pairs, wd);
+  const scope = scopeFromAgg(agg);
+  const has = pairs.length > 0;
+  const m = has ? { ...scope, netAnnual: agg.netAnnual } : null;
+  const h = m ? healthOf(m, medCph, settings) : "watch";
+  const bd = m ? bandFor(m.util, settings.bands) : null;
+  const assigned = agg.present + agg.absent;
+  const presentVsAlloc = assigned ? (agg.present / assigned) * 100 : 0;
+  const emps = busEmps(employees, bus.id);
+  const travels = emps.map((e) => +e.travelMin).filter((n) => n > 0);
+  const minRide = travels.length ? Math.min(...travels) : null, maxRide = travels.length ? Math.max(...travels) : null;
+  const latest = busLatestDate(records, employees, attendance, bus.id);
+  const day = (latest && attendance[latest]) || {};
+  // the cost card prices one day: the last day with data in the chosen range, else the bus's latest
+  const cardDate = rngDates[rngDates.length - 1] || latest;
+  const cardRec = cardDate ? recOf(records, bus.id, cardDate) : null;
+  return { rngDates, pairs, agg, scope, has, m, h, bd, assigned, presentVsAlloc, emps, minRide, maxRide, latest, day, cardDate, cardRec };
+}
+/* Riders the finalised plan puts on this bus's stops. */
+function busStopRiders(bus) { return (bus.planStops || []).reduce((s, x) => s + (+x.hc || 0), 0); }
 function BusView({ t, unit, buses, records, employees, attendance, formulas, settings, variables, busCosts, costMeta, costPhase, onSyncCosts, busInfo, onSetBusField, toast, focusBusId, onBack, run }) {
   const wd = effWorkingDays(settings), showNV = settings.showNetValue;
   const vmap = varMapOf(variables);
@@ -1751,28 +1814,12 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
 
   if (!buses.length) return <Empty t={t} title="No buses yet" sub="Buses appear once the IT team connects the fleet feed." />;
 
-  const medCph = median(buses.map((b) => { const d = busLatestDate(records, employees, attendance, b.id); return d ? metricsFor(resolveRec(records, employees, attendance, b.id, d), b, wd).cph : 0; }).filter((n) => n > 0));
+  const medCph = busMedianCph(buses, records, employees, attendance, wd);
   const matchQ = (b, ql) => !ql || b.vehicle.toLowerCase().includes(ql) || (b.route || "").toLowerCase().includes(ql) || (b.driver || "").toLowerCase().includes(ql);
 
   const bus = buses.find((b) => b.id === sel) || visBuses[0] || buses[0];
-  const rngDates = datesInRange(records, attendance, range.from, range.to).filter((d) => busHasData(records, employees, attendance, bus.id, d));
-  const pairs = rngDates.map((d) => ({ bus, rec: resolveRec(records, employees, attendance, bus.id, d) }));
-  const agg = aggregate(pairs, wd);
-  const scope = scopeFromAgg(agg);
-  const has = pairs.length > 0;
-  const m = has ? { ...scope, netAnnual: agg.netAnnual } : null;
-  const h = m ? healthOf(m, medCph, settings) : "watch";
-  const bd = m ? bandFor(m.util, settings.bands) : null;
-  const assigned = agg.present + agg.absent;
-  const presentVsAlloc = assigned ? (agg.present / assigned) * 100 : 0;
-  const emps = busEmps(employees, bus.id);
-  const travels = emps.map((e) => +e.travelMin).filter((n) => n > 0);
-  const minRide = travels.length ? Math.min(...travels) : null, maxRide = travels.length ? Math.max(...travels) : null;
-  const latest = busLatestDate(records, employees, attendance, bus.id);
-  const day = (latest && attendance[latest]) || {};
-  // the cost card prices one day: the last day with data in the chosen range, else the bus's latest
-  const cardDate = rngDates[rngDates.length - 1] || latest;
-  const cardRec = cardDate ? recOf(records, bus.id, cardDate) : null;
+  const { agg, m, h, bd, presentVsAlloc, emps, minRide, maxRide, latest, day, cardDate, cardRec } =
+    busRangeFigures(bus, records, employees, attendance, settings, range, wd, medCph);
   const inputBase = { background: t.inputBg, border: "1px solid " + t.border, color: t.text };
   const rangeLabel = range.from && range.to ? (range.from === range.to ? range.from : `${range.from} → ${range.to}`) : "all dates";
   const isRange = range.from !== range.to;
@@ -1910,7 +1957,7 @@ function BusView({ t, unit, buses, records, employees, attendance, formulas, set
                 </table>
               </div>
               <div className="flex flex-wrap items-center gap-4 mt-3 text-sm">
-                <div>Riders on the route: <b style={{ color: t.text }}>{bus.planStops.reduce((s, x) => s + (+x.hc || 0), 0)}</b></div>
+                <div>Riders on the route: <b style={{ color: t.text }}>{busStopRiders(bus)}</b></div>
                 <div style={{ color: t.muted }}>Seats: {bus.capacity}</div>
                 <div className="ml-auto text-xs" style={{ color: t.muted }}>Stops are listed in pickup order, farthest rider first.</div>
               </div>
@@ -3133,4 +3180,12 @@ export {
   tokensToExpr, exprToTokens, Store, UNITS, unitColor, canonUnit, SCHEMA, sampleData, ERP_ROUTE_D,
   WEEKDAYS, MONTHS, ymd, DOC_CATEGORIES, MAX_DOC_BYTES, fmtBytes, kmSourceText, dieselSourceText, gpsLabel, dieselLabel,
   TARIFF_TEXT, variableLines, LEDGER_PERIODS, ledgerDaily, ledgerTotals, PIE_PALETTE, fmtClock,
+  busDocsKey, busDocRecord, busKmDieselDays, costPeriodLabel, costLineDaily, busCostFigures, budgetPatch, driverPatch,
+  busMedianCph, busRangeFigures, busStopRiders,
 };
+
+// The new look shows these two in their old form until their own turn comes (src/next/pages/LegacyPage.jsx).
+export { CompareView, SettingsView };
+
+// Small constants the new Settings page reuses.
+export { OPS, DIGITS };

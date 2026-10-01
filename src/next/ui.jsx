@@ -435,3 +435,19 @@ export function useRise(ref, ready, deps = [], stagger = 60) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, ...deps]);
 }
+
+/* -------------------------------------------------------------------- tables -- */
+/* Tables are for logs and side-by-side comparisons only; things people act on are cards.
+   Zebra rows with rounded ends, no rules, a plain grey header. On a phone the table scrolls
+   sideways inside its card, never the page. Use thCls / tdCls on cells; numbers get "text-right
+   tabular-nums", vehicle numbers, codes and times "font-code". */
+export function DataTable({ className, children, label }) {
+  return (
+    <div className={cx("-mx-1 overflow-x-auto", className)} role="region" aria-label={label} tabIndex={label ? 0 : undefined}>
+      <table className="w-full border-separate border-spacing-0 text-[13px] text-ink">{children}</table>
+    </div>
+  );
+}
+export const thCls = "whitespace-nowrap px-3 pb-2 pt-1 text-left text-[11px] font-bold uppercase tracking-[0.06em] text-ink-3 first:pl-4 last:pr-4";
+export const trCls = "even:bg-satin/70";
+export const tdCls = "px-3 py-2.5 align-middle first:rounded-l-[14px] first:pl-4 last:rounded-r-[14px] last:pr-4";

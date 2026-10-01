@@ -9,7 +9,7 @@ import { clock } from "./format.js";
 import { go, hrefFor, useRoute } from "./route.js";
 import LivePage from "./pages/LivePage.jsx";
 import BusPage from "./pages/BusPage.jsx";
-import SoonPage from "./pages/SoonPage.jsx";
+import LegacyPage from "./pages/LegacyPage.jsx";
 
 const NAV = [
   { key: "live", label: "Live", icon: House },
@@ -44,7 +44,7 @@ export default function NextApp() {
   let page;
   if (route.page === "live") page = <LivePage fleet={fleet} />;
   else if (route.page === "bus") page = <BusPage fleet={fleet} busId={route.id} toast={toast} />;
-  else page = <SoonPage key={route.page} name={NAV.find((n) => n.key === route.page).label} />;
+  else page = <LegacyPage key={route.page} page={route.page} fleet={fleet} toast={toast} />;
 
   return (
     <div className="min-h-screen font-ui text-ink">

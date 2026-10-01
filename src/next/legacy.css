@@ -1,0 +1,32 @@
+/* Old pages shown inside the new look until they are rebuilt (LegacyPage.jsx). These are the
+   few global rules from src/index.css they rely on, scoped to .legacy so the new look's own
+   controls are untouched. */
+.legacy *:focus-visible { outline: 2px solid var(--focus-ring, #2186eb); outline-offset: 2px; border-radius: 6px; }
+.legacy input:focus-visible, .legacy select:focus-visible, .legacy textarea:focus-visible { outline-offset: 0; }
+.legacy input[type="date"]::-webkit-calendar-picker-indicator { filter: none; opacity: 0.65; cursor: pointer; }
+.legacy .fx-row-hover { transition: background-color 0.12s ease; }
+.legacy .leaflet-control-zoom {
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.6) !important;
+}
+.legacy .leaflet-control-zoom a {
+  background: rgba(255, 255, 255, 0.4) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(180%);
+  backdrop-filter: blur(10px) saturate(180%);
+  color: #0f172a !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.4) !important;
+}
+.legacy .leaflet-control-zoom a:last-child { border-bottom: none !important; }
+.legacy .leaflet-control-zoom a:hover { background: rgba(255, 255, 255, 0.6) !important; }
+.legacy button:active, .legacy [role="button"]:active, .legacy [role="switch"]:active { transform: scale(0.97); }
+.legacy button, .legacy [role="button"], .legacy [role="switch"] { transition: transform 100ms ease-out; }
+.legacy button[data-fx]:active, .legacy [data-fx][role="button"]:active { transform: none; }
+.type-metric { letter-spacing: -0.02em; line-height: 1.05; font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+.type-display { letter-spacing: -0.025em; line-height: 1.1; }
+.fx-scrim { -webkit-backdrop-filter: blur(12px) saturate(120%); backdrop-filter: blur(12px) saturate(120%); }
+@media (prefers-reduced-motion: reduce) {
+  .legacy button:active, .legacy [role="button"]:active, .legacy [role="switch"]:active { transform: none; }
+  .legacy button, .legacy [role="button"], .legacy [role="switch"] { transition: background-color 120ms ease, color 120ms ease; }
+}
