@@ -5,11 +5,13 @@ import {
   Upload, FileText, History, CheckCircle2, AlertTriangle, XCircle, ArrowLeft, Loader2, WifiOff, Route, RefreshCw, IndianRupee
 } from "lucide-react";
 import OptimiserTab from "./optimiser/OptimiserTab.jsx";
+import CostsView from "./CostsView.jsx";
 import { serviceIdFor, SERVICES } from "./optimiser/services.js";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
 import { fetchErpRaw, fetchErpCostRaw, fetchErpDieselRaw, mapErpToDashboard, mapErpCosts, mapErpDiesel, canonVehicle, vehKey, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 import { indexGps, priceOn, kmOn, dieselOn, variableCost, MAX_SPREAD_DAYS, RECENT_DAYS, LOW_GPS_SHARE } from "./dailyCost.js";
 import { fetchBusKm } from "./busApp.js";
+import { COST_TYPES, COST_TYPE_MAP, perDay, lineDaily, profileDailySpend, profileDailyBudget } from "./costModel.js";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   BarChart, Bar, Cell, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter,
@@ -128,41 +130,7 @@ const GROUP_BYS = [["company", "By company"], ["bus", "By bus"]];
 const DEPTS = ["Cutting", "Stitching", "Finishing", "Quality", "Packing", "Admin"];
 const DESIGS = ["Tailor", "Helper", "Supervisor", "Checker", "Operator", "Line Lead"];
 
-/* ---- per-bus cost model (recurring profile → daily spend) ----
-   Each bus carries a cost profile { budget:{amount,period}, lines:[{id,type,amount,quantity,period}] }.
-   Every line is normalised to a per-day figure and summed → the bus's daily `spend`,
-   which feeds every existing cost KPI (cost/head, variance, net value). */
-const COST_TYPES = [
-  { key: "diesel", label: "Diesel", qty: true, qtyLabel: "litres / day", period: "day" },
-  { key: "driver", label: "Driver Salary", qty: false, period: "month" },
-  { key: "maint", label: "Maintenance", qty: false, period: "month" },
-  { key: "tires", label: "Tires", qty: true, qtyLabel: "no. of tyres", period: "year" },
-  { key: "tiremaint", label: "Tire maintenance", qty: true, qtyLabel: "no. of tyres", period: "year" },
-  { key: "fc", label: "FC Works", qty: false, period: "year" },
-  { key: "taxes", label: "Taxes", qty: false, period: "year" },
-  { key: "insurance", label: "Insurance", qty: false, period: "year" },
-  // heads the costing feed carries that predate this list (see ERP_COST_HEADS in erp.js)
-  { key: "rto", label: "RTO expense", qty: false, period: "year" },
-  { key: "adblue", label: "AdBlue", qty: true, qtyLabel: "litres / year", period: "year" },
-  // the km-variable line for a hired bus, worked out per day (dailyCost.js)
-  { key: "hire", label: "Hire (day tariff)", qty: false, period: "day" },
-];
-const COST_TYPE_MAP = Object.fromEntries(COST_TYPES.map((c) => [c.key, c]));
-const COST_PERIODS = [["day", "Per day"], ["month", "Per month"], ["year", "Per year"]];
-/* normalise one amount at a given period to ₹/working-day (wd = effective working days/year) */
-function perDay(amount, period, wd) {
-  const a = +amount || 0;
-  if (period === "day") return a;
-  if (period === "month") return (a * 12) / wd; // annualise the month, spread over working days
-  return a / wd; // per year
-}
-function lineDaily(line, wd) {
-  const spec = COST_TYPE_MAP[line.type];
-  const q = spec && spec.qty ? (line.quantity === "" || line.quantity == null ? 0 : +line.quantity || 0) : 1;
-  return perDay((+line.amount || 0) * q, line.period || (spec && spec.period) || "year", wd);
-}
-function profileDailySpend(prof, wd) { return (prof && prof.lines ? prof.lines : []).reduce((s, l) => s + lineDaily(l, wd), 0); }
-function profileDailyBudget(prof, wd) { const b = prof && prof.budget; return b && b.amount ? perDay(b.amount, b.period || "month", wd) : 0; }
+/* ---- per-bus cost model: costModel.js (each ERP cost line → ₹ per working day, summed → `standing`) ---- */
 /* Each bus's day: its standing costs (ERP cost lines, the same every day) plus that day's
    km-variable cost, worked out two ways by dailyCost.js —
      spend        diesel priced on the km travelled (GPS from the bus attendance app, else plan km)
@@ -2895,6 +2863,19 @@ export default function App() {
   const run = useMemo(() => ({ gpsIdx, today: gpsFeed && gpsFeed.today, diesel }), [gpsIdx, gpsFeed, diesel]);
   const effRecords = useMemo(() => mergeCostsIntoRecords(records, effBuses, attendance, busCosts, wd, run),
     [records, effBuses, attendance, busCosts, wd, run]);
+  // the Costs page: every date with data, and riders per bus-day from the attendance punches (indexed, since a
+  // month asks for ~3,000 bus-days)
+  const costDates = useMemo(() => unionDates(effRecords, attendance), [effRecords, attendance]);
+  const ridersOn = useMemo(() => {
+    const byBus = new Map(), recs = new Map(records.map((r) => [r.busId + "|" + r.date, r]));
+    employees.forEach((e) => { if (!byBus.has(e.busId)) byBus.set(e.busId, []); byBus.get(e.busId).push(e); });
+    return (busId, date) => {
+      const emps = byBus.get(busId) || [], day = attendance && attendance[date];
+      if (emps.length && day && emps.some((e) => day[e.id])) return emps.filter((e) => day[e.id] === "P").length;
+      const r = recs.get(busId + "|" + date);
+      return r ? +r.present || 0 : 0;
+    };
+  }, [employees, attendance, records]);
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
@@ -3071,8 +3052,8 @@ export default function App() {
 
      To bring it back, put this entry back in the list (nothing else needs changing):
        ["costs", "Cost report", IndianRupee],                                              */
-  const TABS = [["live", "Live", LayoutDashboard], ["optimiser", "Optimiser", Route], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
-  const titleMap = { live: "Live snapshot", bus: "Bus-wise detail", costs: "Cost report", compare: "Compare", optimiser: "", settings: "Settings" };
+  const TABS = [["live", "Live", LayoutDashboard], ["fleetcosts", "Costs", IndianRupee], ["optimiser", "Optimiser", Route], ["compare", "Compare", GitCompare], ["settings", "Settings", SettingsIcon]];
+  const titleMap = { live: "Live snapshot", fleetcosts: "Costs", bus: "Bus-wise detail", costs: "Cost report", compare: "Compare", optimiser: "", settings: "Settings" };
 
   return (
     <div ref={rootRef} className={"min-h-screen w-full theme-" + (t.dark ? "dark" : "light")} style={{ background: t.bg, color: t.text, fontFamily: "'Inter Variable', Inter, system-ui, sans-serif", "--focus-ring": t.primary, "--sb-thumb": t.dark ? "rgba(148,163,184,.28)" : "rgba(100,116,139,.32)", "--sb-thumb-hover": t.dark ? "rgba(148,163,184,.5)" : "rgba(100,116,139,.55)",
@@ -3129,6 +3110,7 @@ export default function App() {
               busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()}
               ledger={ledger} onAddLedger={(e) => setLedger((L) => [...L, e])} onDelLedger={(id) => setLedger((L) => L.filter((x) => x.id !== id))}
               busInfo={busInfo} onSetBusField={setBusField} toast={toast} />}
+            {tab === "fleetcosts" && <CostsView t={t} buses={effBuses} records={effRecords} busCosts={busCosts} wd={wd} dates={costDates} ridersOn={ridersOn} unitColor={unitColor} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={effBuses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
             {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} erpEmployees={employees} erpShifts={erpRoll} erpShiftDate={erpShiftDate} />}
             {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll}
