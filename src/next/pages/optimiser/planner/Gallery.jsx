@@ -7,10 +7,10 @@ import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Circle, CircleCheck, FileUp, MapPinned, Plus, Sparkles, Trash2 } from "lucide-react";
 import { PlanThumb } from "../../../../optimiser/PlanGallery.jsx";
 import { PLAN_RANK, rankBy } from "../../../../optimiser/kpiRank.js";
-import { isFinalOf, prevRouteLines, readPlanFile, usePlanRanking } from "../../../../optimiser/plannerState.js";
+import { isFinalOf, planRouteLines, prevRouteLines, readPlanFile, usePlanRanking } from "../../../../optimiser/plannerState.js";
 import { localIso } from "../../../../Dashboard.jsx";
 import { NT } from "../../../legacyTheme.js";
-import { Button, Chip, Choice, Field, IconButton, Select, Tile, Tiles, Unit, cx, useRise } from "../../../ui.jsx";
+import { Badge, Button, Chip, Choice, Field, IconButton, Select, Tile, Tiles, Unit, cx, useRise } from "../../../ui.jsx";
 import { DASH, clock, count, day, money1 } from "../../../format.js";
 import { FIGURE_LABEL, GRID, ON_PAGE, fmtFigure, useCols, useFlip } from "./parts.jsx";
 
@@ -157,7 +157,7 @@ function Filler({ span, drafts, bodies, onOpen, facts }) {
 }
 
 export default function Gallery({ hub, svc }) {
-  const { drafts, totalRiders, allStops, fleet, solver, planLabel, planKind, finalised, finalise, stopsById, depot, busColor,
+  const { drafts, totalRiders, allStops, fleet, solver, planLabel, planKind, planSource, finalised, finalise, stopsById, depot, busColor,
     newBlank, importPlan, openDraft, deleteDraft, importFromFile, importPrevRoutes, prevRoutes, draftBodies } = hub;
   const root = useRef(null), grid = useRef(null), file = useRef(null);
   const flip = useFlip(grid);
@@ -169,7 +169,11 @@ export default function Gallery({ hub, svc }) {
   const rankPick = (next) => { flip.capture(); setRank(next); };
   const prevLines = useMemo(() => prevRouteLines(prevRoutes), [prevRoutes]);
   const prevMeta = prevRoutes && prevRoutes.meta;
-  const cards = ranked.length + (prevLines ? 1 : 0);
+  /* The plan this service runs (its built-in plan, this week's rotation group plan, or a file
+     finalised by hand) as a card of its own, so it is always on the page, not only behind a button. */
+  const inUseLines = useMemo(() => (planKind && planKind !== "optimised" ? planRouteLines(solver) : null), [planKind, solver]);
+  const draftInUse = !!finalised && finalised.kind === "draft";
+  const cards = ranked.length + (prevLines ? 1 : 0) + (inUseLines ? 1 : 0);
   const rest = cards ? (cols - (cards % cols)) % cols : cols;
   const fromOptimised = planKind === "optimised" || !planKind;
   const solverBuses = solver ? (solver.overall ? solver.overall.buses : Array.isArray(solver.routes) ? solver.routes.length : null) : null;
@@ -185,6 +189,22 @@ export default function Gallery({ hub, svc }) {
         { label: "Stops", value: prevMeta ? count(prevMeta.stops) : DASH },
       ]}
       footer={<span className="px-1 text-[13px] text-ink-3">Opens as a new plan</span>} />
+  );
+
+  const ov = solver && solver.overall;
+  const inUseCard = inUseLines && (
+    <PlanCard key="in-use" name={planLabel} onOpen={importPlan} title={`Open a copy of ${planLabel} to edit`}
+      sub={planKind === "rotation" ? "This week’s group plan · changes every Monday"
+        : draftInUse ? "Built-in plan · a finalised draft runs instead"
+        : planSource && planSource.builtIn ? "The plan this service runs · built in" : "The plan this service runs · finalised"}
+      thumb={<PlanThumb t={NT} lines={inUseLines} depot={depot} />}
+      badge={!draftInUse && <Badge tone="ok" className="absolute left-2 top-2 shadow-chip">In use</Badge>}
+      lead={{ label: "Riders", value: ov ? count(ov.riders) : DASH }}
+      figures={[
+        { label: "Buses", value: ov ? count(ov.buses) : count(solver.routes.length) },
+        { label: "Cost / head", value: ov ? money1(ov.cost_head) : DASH },
+      ]}
+      footer={<span className="px-1 text-[13px] text-ink-3">Opens a copy to edit</span>} />
   );
 
   return (
@@ -228,12 +248,14 @@ export default function Gallery({ hub, svc }) {
       </div>
 
       <div ref={grid} data-rise className={cx("mt-4", GRID)}>
+        {!rank && inUseCard}
         {!rank && prevCard}
         {ranked.map(({ item: d, value, rank: pos }) => (
           <DraftCard key={d.id} d={d} pos={pos} value={value} rank={rank} body={draftBodies && draftBodies.get(d.id)} totalRiders={totalRiders}
             final={isFinalOf(finalised, "draft", d.id)} canFinalise={!!svc} stopsById={stopsById} depot={depot} busColor={busColor}
             onOpen={() => openDraft(d)} onFinalise={() => finalise({ kind: "draft", id: d.id, name: d.name })} onDelete={() => deleteDraft(d)} />
         ))}
+        {rank && inUseCard}
         {rank && prevCard}
         {rest > 0 && (
           <Filler key="filler" span={rest} drafts={drafts} bodies={draftBodies} onOpen={openDraft}

@@ -64,19 +64,25 @@ export function usePlanHub({ toast, erpBuses, svc, svcStops, keep }) {
      picker, so it is only the right source when no service-specific plan exists. */
   const [rotaTick, setRotaTick] = useState(0);
   useEffect(() => subscribeRotaWeek(() => setRotaTick((x) => x + 1)), []);
-  const planSrc = useMemo(
-    () => (svc && svc.id !== "s9" ? planUrlFor(svc) : activePlanUrl()),
+  /* 9 am seeds from its own plan too once it has one (its built-in "9 am final", or one finalised
+     by hand); only with neither does it fall back to the plan-variant picker's optimised file. */
+  const ownPlan = useMemo(
+    () => !!svc && (svc.id !== "s9" || !planSourceFor(svc).isDefault),
     [svc, rotaTick]                                                  // eslint-disable-line
+  );
+  const planSrc = useMemo(
+    () => (ownPlan ? planUrlFor(svc) : activePlanUrl()),
+    [svc, rotaTick, ownPlan]                                         // eslint-disable-line
   );
   /* "Balanced" is the name of a 9 am plan VARIANT. Reusing it on another service's board
      labels that service's own optimiser output with a plan it has nothing to do with.
      A rotation plan is named for what it is — "Group 2 · Half night · week of 7 Sep" — so
      the gallery card says WHOSE plan is being imported, not just which slot's. */
   const planSource = useMemo(
-    () => (svc && svc.id !== "s9" ? planSourceFor(svc) : null),
-    [svc, rotaTick]                                                  // eslint-disable-line
+    () => (ownPlan ? planSourceFor(svc) : null),
+    [svc, rotaTick, ownPlan]                                         // eslint-disable-line
   );
-  const planLabel = !svc || svc.id === "s9" ? getActivePlanLabel()
+  const planLabel = !ownPlan ? getActivePlanLabel()
     : planSource && (planSource.kind === "rotation" || !planSource.isDefault) ? planSource.label
     : `${svc.name} optimised`;
   /* What the seed card is offering: the manager's rotation plan, a finalised plan (built in or
@@ -642,6 +648,15 @@ export const isFinalOf = (finalised, kind, id) => !!finalised && !finalised.isDe
   (kind === "draft" ? finalised.draftId === id : finalised.kind === "plan");
 
 /** Thumbnail polylines for the permanent prev-route card (drawn straight from the ERP feed). */
+/** A plan file's routes as thumbnail lines, the same shape as prevRouteLines. */
+export function planRouteLines(plan) {
+  if (!plan || !Array.isArray(plan.routes)) return null;
+  return plan.routes.map((r, i) => ({
+    color: PALETTE[i % PALETTE.length],
+    coords: (r.seq || []).filter((s) => s.lat != null && s.lng != null).map((s) => [s.lat, s.lng]),
+  })).filter((l) => l.coords.length);
+}
+
 export function prevRouteLines(prevPlan) {
   if (!prevPlan || !Array.isArray(prevPlan.buses)) return null;
   return prevPlan.buses.map((b, i) => ({
