@@ -2584,12 +2584,16 @@ function Toast({ t, msg }) {
   return <div ref={ref} className="fixed left-1/2 bottom-6 rounded-xl px-4 py-3 text-sm z-50 shadow-lg" style={{ background: t.raised, border: "1px solid " + t.border, color: t.text }}>{msg}</div>;
 }
 
-export default function App() {
-  const [themeName, setThemeName] = useState("light");
-  const t = THEMES[themeName];
-  const [tab, setTab] = useState("live");
-  const [busFocus, setBusFocus] = useState(null); // bus id opened from a Live card (Bus-wise has no nav entry)
-  const [unit, setUnit] = useState("all");
+/* The dashboard's data: the ERP, costing, diesel and GPS feeds, everything kept in the
+   browser, and the figures derived from them. Both looks read it from here (the old one in
+   App below, the new one in src/next), so they always show the same numbers.
+   `toast` shows a message; `onHome` is called where a manual sync or a reset sends the
+   user back to the Live page. */
+export function useFleetData({ toast: showToast, onHome } = {}) {
+  const toastRef = useRef(showToast); toastRef.current = showToast;
+  const homeRef = useRef(onHome); homeRef.current = onHome;
+  const toast = (m) => { if (toastRef.current) toastRef.current(m); };
+  const goHome = () => { if (homeRef.current) homeRef.current(); };
   const [buses, setBuses] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [attendance, setAttendance] = useState({});
@@ -2620,83 +2624,6 @@ export default function App() {
   const staleCostShape = useRef(false); // stored profiles predate the current COST_SHAPE
   const staleEmployees = useRef(false); // stored employees predate a field we now read (shift)
   const [loaded, setLoaded] = useState(false);
-  const [toastMsg, setToastMsg] = useState("");
-  const toastTimer = useRef();
-  const toast = (m) => { setToastMsg(m); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToastMsg(""), 2400); };
-
-  /* ---- GSAP entrances (clearProps limited to animated props so theme inline styles survive) ---- */
-  const headerRef = useRef(null);
-  const mainRef = useRef(null);
-  const visitedTabs = useRef(new Set()); // full entrance runs once per tab; revisits get a quick fade
-  const erpDotRef = useRef(null);
-  useGSAP(() => { // one-time header entrance
-    if (!canEntrance()) return;
-    // the mark rotates in on the rotation spring; text and tabs ride the move spring
-    gsap.timeline({ defaults: springTween("move") })
-      .from('[data-fx="logo"]', { scale: 0.5, rotation: -12, autoAlpha: 0, ...springTween("rotate"), clearProps: FX_CLEAR })
-      .from('[data-fx="brand"]', { x: -10, autoAlpha: 0, clearProps: FX_CLEAR }, "-=0.35")
-      .from('[data-fx="tab"]', { y: -8, autoAlpha: 0, stagger: 0.05, clearProps: FX_CLEAR }, "-=0.35");
-  }, { scope: headerRef });
-  useGSAP(() => { // per-tab content entrance: title → KPI tiles → cards → bus grid
-    if (!loaded) return;
-    const stale = mainRef.current?.querySelectorAll('[data-fx]');
-    // tab hidden (rAF paused) or reduced-motion → don't animate; wipe any stale hidden state and show
-    if (!canEntrance()) { if (stale && stale.length) gsap.set(stale, { clearProps: "opacity,visibility,transform" }); return; }
-    const firstVisit = !visitedTabs.current.has(tab);
-    visitedTabs.current.add(tab);
-    if (!firstVisit) {
-      // returning to an already-seen tab: keep flipping snappy — quick fade of headers/tiles only,
-      // and never re-stagger the (potentially dozens of) bus tiles.
-      gsap.from('[data-fx="page-title"], [data-fx="tile"], [data-fx="card"]',
-        { autoAlpha: 0, y: 6, ...springTween("snap"), stagger: 0.02, clearProps: FX_CLEAR });
-      return;
-    }
-    gsap.timeline({ defaults: springTween("move") })
-      .from('[data-fx="page-title"]', { y: 10, autoAlpha: 0, clearProps: FX_CLEAR })
-      .from('[data-fx="tile"]', { y: 18, autoAlpha: 0, stagger: { amount: 0.25 }, clearProps: FX_CLEAR }, "-=0.45")
-      .from('[data-fx="card"]', { y: 22, autoAlpha: 0, stagger: { amount: 0.3 }, clearProps: FX_CLEAR }, "-=0.5")
-      .from('[data-fx="swatch"]', { y: 14, scale: 0.9, autoAlpha: 0, ...springTween("drawer"), stagger: 0.06, clearProps: FX_CLEAR }, "-=0.5")
-      .from('[data-fx="bus"]', { scale: 0.92, autoAlpha: 0, duration: 0.35, stagger: { amount: 0.4, grid: "auto", from: "start" }, clearProps: FX_CLEAR }, "-=0.35");
-  }, { dependencies: [tab, loaded], scope: mainRef });
-
-  // ERP status dot: gentle pulse while syncing, a brief confirmation pop when a sync lands.
-  useEffect(() => {
-    const el = erpDotRef.current;
-    if (!el || prefersReduced()) return;
-    gsap.killTweensOf(el);
-    if (erpStatus.phase === "syncing") {
-      const tw = gsap.to(el, { scale: 1.4, opacity: 0.5, duration: 0.65, repeat: -1, yoyo: true, ease: "sine.inOut" });
-      return () => { tw.kill(); gsap.set(el, { scale: 1, opacity: 1 }); };
-    }
-    gsap.set(el, { scale: 1, opacity: 1 });
-    if (erpStatus.phase === "ok") gsap.fromTo(el, { scale: 1 }, { scale: 1.9, duration: 0.28, yoyo: true, repeat: 1, ease: "power2.out", onComplete: () => gsap.set(el, { scale: 1 }) });
-  }, [erpStatus.phase]);
-
-  // Smooth whole-app colour crossfade on theme change: briefly enable CSS colour transitions
-  // (only during the switch, so they never interfere with GSAP transforms or hover feel).
-  const rootRef = useRef(null);
-  const firstTheme = useRef(true);
-  useEffect(() => {
-    const el = rootRef.current;
-    if (!el || firstTheme.current) { firstTheme.current = false; return; }
-    if (prefersReduced()) return;
-    el.classList.add("theme-switching");
-    const id = setTimeout(() => el.classList.remove("theme-switching"), 480);
-    return () => clearTimeout(id);
-  }, [themeName]);
-
-  /* Scroll edge effect: the header is a translucent material that content passes
-     under, so its divider is only drawn while something is actually beneath it.
-     A permanent hairline separates the chrome from a page that isn't there yet. */
-  const [scrolled, setScrolled] = useState(false);
-  useEffect(() => {
-    let frame = 0;
-    const read = () => { frame = 0; setScrolled(window.scrollY > 4); };
-    const onScroll = () => { if (!frame) frame = requestAnimationFrame(read); };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    read();
-    return () => { window.removeEventListener("scroll", onScroll); if (frame) cancelAnimationFrame(frame); };
-  }, []);
 
   useEffect(() => {
     (async () => {
@@ -2748,7 +2675,6 @@ export default function App() {
       if (dz && dz.issues) { setDiesel(dz); setDieselStatus({ phase: "ok", at: dz.at || null, msg: dieselMsg(dz.meta) }); }
       const gk = await Store.get("busKm");
       if (gk && Array.isArray(gk.days)) { gpsRef.current = gk; setGpsFeed(gk); setGpsStatus({ phase: "ok", at: gk.at || null, msg: "last pull" }); }
-      const th = await Store.get("theme"); if (th && THEMES[th]) setThemeName(th); // ignore any removed/old theme name
       setLoaded(true);
     })();
     return () => {};
@@ -2763,7 +2689,6 @@ export default function App() {
   useEffect(() => { if (loaded) Store.set("formulas", formulas); }, [formulas, loaded]);
   useEffect(() => { if (loaded) Store.set("variables", variables); }, [variables, loaded]);
   useEffect(() => { if (loaded) Store.set("settings", settings); }, [settings, loaded]);
-  useEffect(() => { if (loaded) Store.set("theme", themeName); }, [themeName, loaded]);
   useEffect(() => { if (loaded) Store.set("busInfo", busInfo); }, [busInfo, loaded]);
   useEffect(() => { if (loaded) Store.set("costLedger", ledger); }, [ledger, loaded]);
 
@@ -2839,7 +2764,7 @@ export default function App() {
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
-  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setRotaHistory({}); setCostProfiles({}); setCostMeta(null); setCostStatus({ phase: "idle", at: null, msg: "" }); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); setTab("live"); toast("Cleared local data — re-syncing ERP"); syncErp(); };
+  const resetAll = () => { const s = sampleData(); setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setRotaHistory({}); setCostProfiles({}); setCostMeta(null); setCostStatus({ phase: "idle", at: null, msg: "" }); setFormulas(s.formulas); setVariables(s.variables); setSettings(s.settings); goHome(); toast("Cleared local data — re-syncing ERP"); syncErp(); };
   /* Costing feed — fetched with the punch feed on the daily sync, and on its own from the
      Resync buttons. Kept separate so a costing failure never costs you the fleet, and so
      re-pulling costs (a few hundred rows) doesn't drag the punch feed with it. */
@@ -2954,7 +2879,7 @@ export default function App() {
       setErpStatus({ phase: "ok", at: Date.now(), msg: `${data.buses.length} buses · ${data.employees.length} employees`, progress: null });
       const cm = await costing;
       if (!silent) {
-        setTab("live");
+        goHome();
         toast(`ERP synced · ${data.buses.length} buses · ${data.employees.length} employees`
           + (cm ? ` · ${cm.vehicles} costed` : " · costing unavailable"));
       }
@@ -3003,6 +2928,111 @@ export default function App() {
     const id = setInterval(tick, Math.min(everyMs || 10 * 60_000, 5 * 60_000));
     return () => { cancelled = true; clearInterval(id); };
   }, [loaded, settings.erpAuto, settings.erpRefreshMin, syncErp, syncCosts, syncDiesel]);
+
+  return {
+    loaded, buses, employees, attendance, records, rotaHistory, plan, planByVeh, ledger, setLedger,
+    busInfo, setBusField, formulas, setFormulas, variables, setVariables, settings, setSettings,
+    costProfiles, costMeta, costStatus, syncCosts, diesel, dieselStatus, syncDiesel,
+    gpsFeed, gpsStatus, syncGps, gpsIdx, run, erpStatus, syncErp, erpShiftDate, erpRoll,
+    wd, effBuses, busCosts, effRecords, costDates, ridersOn, exportJSON, resetAll,
+  };
+}
+
+export default function App() {
+  const [themeName, setThemeName] = useState("light");
+  const t = THEMES[themeName];
+  const [tab, setTab] = useState("live");
+  const [busFocus, setBusFocus] = useState(null); // bus id opened from a Live card (Bus-wise has no nav entry)
+  const [unit, setUnit] = useState("all");
+  const [toastMsg, setToastMsg] = useState("");
+  const toastTimer = useRef();
+  const toast = (m) => { setToastMsg(m); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToastMsg(""), 2400); };
+  const {
+    loaded, buses, employees, attendance, records, ledger, setLedger, busInfo, setBusField,
+    formulas, setFormulas, variables, setVariables, settings, setSettings,
+    costMeta, costStatus, syncCosts, diesel, dieselStatus, syncDiesel, gpsFeed, gpsStatus, syncGps,
+    run, erpStatus, syncErp, erpShiftDate, erpRoll, wd, effBuses, busCosts, effRecords, costDates, ridersOn,
+    exportJSON, resetAll,
+  } = useFleetData({ toast, onHome: () => setTab("live") });
+  useEffect(() => {   // ignore any removed/old theme name
+    Store.get("theme").then((th) => { if (th && THEMES[th]) setThemeName(th); });
+  }, []);
+  useEffect(() => { if (loaded) Store.set("theme", themeName); }, [themeName, loaded]);
+
+  /* ---- GSAP entrances (clearProps limited to animated props so theme inline styles survive) ---- */
+  const headerRef = useRef(null);
+  const mainRef = useRef(null);
+  const visitedTabs = useRef(new Set()); // full entrance runs once per tab; revisits get a quick fade
+  const erpDotRef = useRef(null);
+  useGSAP(() => { // one-time header entrance
+    if (!canEntrance()) return;
+    // the mark rotates in on the rotation spring; text and tabs ride the move spring
+    gsap.timeline({ defaults: springTween("move") })
+      .from('[data-fx="logo"]', { scale: 0.5, rotation: -12, autoAlpha: 0, ...springTween("rotate"), clearProps: FX_CLEAR })
+      .from('[data-fx="brand"]', { x: -10, autoAlpha: 0, clearProps: FX_CLEAR }, "-=0.35")
+      .from('[data-fx="tab"]', { y: -8, autoAlpha: 0, stagger: 0.05, clearProps: FX_CLEAR }, "-=0.35");
+  }, { scope: headerRef });
+  useGSAP(() => { // per-tab content entrance: title → KPI tiles → cards → bus grid
+    if (!loaded) return;
+    const stale = mainRef.current?.querySelectorAll('[data-fx]');
+    // tab hidden (rAF paused) or reduced-motion → don't animate; wipe any stale hidden state and show
+    if (!canEntrance()) { if (stale && stale.length) gsap.set(stale, { clearProps: "opacity,visibility,transform" }); return; }
+    const firstVisit = !visitedTabs.current.has(tab);
+    visitedTabs.current.add(tab);
+    if (!firstVisit) {
+      // returning to an already-seen tab: keep flipping snappy — quick fade of headers/tiles only,
+      // and never re-stagger the (potentially dozens of) bus tiles.
+      gsap.from('[data-fx="page-title"], [data-fx="tile"], [data-fx="card"]',
+        { autoAlpha: 0, y: 6, ...springTween("snap"), stagger: 0.02, clearProps: FX_CLEAR });
+      return;
+    }
+    gsap.timeline({ defaults: springTween("move") })
+      .from('[data-fx="page-title"]', { y: 10, autoAlpha: 0, clearProps: FX_CLEAR })
+      .from('[data-fx="tile"]', { y: 18, autoAlpha: 0, stagger: { amount: 0.25 }, clearProps: FX_CLEAR }, "-=0.45")
+      .from('[data-fx="card"]', { y: 22, autoAlpha: 0, stagger: { amount: 0.3 }, clearProps: FX_CLEAR }, "-=0.5")
+      .from('[data-fx="swatch"]', { y: 14, scale: 0.9, autoAlpha: 0, ...springTween("drawer"), stagger: 0.06, clearProps: FX_CLEAR }, "-=0.5")
+      .from('[data-fx="bus"]', { scale: 0.92, autoAlpha: 0, duration: 0.35, stagger: { amount: 0.4, grid: "auto", from: "start" }, clearProps: FX_CLEAR }, "-=0.35");
+  }, { dependencies: [tab, loaded], scope: mainRef });
+
+  // ERP status dot: gentle pulse while syncing, a brief confirmation pop when a sync lands.
+  useEffect(() => {
+    const el = erpDotRef.current;
+    if (!el || prefersReduced()) return;
+    gsap.killTweensOf(el);
+    if (erpStatus.phase === "syncing") {
+      const tw = gsap.to(el, { scale: 1.4, opacity: 0.5, duration: 0.65, repeat: -1, yoyo: true, ease: "sine.inOut" });
+      return () => { tw.kill(); gsap.set(el, { scale: 1, opacity: 1 }); };
+    }
+    gsap.set(el, { scale: 1, opacity: 1 });
+    if (erpStatus.phase === "ok") gsap.fromTo(el, { scale: 1 }, { scale: 1.9, duration: 0.28, yoyo: true, repeat: 1, ease: "power2.out", onComplete: () => gsap.set(el, { scale: 1 }) });
+  }, [erpStatus.phase]);
+
+  // Smooth whole-app colour crossfade on theme change: briefly enable CSS colour transitions
+  // (only during the switch, so they never interfere with GSAP transforms or hover feel).
+  const rootRef = useRef(null);
+  const firstTheme = useRef(true);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || firstTheme.current) { firstTheme.current = false; return; }
+    if (prefersReduced()) return;
+    el.classList.add("theme-switching");
+    const id = setTimeout(() => el.classList.remove("theme-switching"), 480);
+    return () => clearTimeout(id);
+  }, [themeName]);
+
+  /* Scroll edge effect: the header is a translucent material that content passes
+     under, so its divider is only drawn while something is actually beneath it.
+     A permanent hairline separates the chrome from a page that isn't there yet. */
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    let frame = 0;
+    const read = () => { frame = 0; setScrolled(window.scrollY > 4); };
+    const onScroll = () => { if (!frame) frame = requestAnimationFrame(read); };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    read();
+    return () => { window.removeEventListener("scroll", onScroll); if (frame) cancelAnimationFrame(frame); };
+  }, []);
+
 
   // Bus-wise stays as a VIEW (reached by clicking a bus on Live) but leaves the nav;
   // Equations is retired; Metrics lives inside Settings now.
@@ -3091,3 +3121,16 @@ export default function App() {
     </div>
   );
 }
+
+/* Shared with the new look (src/next). Calculations and formatters only: the new screens import
+   these rather than copying them, so a figure is worked out the same way in both looks. */
+export {
+  THEMES, SLOT_SHIFTS, uid, todayStr, inr, inr1, inrK, pct, localIso, addDaysIso, fmtDay, km1, GPS_KEEP_DAYS, dieselMsg,
+  DEFAULT_BANDS, FORMULA_VARS, VAR_INFO, CMP_METRICS, GRAPH_TYPES, GROUP_BYS,
+  mergeCostsIntoRecords, COST_SHAPE, withPlanRoutes, applyBusInfo, moneyOf, withDiesel, metricsFor, aggregate, scopeFromAgg,
+  busEmps, recOf, rollup, resolveRec, unionDates, busHasData, busLatestDate, pairsForDate, datesInRange, median,
+  sortedBands, OVER_BAND, bandFor, bandRankPoints, healthOf, varMapOf, evalFormula, fmtFormula, metricVal, effWorkingDays,
+  tokensToExpr, exprToTokens, Store, UNITS, unitColor, canonUnit, SCHEMA, sampleData, ERP_ROUTE_D,
+  WEEKDAYS, MONTHS, ymd, DOC_CATEGORIES, MAX_DOC_BYTES, fmtBytes, kmSourceText, dieselSourceText, gpsLabel, dieselLabel,
+  TARIFF_TEXT, variableLines, LEDGER_PERIODS, ledgerDaily, ledgerTotals, PIE_PALETTE, fmtClock,
+};
