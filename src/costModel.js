@@ -21,6 +21,7 @@ export const COST_TYPES = [
   { key: "hire", label: "Hire (day tariff)", qty: false, period: "day" },
 ];
 export const COST_TYPE_MAP = Object.fromEntries(COST_TYPES.map((c) => [c.key, c]));
+export const COST_PERIODS = [["day", "Per day"], ["month", "Per month"], ["year", "Per year"]];
 
 /* normalise one amount at a given period to ₹/working-day (wd = effective working days/year) */
 export function perDay(amount, period, wd) {

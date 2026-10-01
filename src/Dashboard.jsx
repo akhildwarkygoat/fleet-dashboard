@@ -11,7 +11,7 @@ import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
 import { fetchErpRaw, fetchErpCostRaw, fetchErpDieselRaw, mapErpToDashboard, mapErpCosts, mapErpDiesel, canonVehicle, vehKey, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 import { indexGps, priceOn, kmOn, dieselOn, variableCost, MAX_SPREAD_DAYS, RECENT_DAYS, LOW_GPS_SHARE } from "./dailyCost.js";
 import { fetchBusKm } from "./busApp.js";
-import { COST_TYPES, COST_TYPE_MAP, perDay, lineDaily, profileDailySpend, profileDailyBudget } from "./costModel.js";
+import { COST_TYPES, COST_TYPE_MAP, COST_PERIODS, perDay, lineDaily, profileDailySpend, profileDailyBudget } from "./costModel.js";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   BarChart, Bar, Cell, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter,
