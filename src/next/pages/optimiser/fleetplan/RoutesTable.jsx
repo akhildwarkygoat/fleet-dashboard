@@ -8,6 +8,7 @@ import { fleetPlanCompanyOf } from "../../../../optimiser/OptimiserTab.jsx";
 import { Badge, Button, Card, Chip, Choice, CompanyDot, DataTable, IconButton, Search, Tag, cx, tdCls, thCls, trCls } from "../../../ui.jsx";
 import { DASH, count, kms, money1, percent, plural } from "../../../format.js";
 import { healthTone } from "../../../health.js";
+import { longestRideOk } from "../../../../optimiser/rideHealth.js";
 
 // the shape kpiRank.js reads a route as
 const busOf = (r) => ({ riders: r.riders, cap: r.cap, cost: r.cost, ride: r.ride, km: r.km, stops: r.stops });
@@ -127,8 +128,8 @@ export default function RoutesTable({ f, names, busCo, selRoutes, onTick, onTick
                   <td className={cx(tdCls, num)}><Filled value={filled} /></td>
                   <td className={cx(tdCls, num)}>{kms(r.km)}</td>
                   <td className={cx(tdCls, num, "whitespace-nowrap")}>
-                    {r.ride > 60
-                      ? <Tag tone="bad" className="px-2 py-0.5" title="Over 60 min">{count(r.ride)} min</Tag>
+                    {!longestRideOk(r.ride)
+                      ? <Tag tone="bad" className="px-2 py-0.5" title="Over 1 h 30 min">{count(r.ride)} min</Tag>
                       : <>{count(r.ride)}<span className="text-ink-3"> min</span></>}
                   </td>
                   <td className={cx(tdCls, num)}>{perHead == null ? DASH : money1(perHead)}</td>

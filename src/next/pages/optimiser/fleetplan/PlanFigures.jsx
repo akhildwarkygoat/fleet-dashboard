@@ -12,6 +12,7 @@ import { Aura, Button, CentreCard, Eyebrow, IconButton, Tile, Tiles, Unit, cx } 
 import { count, kms, money, money1, percent, plural } from "../../../format.js";
 import { Count, Fact, Facts } from "../../bus/parts.jsx";
 import { HEALTH, utilHealth } from "../../../health.js";
+import { AVG_RIDE_MAX, avgRideOk, longestRideOk } from "../../../../optimiser/rideHealth.js";
 
 const GROUPS = [["util", "people"], ["avgride", "ride"], ["totdist", "avgdist"], ["owned", "rental"], ["seats", "avgstops"]];
 const TONE_INK = { ok: "text-ok-ink", warn: "text-warn-ink", bad: "text-bad-ink" };
@@ -29,10 +30,10 @@ function cellsFor(data, f) {
       detail: m.util > 100 && a.cap_leniency != null ? `Up to ${a.cap_leniency} over the seats` : null },
     people: { key: "people", label: "Riders", value: count(m.riders), note: "carried" },
     avgride: { key: "avgride", label: "Average ride", value: count(f.wAvgRide), unit: "min", note: "by rider",
-      flag: f.wAvgRide > 60 ? ["bad", "Over 60 min"] : null,
+      flag: avgRideOk(f.wAvgRide) ? null : ["bad", `Over ${AVG_RIDE_MAX} min`],
       detail: split ? `Owned ${count(ow.avg_ride)} · rental ${count(rt.avg_ride)} min` : null },
     ride: { key: "ride", label: "Longest ride", value: count(m.max_ride), unit: "min", note: "one trip",
-      flag: m.max_ride > 110 ? ["bad", "Over 110 min"] : null,
+      flag: longestRideOk(m.max_ride) ? null : ["bad", "Over 1 h 30 min"],
       detail: p.max_ride ? `Limit ${p.max_ride}${p.soft_ride ? ` · target ${p.soft_ride}` : ""} min` : null },
     totdist: { key: "totdist", label: "Total km", value: count(m.km), unit: "km", note: "a day",
       detail: split && ow.km != null && rt.km != null ? `Owned ${count(ow.km)} · rental ${count(rt.km)} km` : null },

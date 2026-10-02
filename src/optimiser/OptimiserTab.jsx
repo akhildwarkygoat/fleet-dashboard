@@ -36,6 +36,7 @@ import { resolveFinalised, clearFinalised, downloadFinalised, importFinalised, p
    manager can pin from the header. The hook re-renders whatever reads it when the pin moves. */
 import RotaWeekPicker, { useRotaWeek, shiftWeek } from "./RotaWeekPicker.jsx";
 import { describeSlot, subscribeRotaWeek } from "./rotation.js";
+import { avgRideOk, longestRideOk } from "./rideHealth.js";
 
 const inr = (n) => "₹" + Math.round(n || 0).toLocaleString("en-IN");
 
@@ -1681,8 +1682,8 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
         // related KPIs clubbed within one shared container, all on a single row
         const cost = clickable("cost", { label: "Cost / head", value: "₹" + m.cost_head.toFixed(1), sub: inr0(month) + "/mo" });
         const util = clickable("util", { label: "Utilisation", value: m.util.toFixed(0), unit: "%", sub: `${m.riders} riders`, accent: m.util >= 85 ? t.good : t.poor });
-        const avgride = clickable("avgride", { label: "Avg ride", value: Math.round(wAvgRide), unit: "min", sub: "people-wtd", accent: wAvgRide <= 60 ? t.good : t.poor });
-        const maxride = clickable("ride", { label: "Max ride", value: Math.round(m.max_ride), unit: "min", sub: "longest trip", accent: m.max_ride <= 110 ? t.good : t.poor });
+        const avgride = clickable("avgride", { label: "Avg ride", value: Math.round(wAvgRide), unit: "min", sub: "people-wtd", accent: avgRideOk(wAvgRide) ? t.good : t.poor });
+        const maxride = clickable("ride", { label: "Max ride", value: Math.round(m.max_ride), unit: "min", sub: "longest trip", accent: longestRideOk(m.max_ride) ? t.good : t.poor });
         const totDist = { key: "totdist", label: "Total dist", value: Math.round(m.km).toLocaleString("en-IN"), unit: "km", sub: "whole fleet" };
         const avgDist = { key: "avgdist", label: "Dist / person", value: wDistPP.toFixed(1), unit: "km", sub: "one-way" };
         // Buses split into owned vs rental — clicking the CARD filters the routes
@@ -1848,7 +1849,7 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
             title: `What "Max ride ${Math.round(m.max_ride)} min" means`,
             steps: [
               <><b>Trip</b> = the route chain factory → … → last stop, one direction. Evening: the last-dropped (farthest) passenger rides the whole chain; morning is the same reversed. The bus parks overnight at the last stop.</>,
-              <>Max ride = the highest ride across all {m.buses} routes = <b style={{ color: m.max_ride <= 60 ? t.good : t.poor, fontSize: "1.05em" }}>{Math.round(m.max_ride)} min</b>.</>,
+              <>Max ride = the highest ride across all {m.buses} routes = <b style={{ color: longestRideOk(m.max_ride) ? t.good : t.poor, fontSize: "1.05em" }}>{Math.round(m.max_ride)} min</b>.</>,
               <>Average ride = <b>{Math.round(m.avg_ride)} min</b>.</>,
               <>Times come from the {a.road_source}. Feasibility cap {data.params.max_ride} min{data.params.soft_ride ? `, soft target ${data.params.soft_ride} min` : ""}.</>,
             ].filter(Boolean),
@@ -1858,7 +1859,7 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
             title: `How "Avg ride ${Math.round(m.avg_ride)} min" is calculated`,
             steps: [
               <>Each route's <b>Trip</b> = the chain factory → … → last stop (one direction, real road minutes + 0.5 min dwell per intermediate stop).</>,
-              <>Avg ride = the mean trip across {view === "overall" ? "all" : view} <b>{m.buses}</b> routes = <b style={{ color: m.avg_ride <= 60 ? t.good : t.poor, fontSize: "1.05em" }}>{Math.round(m.avg_ride)} min</b>.</>,
+              <>Avg ride = the mean trip across {view === "overall" ? "all" : view} <b>{m.buses}</b> routes = <b style={{ color: avgRideOk(m.avg_ride) ? t.good : t.poor, fontSize: "1.05em" }}>{Math.round(m.avg_ride)} min</b>.</>,
               view === "overall" && <>By fleet: owned <b>{Math.round(ow.avg_ride)} min</b> (near, dense routes) · rental <b>{Math.round(rt.avg_ride)} min</b> (far villages — vans cover the long corridors).</>,
               <>The floor is geography: ~38% of riders live 35+ min of raw driving from the factory, so a fleet average near ~60 is the physical limit for single-trip operation.</>,
             ].filter(Boolean),
@@ -2024,7 +2025,7 @@ function FleetPlanView({ t, svc, toast, onOpenService }) {
                     title={r.riders > r.cap ? `${r.riders - r.cap} over ${r.cap} seats` : undefined}>{r.riders}</td>
                   <td className="py-2 px-2" style={{ color: t.muted }}>{r.cap}</td>
                   <td className="py-2 px-2" style={{ color: t.muted }}>{r.km}</td>
-                  <td className="py-2 px-2" style={{ color: r.ride <= 60 ? t.good : t.poor }}>{r.ride}</td>
+                  <td className="py-2 px-2" style={{ color: longestRideOk(r.ride) ? t.good : t.poor }}>{r.ride}</td>
                   <td className="py-2 px-2" style={{ color: t.text }}>{"₹" + (r.riders ? r.cost / r.riders : 0).toFixed(1)}</td>
                   <td className="py-2 px-2" style={{ color: t.techno, fontWeight: 600, minWidth: 200 }}>
                     <div>{r.seq[0] ? r.seq[0].name : "—"} <span style={{ color: t.muted, fontWeight: 400 }}>({r.km_to_last ?? "—"} km)</span></div>

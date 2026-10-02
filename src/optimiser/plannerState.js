@@ -19,6 +19,7 @@ import { useParkPoints } from "./ParkPicker.jsx";
 import { routeGeometry } from "./roadGeom.js";
 import { KPI_DEFS, getHiddenKpis, setHiddenKpis } from "./kpiPrefs.js";
 import { BUS_RANK, PLAN_RANK, TYPE_KEYS, nextRank, rankBy } from "./kpiRank.js";
+import { avgRideOk, longestRideOk } from "./rideHealth.js";
 
 export const UNADDED = "#f87171"; // light red — stop not yet on any bus
 export const ADDED = "#4ade80";   // light green — stop assigned to a bus
@@ -626,8 +627,8 @@ export function planTiles({ row, k, busName, morning, assignedHeads, totalRiders
     { key: "cost", label: "Cost / head — this plan, alone", value: k && k.heads ? `₹${k.costPerHeadDay.toFixed(1)}` : dash,
       sub: k ? `₹${Math.round(k.totalCost).toLocaleString("en-IN")} / day · ${k.heads} on a bus` : "" },
     { key: "util", label: "Avg util", value: k ? `${k.utilisation.toFixed(0)}%` : dash, sub: `${busesUsed} bus${busesUsed === 1 ? "" : "es"} used`, accent: k && k.utilisation >= 85 ? t.good : t.watch },
-    { key: "avgride", label: "Avg ride", value: usedRows.length ? `${Math.round(avgRide)} min` : dash, sub: `${unassignedCount} stops left`, accent: usedRows.length && avgRide <= 60 ? t.good : t.poor },
-    { key: "ride", label: "Max ride", value: usedRows.length ? `${Math.round(maxRide)} min` : dash, sub: "longest trip", accent: usedRows.length && maxRide <= 110 ? t.good : t.poor },
+    { key: "avgride", label: "Avg ride", value: usedRows.length ? `${Math.round(avgRide)} min` : dash, sub: `${unassignedCount} stops left`, accent: usedRows.length && avgRideOk(avgRide) ? t.good : t.poor },
+    { key: "ride", label: "Max ride", value: usedRows.length ? `${Math.round(maxRide)} min` : dash, sub: "longest trip", accent: usedRows.length && longestRideOk(maxRide) ? t.good : t.poor },
     { key: "totdist", label: "Total dist", value: usedRows.length ? `${Math.round(totKm).toLocaleString("en-IN")} km` : dash, sub: "whole plan" },
     { key: "avgdist", label: "Dist / person", value: usedRows.length ? `${distPP.toFixed(1)} km` : dash, sub: "one-way" },
     { key: "owned", label: "Owned", value: ownRows.length, sub: `${seatSum(ownRows).toLocaleString("en-IN")} seats` },
