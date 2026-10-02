@@ -314,19 +314,17 @@ function busAttendancePlugin() {
 
 /* async: the proxy's `target` is read once when this object is built, so the reachable ERP
    address has to be settled before that — not inside configureServer, which runs later. */
-/* The new look is tried out at /new/ (new/index.html). Typed without the slash, the dev server's
-   page fallback would hand back the old dashboard, so send /new on to /new/. */
-function newLookPlugin() {
+/* The new look is the dashboard at /; the old look stays at /old/ (old/index.html). /new was where
+   the new look was tried out, so old bookmarks to it are sent to /. Typed without the slash, /old
+   would get the page fallback, so it is sent on to /old/. */
+function lookPlugin() {
   return {
-    name: "new-look-redirect",
+    name: "look-redirects",
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        if (req.url === "/new" || req.url.startsWith("/new?") || req.url.startsWith("/new#")) {
-          res.statusCode = 302;
-          res.setHeader("Location", "/new/" + req.url.slice(4));
-          res.end();
-          return;
-        }
+        const to = (loc) => { res.statusCode = 302; res.setHeader("Location", loc); res.end(); };
+        if (req.url === "/new" || req.url.startsWith("/new/") || req.url.startsWith("/new?") || req.url.startsWith("/new#")) return to("/" + req.url.replace(/^\/new\/?/, "").replace(/^index\.html/, ""));
+        if (req.url === "/old" || req.url.startsWith("/old?")) return to("/old/" + req.url.slice(4));
         next();
       });
     },
@@ -336,9 +334,9 @@ function newLookPlugin() {
 export default defineConfig(async () => {
   ERP_BASE = await resolveErpBase(console);
   return {
-  plugins: [react(), newLookPlugin(), routesRebuildPlugin(), erpAuthPlugin(), busAttendancePlugin()],
-  // two pages: the dashboard at / and the new look being tried out at /new/
-  build: { rollupOptions: { input: { main: "index.html", next: "new/index.html" } } },
+  plugins: [react(), lookPlugin(), routesRebuildPlugin(), erpAuthPlugin(), busAttendancePlugin()],
+  // two pages: the dashboard at / and the old look kept at /old/
+  build: { rollupOptions: { input: { main: "index.html", old: "old/index.html" } } },
   server: {
     host: true,
     // honour the port the launcher assigns (autoPort) via the PORT env var; fall back to 5173

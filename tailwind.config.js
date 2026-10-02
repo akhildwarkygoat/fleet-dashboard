@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./index.html", "./new/index.html", "./src/**/*.{js,jsx,ts,tsx}"],
+  content: ["./index.html", "./old/index.html", "./src/**/*.{js,jsx,ts,tsx}"],
   theme: {
     extend: {
       /* Tokens for the new look (src/next, served at /new/). New names only, so nothing the old
