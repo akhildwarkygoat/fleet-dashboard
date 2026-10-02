@@ -1,67 +1,39 @@
-/* This day: one row per run the finalised plan expects, with the times the vehicle manager reports.
-   Saving, clearing, the did-not-run switch and the bulk "ran to plan" mark are the old board's own
-   (useTrackImpl, commitClock, toggleNotRun in TrackImplView.jsx); a run left blank is not counted,
-   never assumed on time. With several services the runs fold into one group per service, each
-   header carrying that service's lateness to the gate and how much of it is recorded. */
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Check, Download, FileWarning, SearchX, Upload, X } from "lucide-react";
-import { STATUS, fmtClock, isSunday, parseClock, summarise, variance } from "../../../../optimiser/trackImpl.js";
-import { commitClock, toggleNotRun } from "../../../../optimiser/TrackImplView.jsx";
-import { Alert, Button, Card, CardTitle, DataTable, IconButton, Input, Progress, Search, Skeleton, Tag, cx, tdCls, thCls } from "../../../ui.jsx";
-import { DASH, count, day, duration, plural, squash } from "../../../format.js";
+/* This day: one row per run the finalised plan expects, with the times the bus attendance app
+   recorded. A leader taps Start journey when the bus leaves its parking and End journey when it
+   arrives, and tiGps.js files each journey on the run it belongs to. Nothing is typed here (Akhil,
+   2026-10-02): a run with no journey is not counted, never assumed on time. Journeys that match no
+   planned run are listed under the table as trips not in the plan. With several services the runs
+   fold into one group per service, each header carrying that service's lateness to the gate. */
+import React, { useEffect, useMemo, useState } from "react";
+import { Download, FileWarning, Route as RouteIcon, SearchX } from "lucide-react";
+import { SOURCE, STATUS, fmtClock, isSunday, summarise, variance } from "../../../../optimiser/trackImpl.js";
+import { EXTRAS_EVENT, getExtraTrips, minOfDay } from "../../../../optimiser/tiGps.js";
+import { Alert, Button, Card, CardTitle, DataTable, Progress, Search, Skeleton, Tag, cx, tdCls, thCls } from "../../../ui.jsx";
+import { DASH, count, day, duration, kms, plural, squash } from "../../../format.js";
 import { go } from "../../../route.js";
 import { useKept } from "../../bus/parts.jsx";
 import { DIR, Dot, FlatEmpty, GroupRow, Sub, dayTone, lateTag, onDay, plain, rideVsPlan, signedMin, useGroups } from "./parts.jsx";
 
-const COLS = 8;
+const COLS = 7;
 const ZEBRA = "bg-satin/70";
 const SUNDAY = "Sunday: the factory does not normally run";
 
-/** A typed time: a compact pill field in mono. Saved when it loses focus or on Enter. */
-function TimeField({ value, onChange, onCommit, wrong, ...rest }) {
-  return (
-    <Input value={value} inputMode="numeric" autoComplete="off" spellCheck={false} {...rest}
-      title="Type 08:05 or 0805. It saves when you leave the field."
-      aria-invalid={wrong || undefined}
-      onChange={(e) => onChange(e.target.value)} onBlur={(e) => onCommit(e.target.value)}
-      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
-      className={cx("!h-9 !w-[88px] !px-2 text-center font-code !text-[13px]", wrong && "!bg-bad-soft !text-bad-ink")} />
-  );
+/** A recorded clock time with what it marks; "—" and why when there is none. */
+function Clock({ value, sub, empty }) {
+  if (value == null) return <><span className="text-ink-4">{DASH}</span>{empty && <Sub>{empty}</Sub>}</>;
+  return <><span className="font-code font-semibold">{fmtClock(value)}</span>{sub && <Sub>{sub}</Sub>}</>;
 }
 
-function RunRow({ run, entry, save, onClear, date, zebra }) {
+function RunRow({ run, entry, save, date, zebra }) {
   const v = variance(entry);
   const notRun = entry && entry.status === STATUS.NOT_RUN;
-  const uid = useId();
-  const [draft, setDraft] = useState({ s: "", e: "" });
-  const [wrong, setWrong] = useState({ s: false, e: false });
-  useEffect(() => {
-    setDraft({ s: entry && entry.actualStart != null ? fmtClock(entry.actualStart) : "",
-               e: entry && entry.actualEnd != null ? fmtClock(entry.actualEnd) : "" });
-    setWrong({ s: false, e: false });
-  }, [entry && entry.actualStart, entry && entry.actualEnd]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // "0805" works as well as "08:05"; anything else stays visible, marked, to be corrected
-  const commit = (which, raw) => {
-    const txt = String(raw || "").trim();
-    setWrong((w) => ({ ...w, [which]: !!txt && parseClock(txt) == null }));
-    commitClock(save, run, which, raw);
-  };
-  const field = (which, label) => (
-    <>
-      <TimeField value={draft[which]} disabled={notRun} wrong={wrong[which]}
-        placeholder={entry && entry.bulk ? "To plan" : "hh:mm"} aria-label={`${label} for ${run.veh} ${run.dir}`}
-        aria-describedby={wrong[which] ? `${uid}-${which}` : undefined}
-        onChange={(t) => { setDraft((d) => ({ ...d, [which]: t })); setWrong((w) => ({ ...w, [which]: false })); }}
-        onCommit={(t) => commit(which, t)} />
-      {wrong[which] && <Sub tone="bad" id={`${uid}-${which}`} role="alert">Type it as 08:05</Sub>}
-    </>
-  );
+  const gps = entry && entry.source === SOURCE.TRACKER;
+  const pickup = run.dir === "pickup";
   const offDay = run.startDay || run.endDay;
   const ride = rideVsPlan(v.rideVar);
 
   return (
-    <tr className={cx(zebra && ZEBRA, notRun && "[&>td:not(:last-child)]:opacity-60")}>
+    <tr className={cx(zebra && ZEBRA, notRun && "[&>td]:opacity-60")}>
       <td className={cx(tdCls, "whitespace-nowrap font-code font-semibold")}>{run.veh}</td>
       <td className={cx(tdCls, "whitespace-nowrap")}>
         <span className="inline-flex items-center gap-2"><Dot color={run.svc.color} /><span className="font-semibold">{DIR[run.dir] || run.dir}</span></span>
@@ -74,8 +46,16 @@ function RunRow({ run, entry, save, onClear, date, zebra }) {
         {offDay ? <Sub>{run.startDay === run.endDay ? `on ${onDay(date, run.startDay)}` : `${onDay(date, run.startDay)} to ${onDay(date, run.endDay)}`}</Sub> : null}
         {run.dir === "drop" && run.assumedOff && <Sub tone="warn" title="The ERP gives a gate time but no release time, so an 8-hour shift is assumed">Release time assumed</Sub>}
       </td>
-      <td className={cx(tdCls, "py-2")}>{field("s", "Actual start")}</td>
-      <td className={cx(tdCls, "py-2")}>{field("e", "Actual end")}</td>
+      <td className={cx(tdCls, "whitespace-nowrap")}>
+        {notRun ? <span className="text-ink-3">Did not run</span>
+          : <Clock value={entry && entry.actualStart} empty={entry ? null : "No journey yet"}
+              sub={gps ? (pickup ? "Left parking" : "Left") : entry ? "Typed earlier" : null} />}
+      </td>
+      <td className={cx(tdCls, "whitespace-nowrap")}>
+        {gps && entry.live
+          ? <Tag tone="nova" className="!px-2.5 !py-0.5" title="The journey is still recording; the end time arrives when the leader taps End journey">Still out</Tag>
+          : <Clock value={entry && !notRun ? entry.actualEnd : null} sub={gps ? (pickup ? "At the gate" : "Last stop") : null} />}
+      </td>
       <td className={cx(tdCls, "whitespace-nowrap")}>
         {v.clockValid && v.endVar != null
           ? <Tag tone={lateTag(v.endVar)} className="!px-2.5 !py-0.5">{signedMin(v.endVar)}</Tag>
@@ -88,26 +68,45 @@ function RunRow({ run, entry, save, onClear, date, zebra }) {
               className="rounded-pill bg-warn-soft px-2 py-0.5 font-semibold text-warn-ink transition-colors hover:bg-warn-soft/70">Confirm</button>
           </span>
         )}
-        {!v.clockValid && !v.suspect && v.ran && entry && !entry.bulk && <Sub tone="warn" title={v.reason}>Not comparable</Sub>}
+        {!v.clockValid && !v.suspect && v.ran && entry && !entry.bulk && !entry.live && <Sub tone="warn" title={v.reason}>Not comparable</Sub>}
       </td>
       <td className={cx(tdCls, "whitespace-nowrap")}>
-        {v.actualRide == null ? <span className="text-ink-4">{DASH}</span> : <span className="tabular-nums">{duration(v.actualRide)}</span>}
-        {ride && <Sub tone={v.rideVar > 0 ? "warn" : v.rideVar < 0 ? "ok" : null}>{ride}</Sub>}
-      </td>
-      <td className={cx(tdCls, "whitespace-nowrap py-2")}>
-        <span className="flex items-center justify-end gap-1">
-          <button type="button" aria-pressed={!!notRun} onClick={() => toggleNotRun(save, run, notRun)}
-            aria-label={`Did not run: ${run.veh} ${DIR[run.dir] || run.dir}`}
-            title={notRun ? "Mark this bus as having run" : "Mark this bus as not run today"}
-            className={cx("h-9 rounded-pill px-3 text-[13px] font-semibold transition-colors duration-150",
-              notRun ? "bg-warn-soft text-warn-ink" : "text-ink-3 hover:bg-satin-2 hover:text-ink")}>
-            Did not run
-          </button>
-          {entry ? <IconButton label={`Clear what was entered for ${run.veh} ${run.dir}`} icon={X} variant="ghost" size="sm" onClick={onClear} />
-            : <span aria-hidden className="h-9 w-9" />}
-        </span>
+        {v.actualRide == null || (gps && entry.live) ? <span className="text-ink-4">{DASH}</span> : <span className="tabular-nums">{duration(v.actualRide)}</span>}
+        {gps && pickup && v.actualRide != null && !entry.live ? <Sub>from parking</Sub> : ride && <Sub tone={v.rideVar > 0 ? "warn" : v.rideVar < 0 ? "ok" : null}>{ride}</Sub>}
+        {gps && entry.journeyKm != null && <Sub>{kms(entry.journeyKm)} km</Sub>}
       </td>
     </tr>
+  );
+}
+
+/** Journeys the GPS recorded on this day that match no planned run: extra trips, listed as they are. */
+function useExtraTrips(date) {
+  const [all, setAll] = useState(getExtraTrips);
+  useEffect(() => {
+    const on = () => setAll(getExtraTrips());
+    window.addEventListener(EXTRAS_EVENT, on);
+    return () => window.removeEventListener(EXTRAS_EVENT, on);
+  }, []);
+  return useMemo(() => all.filter((j) => j.serviceDate === date), [all, date]);
+}
+
+function ExtraTrips({ trips }) {
+  if (!trips.length) return null;
+  return (
+    <div className="px-5 pb-5 sm:px-6">
+      <h3 className="text-[15px] font-bold tracking-[-0.01em] text-ink">Trips not in the plan <span className="font-semibold text-ink-3">{count(trips.length)}</span></h3>
+      <p className="mt-0.5 text-[13px] text-ink-3">Journeys recorded more than 3 hours from any planned run of their bus</p>
+      <ul className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {trips.map((j) => (
+          <li key={j.id} className="flex items-center gap-3 rounded-tile bg-satin px-4 py-2.5">
+            <RouteIcon size={16} aria-hidden className="shrink-0 text-ink-3" />
+            <span className="min-w-0 flex-1 truncate font-code text-[13px] font-semibold text-ink">{j.busId}</span>
+            <span className="font-code text-[13px] text-ink-2">{fmtClock(minOfDay(j.startedAt))}–{j.endedAt != null ? fmtClock(minOfDay(j.endedAt)) : "now"}</span>
+            <span className="text-[13px] tabular-nums text-ink-3">{kms(j.km)} km</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -140,12 +139,9 @@ function RowsSkeleton() {
 }
 
 export default function RunsCard({ board, svc, date, loading, multi, toast, onExport, canExport }) {
-  const { rows, ti, day: d, save, clear, importFile, noPlans, quota, confirmRest } = board;
+  const { rows, day: d, save, noPlans, quota } = board;
   const [q, setQ] = useKept(`ti:q:${svc ? svc.id : "all"}`, "");
-  const [pending, setPending] = useState(null); // a large bulk mark waiting for its confirm
-  const file = useRef(null);
-  // the count it asks about goes stale once anything is entered
-  useEffect(() => setPending(null), [date, ti]);
+  const extras = useExtraTrips(date);
 
   const sq = squash(q);
   const { isOpen, toggle } = useGroups("ti:open", multi, sq);
@@ -164,20 +160,9 @@ export default function RunsCard({ board, svc, date, loading, multi, toast, onEx
   }, [rows, shown, multi]);
   const anyOpen = groups.some((g) => isOpen(g.svc.id));
 
-  const markRest = () => confirmRest((left, svcs) => { setPending({ n: left.length, svcs }); return false; });
-  const confirmPending = () => { setPending(null); confirmRest(() => true); };
-  const pickFile = (e) => {
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
-    importFile(f);
-    e.target.value = "";
-  };
-
   const history = (
     <>
       <Button variant="secondary" size="sm" icon={Download} onClick={onExport} disabled={!canExport} title={canExport ? "Every T.I entry, as a JSON file" : "Nothing recorded yet"}>Export JSON</Button>
-      <Button variant="secondary" size="sm" icon={Upload} onClick={() => file.current && file.current.click()} title="Merge a T.I export from another machine">Import JSON</Button>
-      <input ref={file} type="file" accept="application/json" className="hidden" onChange={pickFile} tabIndex={-1} aria-hidden />
     </>
   );
 
@@ -187,28 +172,17 @@ export default function RunsCard({ board, svc, date, loading, multi, toast, onEx
     <Card padding="none">
       <div className="px-5 pt-5 sm:px-6">
         <CardTitle className="!mb-3" sub={isSunday(date) ? SUNDAY : null}
-          title={<span title="One row per run the finalised plan expects. Type the times the vehicle manager reports; a run with no entry is not counted, never assumed on time.">Runs on {day(date)}</span>} />
+          title={<span title="One row per run the finalised plan expects. Times come from the bus attendance app's journeys; a run with no journey is not counted, never assumed on time.">Runs on {day(date)}</span>} />
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <Search value={q} onChange={setQ} label="Search bus or service" placeholder="Bus or service" className="w-full sm:w-[300px]" />
           <div className="flex flex-wrap gap-2 sm:ml-auto">
-            {!loading && !pending && <Button variant="secondary" size="sm" icon={Check} onClick={markRest}>Mark the rest as run to plan</Button>}
             {history}
           </div>
         </div>
-        {pending && (
-          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-tile bg-satin px-4 py-3">
-            <p className="min-w-0 flex-1 text-[13px] text-ink-2">
-              <b className="font-semibold text-ink">Mark {plural(pending.n, "run", "runs")} on {day(date)} as run to plan?</b>{" "}
-              Across {pending.svcs.join(", ")}. This says the day is accounted for: it records no times and does not count toward on time.
-            </p>
-            <Button variant="ghost" size="sm" onClick={() => setPending(null)}>Cancel</Button>
-            <Button variant="primary" size="sm" onClick={confirmPending}>Mark {plural(pending.n, "run", "runs")}</Button>
-          </div>
-        )}
         {d.suspect > 0 && (
           <Alert tone="warn" className="mt-3">
-            {d.suspect === 1 ? "1 time looks mistyped, so it is" : `${count(d.suspect)} times look mistyped, so they are`} left out of the figures.
-            Correct {d.suspect === 1 ? "it" : "them"}, or press Confirm on the row.
+            {d.suspect === 1 ? "1 time looks wrong, so it is" : `${count(d.suspect)} times look wrong, so they are`} left out of the figures.
+            Press Confirm on the row if it really happened.
           </Alert>
         )}
         {quota.pct >= 70 && (
@@ -232,7 +206,6 @@ export default function RunsCard({ board, svc, date, loading, multi, toast, onEx
                   <th className={thCls}>Actual end</th>
                   <th className={thCls}>Lateness</th>
                   <th className={thCls}>Took</th>
-                  <th className={thCls}><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
             )}
@@ -252,7 +225,7 @@ export default function RunsCard({ board, svc, date, loading, multi, toast, onEx
                 )}
                 {isOpen(g.svc.id) && g.list.map(({ run, entry }, i) => (
                   <RunRow key={`${run.svcId}|${run.veh}|${run.dir}`} run={run} entry={entry} save={save} date={date} zebra={i % 2 === 1}
-                    onClear={() => { try { clear(run); } catch (e) { toast(e.message || "Could not save"); } }} />
+ />
                 ))}
               </tbody>
             ))}
@@ -262,6 +235,7 @@ export default function RunsCard({ board, svc, date, loading, multi, toast, onEx
             action={<Button variant="secondary" onClick={() => setQ("")}>Clear search</Button>} />
         )}
       </div>
+      <ExtraTrips trips={extras} />
     </Card>
   );
 }

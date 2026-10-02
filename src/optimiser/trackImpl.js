@@ -62,8 +62,11 @@ export const SUSPECT_CLOCK_MIN = 240;
 /** A run taking this much longer than planned is a transposed start and end, not a journey. */
 export const suspectRideOver = (plannedRide) => Math.max(360, (plannedRide || 0) * 4);
 
-/** Where an actual time came from. `tracker` is unused today and reserved on purpose. */
+/** Where an actual time came from. `tracker` is a GPS journey from the bus attendance app (tiGps.js). */
 export const SOURCE = { MANUAL: "manual", TRACKER: "tracker" };
+
+/** Fired on window after every save, so an open board shows times the GPS sync just wrote. */
+export const TI_EVENT = "fleet:ti";
 
 /** What happened to a run. Anything but `ran` contributes to coverage but never to variance. */
 export const STATUS = { RAN: "ran", NOT_RUN: "not-run" };
@@ -171,7 +174,10 @@ export class TIWriteError extends Error {
  * operator must see, not a value the caller may assume.
  */
 function write(ti) {
-  try { localStorage.setItem(KEY, JSON.stringify(ti)); }
+  try {
+    localStorage.setItem(KEY, JSON.stringify(ti));
+    if (typeof window !== "undefined" && typeof Event === "function") window.dispatchEvent(new Event(TI_EVENT));
+  }
   catch (e) {
     throw new TIWriteError(
       "Could not save — this browser's storage for the dashboard is full. " +
@@ -372,10 +378,13 @@ export function variance(entry) {
   if (!ran) { out.reason = "did not run"; return out; }
   if (!p) { out.reason = "no plan for this bus on this service"; return out; }
 
-  out.startVar = clockVar(entry.actualStart, p.start);
+  /* A GPS pickup starts when the bus leaves its parking, before the plan's first stop, so its
+     start and its length are not the plan's: only the arrival at the gate is compared. */
+  const fromParking = entry.source === SOURCE.TRACKER && entry.dir === "pickup";
+  out.startVar = fromParking ? null : clockVar(entry.actualStart, p.start);
   out.endVar = clockVar(entry.actualEnd, p.end);
   out.actualRide = durationMin(entry.actualStart, entry.actualEnd);
-  out.rideVar = out.actualRide == null || p.ride == null ? null : out.actualRide - p.ride;
+  out.rideVar = fromParking || out.actualRide == null || p.ride == null ? null : out.actualRide - p.ride;
 
   /* A DROP is timed off the release hour. Where that is assumed, the clock variance is
      mostly the assumption's error and would poison any average it entered. */

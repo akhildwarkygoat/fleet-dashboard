@@ -13,6 +13,7 @@ import { indexGps, priceOn, kmOn, dieselOn, variableCost, MAX_SPREAD_DAYS, RECEN
 import { loadPlanWeeks, planDayOf } from "./planRuns.js";
 import { planSourceForWeek, FINALISED_EVENT } from "./optimiser/finalisedPlans.js";
 import { mondayOf } from "./optimiser/rotation.js";
+import { syncTiFromGps } from "./optimiser/tiGps.js";
 import { fetchBusKm } from "./busApp.js";
 import { COST_TYPES, COST_TYPE_MAP, COST_PERIODS, perDay, lineDaily, profileDailySpend, profileDailyBudget } from "./costModel.js";
 import {
@@ -2802,6 +2803,14 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
     return out;
   }, [employees, attendance, buses, erpShiftDate]);
 
+  /* T.I takes its times from the bus attendance app's journeys: every refresh of the GPS feed
+     matches them to the planned runs and saves what changed (tiGps.js). Re-run when a plan is
+     finalised, since the runs being matched change with it. */
+  useEffect(() => {
+    if (!gpsFeed) return;
+    const fetchJson = (url) => fetch(url).then((r) => (r.ok ? r.json() : null));
+    syncTiFromGps(gpsFeed, fetchJson).catch((e) => console.warn("T.I from GPS:", e && e.message));
+  }, [gpsFeed, planTick]);
   const planByVeh = useMemo(() => (planWeeks && planWeeks[thisWeek]) || new Map(), [planWeeks, thisWeek]);
 
   // records the tabs actually read: each bus's ERP standing costs plus that day's km-variable cost,

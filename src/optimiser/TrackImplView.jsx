@@ -31,7 +31,7 @@ import { resolveFinalised } from "./finalisedPlans.js";
 import { subscribeRotaWeek } from "./rotation.js";
 import * as store from "./store.js";
 import {
-  getTI, setEntry, deleteEntry, getEntry, plannedRuns, snapshotOf, commit,
+  getTI, setEntry, deleteEntry, getEntry, plannedRuns, snapshotOf, commit, TI_EVENT,
   variance, summarise, byVehicle, indexByDate,
   fmtISO, addDays, isSunday, dateRange, parseClock, fmtClock, onTime,
   downloadTI, importTI, quotaUse, STATUS, ON_TIME_MIN,
@@ -60,6 +60,12 @@ export const lateTone = (v) => (onTime(v) ? "good" : Math.abs(v) > VERY_LATE_MIN
 export function useTrackImpl({ svc, toast, date, win, q }) {
   const scoped = svc && !svc.overall ? [svc] : SERVICES;
   const [ti, setTi] = useState(getTI);
+  // times the GPS sync writes while the board is open show up at once
+  useEffect(() => {
+    const reread = () => setTi(getTI());
+    window.addEventListener(TI_EVENT, reread);
+    return () => window.removeEventListener(TI_EVENT, reread);
+  }, []);
   const [plans, setPlans] = useState({});          // svcId -> plan body (or null once resolved)
 
   /* The finalised plan is the thing being marked, so it is resolved the same way every
