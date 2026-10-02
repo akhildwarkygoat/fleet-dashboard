@@ -62,8 +62,8 @@ export default function StopMap({ t, stops, routeColors, selectedId, onSelect, d
 
     mapRef.current = map;
     // Leaflet needs a size recalc once its container is laid out.
-    setTimeout(() => map.invalidateSize(), 0);
-    return () => { map.remove(); mapRef.current = null; };
+    const sizeTimer = setTimeout(() => { if (mapRef.current === map) map.invalidateSize(); }, 0);
+    return () => { clearTimeout(sizeTimer); map.stop(); map.remove(); mapRef.current = null; };
   }, []);
 
   // --- cursor hint while in drop-pin mode ---

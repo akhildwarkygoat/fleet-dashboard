@@ -38,8 +38,8 @@ export default function StopMap({ t, stops, routeColors, selectedId, onSelect, d
     layerRef.current = L.layerGroup().addTo(map);
     map.on("click", (e) => { if (dropRef.current && onDropRef.current) onDropRef.current(e.latlng.lat, e.latlng.lng); });
     mapRef.current = map;
-    setTimeout(() => map.invalidateSize(), 0);
-    return () => { map.remove(); mapRef.current = null; };
+    const sizeTimer = setTimeout(() => { if (mapRef.current === map) map.invalidateSize(); }, 0);
+    return () => { clearTimeout(sizeTimer); map.stop(); map.remove(); mapRef.current = null; };
   }, []);
 
   useEffect(() => { if (elRef.current) elRef.current.style.cursor = dropPinMode ? "crosshair" : ""; }, [dropPinMode]);

@@ -980,12 +980,13 @@ function RouteMap({ t, depot, route }) {
         const all = [];
         legPaths.forEach((p) => p.forEach((q) => all.push(q)));
         pts.forEach((p) => all.push([p.lat, p.lng]));
+        if (cancelled) return;   // the map was removed while the roads were loading
         map.fitBounds(L.latLngBounds(all), { padding: [34, 34] });
-        setTimeout(() => map.invalidateSize(), 0);
+        setTimeout(() => { if (!cancelled) map.invalidateSize(); }, 0);
         setLegs(legDist);
       } catch { setErr(true); }
     })();
-    return () => { cancelled = true; if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+    return () => { cancelled = true; if (mapRef.current) { mapRef.current.stop(); mapRef.current.remove(); mapRef.current = null; } };
     // eslint-disable-next-line
   }, []);
   useEffect(() => {   // highlight the selected segment
@@ -1083,11 +1084,11 @@ export function MasterRouteMap({ t, depot, routes, colors, height = 460, showSto
         if (!cancelled) {
           if (all.length > 1) map.fitBounds(L.latLngBounds(all), { padding: [40, 40] });
           else map.setView([depot[0], depot[1]], 11); // no routes: just centre on the factory
-          setTimeout(() => map.invalidateSize(), 0);
+          setTimeout(() => { if (!cancelled) map.invalidateSize(); }, 0);
         }
       } catch { setErr(true); }
     })();
-    return () => { cancelled = true; if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+    return () => { cancelled = true; if (mapRef.current) { mapRef.current.stop(); mapRef.current.remove(); mapRef.current = null; } };
     // eslint-disable-next-line
   }, []);
   if (err) return <div className="rounded-2xl border py-10 text-center text-sm" style={{ borderColor: t.border, color: t.muted }}>Map unavailable.</div>;

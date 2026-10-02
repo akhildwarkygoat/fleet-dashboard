@@ -235,9 +235,16 @@ export default function GMap({ t, stops, routeColors, depot, polylines, pins, se
     }).addTo(map);
     map.on("click", (e) => { if (dropRef.current && onDropRef.current) onDropRef.current(e.latlng.lat, e.latlng.lng); });
     mapRef.current = map;
-    setTimeout(() => map.invalidateSize(), 0);
+    /* The size check runs a tick later; if the map is torn down first (leaving the page, or
+       StrictMode's mount-unmount-mount) it must not touch the removed map, which threw
+       "Cannot read properties of undefined (reading '_leaflet_pos')". */
+    const sizeTimer = setTimeout(() => { if (mapRef.current === map) map.invalidateSize(); }, 0);
     buildStops(); fit();
-    return () => { map.remove(); mapRef.current = null; };
+    return () => {
+      clearTimeout(sizeTimer);
+      map.stop();      // a fit or zoom still animating would otherwise step on the removed panes
+      map.remove(); mapRef.current = null;
+    };
     // eslint-disable-next-line
   }, []);
 
@@ -311,7 +318,11 @@ export default function GMap({ t, stops, routeColors, depot, polylines, pins, se
   useEffect(() => { if (elRef.current) elRef.current.style.cursor = dropPinMode ? "crosshair" : ""; }, [dropPinMode]);
 
   // the container was resized (e.g. fullscreen toggle) — tell Leaflet to recompute its size
-  useEffect(() => { const m = mapRef.current; if (m) setTimeout(() => m.invalidateSize({ animate: false }), 0); }, [height]);
+  useEffect(() => {
+    const m = mapRef.current; if (!m) return;
+    const id = setTimeout(() => { if (mapRef.current === m) m.invalidateSize({ animate: false }); }, 0);
+    return () => clearTimeout(id);
+  }, [height]);
 
   return (
     <div className="rounded-2xl overflow-hidden border" style={{ borderColor: t.border }}>

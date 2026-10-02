@@ -443,7 +443,7 @@ export function useRise(ref, ready, deps = [], stagger = 60) {
    tabular-nums", vehicle numbers, codes and times "font-code". */
 export function DataTable({ className, children, label }) {
   return (
-    <div className={cx("-mx-1 overflow-x-auto", className)} role="region" aria-label={label} tabIndex={label ? 0 : undefined}>
+    <div className={cx("relative -mx-1 overflow-x-auto", className)} role="region" aria-label={label} tabIndex={label ? 0 : undefined}>
       <table className="w-full border-separate border-spacing-0 text-[13px] text-ink">{children}</table>
     </div>
   );
