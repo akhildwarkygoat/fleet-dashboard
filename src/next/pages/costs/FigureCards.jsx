@@ -4,6 +4,7 @@
 import React from "react";
 import { BothFigures, Card, CompanyDot, Unit, cx } from "../../ui.jsx";
 import { count, money1 } from "../../format.js";
+import { companyName } from "../../../costReport.js";
 import { Count } from "./parts.jsx";
 
 const Label = ({ children }) => <h2 className="text-[13px] font-semibold text-ink-3">{children}</h2>;
@@ -44,7 +45,7 @@ export function SplitCard({ label, value, unit, note, companies, pick, className
         {companies.map(({ c, s }) => (
           <li key={c} className="flex items-center gap-2 py-2 text-[13px]">
             <CompanyDot unit={c} />
-            <span className="truncate font-semibold text-ink-2">{c === "—" ? "No company" : c}</span>
+            <span className="truncate font-semibold text-ink-2">{companyName(c)}</span>
             <b className="ml-auto font-bold tabular-nums text-ink">{count(pick(s))}</b>
           </li>
         ))}

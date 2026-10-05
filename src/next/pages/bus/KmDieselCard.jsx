@@ -1,7 +1,7 @@
 /* Km and diesel by day: the 14 days to the chosen date, each day's km and where it came from, and the
    two ways it is priced. Rows and totals come from busKmDieselDays, the same as the old look. Km from
-   the plan and the ERP's average stand-in carry the violet tag the cost card uses for figures that
-   were not measured. */
+   the plan, the ERP's average and diesel by km standing in for a fill carry the violet tag the cost
+   card uses for figures that were not measured. */
 import React, { useMemo } from "react";
 import { busKmDieselDays } from "../../../Dashboard.jsx";
 import { LOW_GPS_SHARE, MAX_SPREAD_DAYS } from "../../../dailyCost.js";
@@ -25,8 +25,9 @@ function KmCell({ d }) {
   );
 }
 
-function IssuedCell({ z }) {
+function IssuedCell({ z, noFill }) {
   if (!z) return <><span className="font-semibold text-ink-4">{DASH}</span><Sub>not loaded</Sub></>;
+  if (noFill) return <><span className="font-semibold text-ink">0 L</span><Violet>No fill on record</Violet><Sub>by km used</Sub></>;
   if (z.source === "none") return <><span className="font-semibold text-ink">0 L</span><Sub>none issued</Sub></>;
   if (z.source === "estimate") return <><span className="font-semibold text-ink">≈{kms(z.litres)} L</span><Violet>ERP average</Violet><Sub>until the next fill</Sub></>;
   return (
@@ -53,7 +54,7 @@ export default function KmDieselCard({ bus, endDate, run, gpsStatus, gpsFeed, on
   // before the ERP diesel feed lands, its columns would be dashes on every row: leave them out
   const issued = !hired && !!run.diesel;
   const showKmpl = issued && days.some((r) => r.kmpl != null);
-  const anyViolet = days.some((r) => r.day.source === "plan" || (r.cost.byDiesel && r.cost.byDiesel.source === "estimate"));
+  const anyViolet = days.some((r) => r.day.source === "plan" || r.noFill || (r.cost.byDiesel && r.cost.byDiesel.source === "estimate"));
   const num = cx(tdCls, "!align-top text-right tabular-nums");
 
   return (
@@ -92,7 +93,7 @@ export default function KmDieselCard({ bus, endDate, run, gpsStatus, gpsFeed, on
           </tr>
         </thead>
         <tbody>
-          {days.map(({ d, day: k, cost, kmpl, vsKm }) => {
+          {days.map(({ d, day: k, cost, noFill, asIssued, kmpl, vsKm }) => {
             const byKm = cost.byKm, z = cost.byDiesel;
             return (
               <tr key={d} className={trCls}>
@@ -104,9 +105,9 @@ export default function KmDieselCard({ bus, endDate, run, gpsStatus, gpsFeed, on
                 </td>
                 {issued && (
                   <>
-                    <td className={num}><IssuedCell z={z} /></td>
+                    <td className={num}><IssuedCell z={z} noFill={noFill} /></td>
                     <td className={num}>
-                      <span className={cx("font-semibold", z ? "text-ink" : "text-ink-4")}>{z ? `${z.source === "estimate" ? "≈" : ""}${money(z.amount)}` : DASH}</span>
+                      <span className={cx("font-semibold", z ? "text-ink" : "text-ink-4")}>{z ? `${z.source === "estimate" || noFill ? "≈" : ""}${money(asIssued)}` : DASH}</span>
                       {vsKm && <Sub>{k.inProgress ? "km still growing" : `${vsKm.up ? "+" : MINUS}${percent(vsKm.pct)} vs by km`}</Sub>}
                     </td>
                     {showKmpl && <td className={cx(num, "font-semibold", kmpl != null ? "text-ink" : "text-ink-4")}>{kmpl != null ? kms(kmpl) : DASH}</td>}
@@ -117,7 +118,7 @@ export default function KmDieselCard({ bus, endDate, run, gpsStatus, gpsFeed, on
           })}
         </tbody>
       </DataTable>
-      {anyViolet && <VioletKey className="mt-3">From the plan or the ERP average, not measured</VioletKey>}
+      {anyViolet && <VioletKey className="mt-3">From the plan, the ERP average or diesel by km, not measured</VioletKey>}
 
       <Tiles className={cx("mt-5", hired ? "grid-cols-2 sm:grid-cols-3" : issued ? "grid-cols-2 sm:grid-cols-4 xl:grid-cols-6" : "grid-cols-2 sm:grid-cols-4")}>
         <Tile label="Km in 14 days" value={<>{kms(sum.km)}<Small>km</Small></>} />

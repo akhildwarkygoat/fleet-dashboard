@@ -9,7 +9,7 @@ import {
   PERIODS, periodRange, shiftPeriod, latestDate, datesShown, costRows, sumRows, costHeadNames, companyTotals, busCount,
   busTotals, costLines, explainersFor, noRouteVehicles, downloadCosts,
 } from "../../costReport.js";
-import { gpsLabel, localIso } from "../../Dashboard.jsx";
+import { localIso } from "../../Dashboard.jsx";
 import { Alert, Button, Choice, Field, IconButton, Input, PageHead, cx, useRise } from "../ui.jsx";
 import { count, day, dayRange, plural } from "../format.js";
 import CompanyCard from "./costs/CompanyCard.jsx";
@@ -42,7 +42,7 @@ const spread = (n) => cx("grid gap-3 sm:grid-cols-2 sm:[&>*:last-child:nth-child
 
 export default function CostsPage({ fleet }) {
   const { loaded, costBuses: buses, effRecords: records, busCosts, wd, costDates: dates, ridersOn, settings,
-    erpStatus, syncErp, costStatus, syncCosts, dieselStatus, syncDiesel, gpsStatus, gpsFeed } = fleet;
+    erpStatus, syncErp, costStatus, syncCosts, dieselStatus, syncDiesel, gpsStatus } = fleet;
   const [kind, setKind] = useKept("kind");
   const [picked, setAnchor] = useKept("anchor");
   // until a date is picked, the page follows the latest date with data
@@ -54,9 +54,9 @@ export default function CostsPage({ fleet }) {
   const todayLeftOut = kind !== "day" && today >= period.from && today <= period.to && dates.includes(today);
 
   const headNames = useMemo(() => costHeadNames(busCosts), [busCosts]);
-  const { rows, heads } = useMemo(() => costRows({
-    buses, records, busCosts, wd, riders: ridersOn, dates: datesShown(dates, period, today),
-  }), [buses, records, busCosts, wd, ridersOn, dates, period.kind, period.from, period.to, today]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { rows, heads, missed } = useMemo(() => costRows({
+    buses, records, busCosts, riders: ridersOn, dates: datesShown(dates, period, today),
+  }), [buses, records, busCosts, ridersOn, dates, period.kind, period.from, period.to, today]); // eslint-disable-line react-hooks/exhaustive-deps
   const all = useMemo(() => sumRows(rows, heads), [rows, heads]);
   const noRoute = useMemo(() => noRouteVehicles(buses, busCosts, wd), [buses, busCosts, wd]);
   const companies = useMemo(() => companyTotals(rows, heads), [rows, heads]);
@@ -95,7 +95,7 @@ export default function CostsPage({ fleet }) {
         </div>
         <Button variant="white" icon={Download} className="w-full sm:w-auto" disabled={waiting || !rows.length || isToday}
           title={isToday ? "Today is left out of the Excel file until the day is over" : "Totals, each bus, each bus each day, and how every cost works"}
-          onClick={() => downloadCosts({ rows, heads, period, wd, headNames, today, holidays: settings.holidays, noRoute, gps: gpsLabel(gpsStatus, gpsFeed) })}>
+          onClick={() => downloadCosts({ rows, heads, missed, period, wd, headNames, today, holidays: settings.holidays, noRoute, gps: { phase: gpsStatus.phase, at: gpsStatus.at } })}>
           Export to Excel
         </Button>
       </>

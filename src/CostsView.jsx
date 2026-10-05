@@ -8,7 +8,7 @@ import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { Card, Btn, Tile, Segmented, Empty } from "./ui/kit.jsx";
 import {
   PERIODS, periodRange, shiftPeriod, latestDate, datesShown, costRows, sumRows, costHeadNames, companyTotals, busCount,
-  costLines, shareOf, explainersFor, costExplainerMap, noRouteVehicles, OTHER_HEAD_WHAT, downloadCosts,
+  costLines, shareOf, explainersFor, costExplainerMap, noRouteVehicles, companyName, OTHER_HEAD_WHAT, downloadCosts,
 } from "./costReport.js";
 
 const inr = (n) => (n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN"));
@@ -16,7 +16,7 @@ const inr1 = (n) => (n == null ? "—" : "₹" + n.toLocaleString("en-IN", { max
 const num = (n) => Math.round(n || 0).toLocaleString("en-IN");
 
 /** dates: every date with data (sorted); ridersOn(busId, date): riders carried that day; today: the
- *  local date; holidays: the declared ones; gps: the bus app feed's state, for the export. */
+ *  local date; holidays: the declared ones; gps: the bus app feed's { phase, at }, for the export. */
 export default function CostsView({ t, buses, records, busCosts, wd, dates, ridersOn, unitColor, today, holidays, gps }) {
   const latest = latestDate(dates);
   const [kind, setKind] = useState("month");
@@ -26,10 +26,10 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
   const todayLeftOut = kind !== "day" && today >= period.from && today <= period.to && dates.includes(today);
 
   const headNames = useMemo(() => costHeadNames(busCosts), [busCosts]);
-  const { rows, heads } = useMemo(() => costRows({
-    buses, records, busCosts, wd, riders: ridersOn,
+  const { rows, heads, missed } = useMemo(() => costRows({
+    buses, records, busCosts, riders: ridersOn,
     dates: datesShown(dates, period, today),
-  }), [buses, records, busCosts, wd, ridersOn, dates, period.kind, period.from, period.to, today]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [buses, records, busCosts, ridersOn, dates, period.kind, period.from, period.to, today]); // eslint-disable-line react-hooks/exhaustive-deps
   const all = useMemo(() => sumRows(rows, heads), [rows, heads]);
   const companies = useMemo(() => companyTotals(rows, heads), [rows, heads]);
   const explain = useMemo(() => costExplainerMap(wd), [wd]);
@@ -60,7 +60,7 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
         <div className="flex items-center gap-2">{arrow(-1, ChevronLeft, "Previous")}{picker}{arrow(1, ChevronRight, "Next")}</div>
         <div className="text-sm font-semibold" style={{ color: t.text }}>{period.label}</div>
         <div className="ml-auto">
-          <Btn t={t} onClick={() => downloadCosts({ rows, heads, period, wd, headNames, today, holidays, noRoute, gps })} disabled={!rows.length || isToday}
+          <Btn t={t} onClick={() => downloadCosts({ rows, heads, missed, period, wd, headNames, today, holidays, noRoute, gps })} disabled={!rows.length || isToday}
             title={isToday ? "Today is left out of the Excel file until the day is over" : "Totals, each bus, each bus each day, and how every cost works"}>
             <Download size={16} />Export to Excel
           </Btn>
@@ -107,7 +107,7 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
               </tr></thead>
               <tbody>{companies.map(({ c, buses: n, s }) => (
                 <tr key={c} style={{ borderTop: "1px solid " + t.border, color: t.text }}>
-                  <td className="py-2.5 pr-4 font-semibold"><span className="inline-block w-2.5 h-2.5 rounded-full mr-2 align-middle" style={{ background: unitColor ? unitColor(t, c) : t.primary }} />{c === "—" ? "No company" : c}</td>
+                  <td className="py-2.5 pr-4 font-semibold"><span className="inline-block w-2.5 h-2.5 rounded-full mr-2 align-middle" style={{ background: unitColor ? unitColor(t, c) : t.primary }} />{companyName(c)}</td>
                   <td className="py-2.5 pr-4 text-right">{n}</td><td className="py-2.5 pr-4 text-right">{num(s.riders)}</td><td className="py-2.5 pr-4 text-right">{num(s.km)}</td>
                   <td className="py-2.5 pr-4 text-right font-semibold">{inr(s.totalKm)}</td><td className="py-2.5 pr-4 text-right">{inr(s.totalDiesel)}</td>
                   <td className="py-2.5 pr-4 text-right font-semibold">{inr1(s.cphKm)}</td><td className="py-2.5 pr-4 text-right">{inr1(s.cphDiesel)}</td>

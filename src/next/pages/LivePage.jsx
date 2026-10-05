@@ -4,7 +4,7 @@
    per head. Pressing a figure card ranks the buses by that figure and opens the companies. */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Bus, RotateCw, WifiOff } from "lucide-react";
-import { UNITS, aggregate, busLatestDate, effWorkingDays, metricsFor, resolveRec } from "../../Dashboard.jsx";
+import { UNITS, aggregate, effWorkingDays, fleetCostPairs, latestPairs, metricsFor, planOnlyNote } from "../../Dashboard.jsx";
 import { Button, Card, Choice, Empty, Field, PageHead, Search, Select, cx, useRise } from "../ui.jsx";
 import { count, plural, squash } from "../format.js";
 import { go } from "../route.js";
@@ -52,7 +52,7 @@ function readOpen() {
 }
 
 export default function LivePage({ fleet }) {
-  const { loaded, effBuses: buses, effRecords: records, employees, attendance, settings, erpStatus, syncErp } = fleet;
+  const { loaded, effBuses: buses, planOnly, effRecords: records, employees, attendance, settings, erpStatus, syncErp } = fleet;
   const wd = effWorkingDays(settings);
   const [q, setQ] = useKept("q");
   const [show, setShow] = useKept("show");
@@ -61,10 +61,8 @@ export default function LivePage({ fleet }) {
   const [shut, setShut] = useState({ key: "", units: {} }); // closed by hand while a search, filter or ranking had them open
 
   // each bus on its latest day with data, as on the old Live tab
-  const pairs = useMemo(() => buses.map((b) => {
-    const d = busLatestDate(records, employees, attendance, b.id);
-    return d ? { bus: b, rec: resolveRec(records, employees, attendance, b.id, d), date: d } : null;
-  }).filter(Boolean), [buses, records, employees, attendance]);
+  const pairs = useMemo(() => latestPairs(buses, records, employees, attendance), [buses, records, employees, attendance]);
+  const extra = useMemo(() => latestPairs(planOnly, records, employees, attendance), [planOnly, records, employees, attendance]);
 
   const rows = useMemo(() => pairs.map((p) => {
     const m = metricsFor(p.rec, p.bus, wd);
@@ -79,9 +77,11 @@ export default function LivePage({ fleet }) {
   const counts = useMemo(() => Object.fromEntries(SHOW.map((h) => [h, found.filter((x) => x.h === h).length])), [found]);
   const shown = useMemo(() => found.filter(SHOW_FN[show]).sort(SORT_FN[sort]), [found, show, sort]);
   const agg = useMemo(() => aggregate(shown, wd), [shown, wd]);
+  const narrowed = !!sq || show !== "all";
+  const costAgg = useMemo(() => aggregate(fleetCostPairs(shown, extra, narrowed), wd), [shown, extra, narrowed, wd]);
   // the ERP sent no costs for these buses, either way (an empty list is not the ERP's doing)
-  const noCosts = agg.count > 0 && agg.spend === 0 && agg.budget === 0 && !(agg.spend_diesel > 0);
-  const cph = perHead(agg);
+  const noCosts = costAgg.count > 0 && costAgg.spend === 0 && costAgg.budget === 0 && !(costAgg.spend_diesel > 0);
+  const cph = perHead(costAgg);
   const groups = useMemo(() => UNITS.map((unit) => {
     const list = shown.filter((x) => x.bus.unit === unit);
     const tally = { bad: 0, watch: 0, good: 0 };
@@ -169,8 +169,8 @@ export default function LivePage({ fleet }) {
         </div>
         <div data-rise-deep className="flex">
           {/* with no spend to rank by, the card is not a button */}
-          <CostCard agg={agg} cph={cph} noCosts={noCosts} className="flex-1"
-            active={sort === "cph"} onClick={agg.spend > 0 ? () => rankBy("cph") : undefined} />
+          <CostCard agg={costAgg} cph={cph} noCosts={noCosts} className="flex-1" note={!narrowed && extra.length ? planOnlyNote(extra) : null}
+            active={sort === "cph"} onClick={costAgg.spend > 0 ? () => rankBy("cph") : undefined} />
         </div>
         <div data-rise-deep className="flex">
           <FleetCard total={buses.length} byUnit={fleetBy} units={UNITS} className="flex-1" />

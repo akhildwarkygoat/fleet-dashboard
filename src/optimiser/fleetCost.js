@@ -6,10 +6,10 @@
  * of cost that does not exist. No fleet-level figure can be trusted while that holds.
  *
  * Loan, driver and maintenance are caused by the VEHICLE existing that day, not by
- * any one run, so they are split equally across the runs that vehicle makes. Diesel
- * and rental slabs are caused by the RUN — its own kilometres, its own hire — and are
- * never shared. A rented van on two runs is two hires, so rentals have no standing
- * cost to divide.
+ * any one run, so they are split equally across the runs that vehicle makes. Diesel is
+ * caused by the RUN, its own kilometres, and is never shared. A rented van is paid ONE
+ * day tariff on its day's total km (transport manager, 05-10-2026), as the Costs page
+ * prices it, so the fleet pays it once and the runs share it by their km.
  *
  * Costs are RECOMPUTED here rather than read from each plan's `cost` field: those were
  * written by different runs under different flags (some charge standing costs, some
@@ -17,8 +17,10 @@
  * function, both answers.
  *
  * Two answers, deliberately:
- *   standalone — every bus charged in full. "What does this service cost on its own?"
- *   adjusted   — standing cost counted once per vehicle. "What does the fleet cost?"
+ *   standalone — every bus charged in full, and a van its tariff on this run alone. "What does
+ *                this service cost on its own?"
+ *   adjusted   — standing cost and a van's day tariff counted once per vehicle. "What does the
+ *                fleet cost?"
  *
  * INVARIANT: the adjusted per-service costs sum to the fleet's adjusted cost. That is
  * the whole point, and fleetCost.test.js asserts it.
@@ -150,6 +152,9 @@ export function fleetCost(entries, opts = {}) {
     return standing;
   };
   for (const bus of perBus.values()) bus.standing = impliedStanding(bus);
+  /* a rented van's day: one tariff on all its runs' km */
+  const kmOf = (bus) => bus.runs.reduce((n, run) => n + num(run.route.km), 0);
+  for (const bus of perBus.values()) if (bus.type === "rent") bus.hire = rentTariff(kmOf(bus));
 
   /* STANDALONE means "what does this service cost if it pays for its buses in full?" — and a
      plan that already charged full standing has ALREADY answered that, per bus, with the
@@ -166,7 +171,12 @@ export function fleetCost(entries, opts = {}) {
      still needs the single per-vehicle figure, so it is unchanged. */
   const chargedStanding = (run) => run.hasStanding !== false;
   const runCost = (bus, r, shared, run) => {
-    if (bus.type === "rent") return rentTariff(num(r.km));      // a hire is a hire, per run
+    // a van hired for this run alone pays the tariff on it; shared, its runs split the day's tariff by km
+    if (bus.type === "rent") {
+      if (!shared) return rentTariff(num(r.km));
+      const km = kmOf(bus);
+      return km > 0 ? (bus.hire * num(r.km)) / km : bus.hire / bus.runs.length;
+    }
     if (!shared && run && chargedStanding(run) && r.cost != null && isFinite(+r.cost)) return num(r.cost);
     const share = shared ? bus.standing / bus.runs.length : bus.standing;
     return share + diesel * num(r.km);
@@ -245,11 +255,11 @@ export function fleetCost(entries, opts = {}) {
       km: sum((s) => s.km),
       standalone: sum((s) => s.standalone),
       /* The fleet's real cost: each owned vehicle's standing cost ONCE, plus every run's
-         own diesel and every hire. Computed independently of the per-service split so the
-         invariant below is a genuine check rather than a restatement. */
+         own diesel and each van's day tariff once. Computed independently of the per-service
+         split so the invariant below is a genuine check rather than a restatement. */
       adjusted: ownedBuses.reduce((n, b) => n + b.standing, 0)
-        + vehicles.reduce((n, b) => n + b.runs.reduce((m, r) =>
-            m + (b.type === "rent" ? rentTariff(num(r.route.km)) : diesel * num(r.route.km)), 0), 0),
+        + vehicles.reduce((n, b) => n + (b.type === "rent" ? rentTariff(kmOf(b))
+          : b.runs.reduce((m, r) => m + diesel * num(r.route.km), 0)), 0),
       standaloneHead: riders ? sum((s) => s.standalone) / riders : 0,
       adjustedHead: riders ? sum((s) => s.adjusted) / riders : 0,
       doubleCounted: sum((s) => s.standalone) - sum((s) => s.adjusted),

@@ -41,13 +41,14 @@ function MoneyTable({ rows }) {
 }
 
 /** Cost per head both ways, then the day's spend and cost per km both ways. "—" where there is
- *  nothing to divide, never ₹0. */
-export function CostCard({ agg, cph, noCosts, active, onClick, className }) {
+ *  nothing to divide, never ₹0. `note` says what the figures hold beyond the buses listed. */
+export function CostCard({ agg, cph, noCosts, note, active, onClick, className }) {
   const perKm = (spend, cpk) => (agg.km > 0 && spend > 0 ? cpk : null);
   return (
     <Shell onClick={onClick} active={active} className={className}>
       <Label>Cost per head a day</Label>
       <BothFigures size="lg" fmt={money} km={cph.km} diesel={cph.diesel} className="mt-3" />
+      {note && !noCosts && <span className="mt-2 text-[11px] font-semibold text-ink-3">{note}</span>}
       {noCosts ? (
         <span className="mt-auto pt-4 text-[13px] text-ink-3">No costs from the ERP yet</span>
       ) : agg.count > 0 && (

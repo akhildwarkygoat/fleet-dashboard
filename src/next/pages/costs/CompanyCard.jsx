@@ -1,15 +1,15 @@
 /* One company's costs for the period: both totals, its share of the fleet's total by km, how many
    buses, riders and km, and its cost per head both ways. Sums from companyTotals (costReport.js). */
 import React from "react";
-import { shareOf } from "../../../costReport.js";
+import { companyName, shareOf } from "../../../costReport.js";
 import { BothFigures, BothInline, Card, CompanyDot, Progress, Tile, Tiles, cx } from "../../ui.jsx";
 import { count, money, money1 } from "../../format.js";
 
-/** `c` the company ("—" when a bus has none), `buses` how many it ran, `s` its sums, `total` the
+/** `c` the company ("—" when a bus has none, named NO_COMPANY), `buses` how many it ran, `s` its sums, `total` the
  *  fleet's total by km; `noCosts` when the period has nothing to price, so money reads "—", not ₹0;
  *  `riders` what its riders count is called ("Rider-days" over more than a day). */
 export default function CompanyCard({ c, buses, s, total, noCosts, riders = "Riders", className }) {
-  const name = c === "—" ? "No company" : c;
+  const name = companyName(c);
   return (
     <Card data-rise-deep className={cx("flex flex-col", className)}>
       <div className="flex items-center gap-2.5">

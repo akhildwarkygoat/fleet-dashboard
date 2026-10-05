@@ -57,7 +57,7 @@ export default function SourcesCard({ fleet, className }) {
     `${count(costMeta.used)} of ${count(costMeta.rows)} cost lines used`,
     costMeta.skippedUnapproved > 0 && `${count(costMeta.skippedUnapproved)} unapproved left out`,
   ].filter(Boolean).join(" · ") : null;
-  const costTitle = costMeta ? ["lines from the last 12 months", costMeta.heads && costMeta.heads.length && `heads: ${costMeta.heads.join(", ")}`]
+  const costTitle = costMeta ? ["lines from the 12 months to this sync; each day is costed on the 12 months up to it", costMeta.heads && costMeta.heads.length && `heads: ${costMeta.heads.join(", ")}`]
     .filter(Boolean).join(" · ") : undefined;
 
   const dm = diesel && diesel.meta;

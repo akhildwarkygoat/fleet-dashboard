@@ -196,95 +196,136 @@ const sentenceCase = (s) => { const x = String(s || "").toLowerCase().trim(); re
 const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 /**
+ * The 12 months a day's standing costs come from: the lines whose period starts after the same
+ * date a year before and on or before the day itself. Counted in calendar dates, so the window
+ * ending 30 Jun starts on 1 Jul and keeps the quarter that started then, and one ending 29 Feb
+ * looks back to 28 Feb.
+ */
+export function costWindow(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const last = new Date(Date.UTC(y - 1, m, 0)).getUTCDate();
+  const from = new Date(Date.UTC(y - 1, m - 1, Math.min(d, last) + 1));
+  return { from: from.toISOString().slice(0, 10), to: iso };
+}
+
+/* One vehicle's approved lines → its cost lines, one per head. */
+function foldLines(entries) {
+  const byHead = new Map();   // head -> { total, qty, lines, rows }
+  for (const e of entries) {
+    let cell = byHead.get(e.head);
+    if (!cell) { cell = { total: 0, qty: 0, lines: 0, rows: [] }; byHead.set(e.head, cell); }
+    cell.total += e.amount;
+    cell.lines++;
+    if (e.rate > 0) cell.qty += e.amount / e.rate;
+    cell.rows.push(e);
+  }
+  const lines = [];
+  for (const [head, cell] of byHead) {
+    const spec = headSpec(head);
+    // A unit-rate head is shown the way the ERP quotes it — rate x quantity — using the
+    // quantity-weighted average rate, so rate * qty is exactly the amount purchased.
+    // A quantity-typed line MUST carry a quantity: the dashboard multiplies amount by it and
+    // reads a missing one as zero, which would drop the line from every total in silence. When
+    // no rate came back to divide by, fall back to the whole amount at quantity 1.
+    const useQty = spec.qty && cell.qty > 0;
+    lines.push({
+      id: spec.type,
+      type: spec.type,
+      label: spec.label || sentenceCase(head),
+      amount: useQty ? cell.total / cell.qty : cell.total,
+      ...(spec.qty ? { quantity: useQty ? Math.round(cell.qty * 100) / 100 : 1 } : {}),
+      period: "year",
+      erpLines: cell.lines,
+      detail: [...cell.rows].sort((a, b) => (a.from < b.from ? 1 : -1)),   // newest period first
+    });
+  }
+  return lines.sort((a, b) => b.amount * (b.quantity || 1) - a.amount * (a.quantity || 1));
+}
+const inWindow = (entries, { from, to }) => entries.filter((e) => e.from >= from && e.from <= to);
+
+/**
  * Fold costing rows into one read-only profile per vehicle.
  *
- * Window: the 12 months ending at `asOf` (the sync), by each line's From_Date. A trailing year
- * is a whole year's cost all year round: it holds four quarters of road tax and the latest
- * yearly lines, and it rolls forward on its own. From August to October 2026 the window was the
+ * Window: a day is costed on the lines whose period starts in the 12 months up to that day
+ * (costWindow), by each line's From_Date. A trailing year is a whole year's cost all year round: it
+ * holds four quarters of road tax and the latest yearly lines, and a past month is costed on the
+ * year before it, not on lines bought since. From August to October 2026 the window was the
  * financial year instead, which read low for most of the year because periods not yet started
  * have no row; the transport manager moved it back on 05-10-2026.
  *
- * The catch: a line counts when its period STARTS inside the window, so a yearly line that
- * started more than 12 months ago (insurance from 1 April last year, say) drops out until its
- * renewal is entered in the ERP, and the bus shows no such cost meanwhile.
+ * So every approved line is kept (`history`), and profileOn folds the ones a day's window holds.
+ * `lines` are the window at the sync (`asOf`), for the Settings summary and the cost card.
  *
- * Returns { profiles: { [vehicle]: profile }, meta: {...} }; a vehicle with no
- * approved spend in the window is absent rather than present with zeros.
+ * The catch: a line counts when its period STARTS inside the window, so a yearly line that
+ * started more than 12 months before the day (insurance from 1 April last year, say) drops out
+ * until its renewal is entered in the ERP, and the bus shows no such cost meanwhile.
+ *
+ * Returns { profiles: { [vehicle]: profile }, meta: {...} }; meta describes the sync's window.
  */
-export function mapErpCosts(rows, { asOf = Date.now(), days = 365 } = {}) {
-  // whole calendar days at both ends: asOf mid-afternoon must not clip a line that started at
-  // midnight exactly `days` ago, and setDate() keeps month boundaries honest
-  const to = new Date(asOf); to.setHours(23, 59, 59, 999);
-  const from = new Date(to); from.setDate(from.getDate() - (days - 1)); from.setHours(0, 0, 0, 0);
-  const tally = new Map();  // veh -> { head -> { total, qty, rated, lines } }
+export function mapErpCosts(rows, { asOf = Date.now() } = {}) {
+  const win = costWindow(isoLocal(new Date(asOf)));
+  const byVeh = new Map();  // veh -> approved lines
   const meta = { rows: (rows || []).length, used: 0, skippedUnapproved: 0, outsideWindow: 0, total: 0, heads: new Set() };
 
   for (const r of rows || []) {
     const veh = String(r.Veh_Name || "").trim();
     const start = erpDateVal(r.From_Date);
     if (!veh || !start) continue;
-    if (start < from || start > to) { meta.outsideWindow++; continue; }
+    const from = isoLocal(start), inside = from >= win.from && from <= win.to;
+    if (!inside) meta.outsideWindow++;
     const amount = numVal(r.Pur_Amount);
-    if (amount <= 0) { meta.skippedUnapproved++; continue; }   // planned, not purchased
+    if (amount <= 0) { if (inside) meta.skippedUnapproved++; continue; }   // planned, not purchased
 
     const head = String(r.Proj_Activity_Name || "").trim() || "OTHER";
-    let byHead = tally.get(veh);
-    if (!byHead) { byHead = new Map(); tally.set(veh, byHead); }
-    let cell = byHead.get(head);
-    if (!cell) { cell = { total: 0, qty: 0, rated: 0, lines: 0, rows: [] }; byHead.set(head, cell); }
-    cell.total += amount;
-    cell.lines++;
     const rate = numVal(r.Rate);
-    if (rate > 0) { cell.qty += amount / rate; cell.rated += amount; }   // rated = the part qty covers
-    // the individual ERP lines behind the rolled-up figure, so the card can show its working
+    // the individual ERP lines behind a rolled-up figure, so the card can show its working
     const end = erpDateVal(r.To_Date), appr = erpDateVal(r.Approved_Date);
-    cell.rows.push({
+    if (!byVeh.has(veh)) byVeh.set(veh, []);
+    byVeh.get(veh).push({
+      head,
       desc: String(r.Description || head).trim(),
       period: String(r.Period_Name || "").trim(),
-      from: isoLocal(start), to: end ? isoLocal(end) : "",
+      from, to: end ? isoLocal(end) : "",
       rate, qty: rate > 0 ? Math.round((amount / rate) * 100) / 100 : null, amount,
       approved: appr ? isoLocal(appr) : "",
       order: String(r.Order_No || "").trim(),
     });
-    meta.used++; meta.total += amount;
-    meta.heads.add(head);
+    if (inside) { meta.used++; meta.total += amount; meta.heads.add(head); }
   }
 
   const profiles = {};
-  for (const [veh, byHead] of tally) {
-    const lines = [];
-    for (const [head, cell] of byHead) {
-      const spec = headSpec(head);
-      // A unit-rate head is shown the way the ERP quotes it — rate x quantity — using the
-      // quantity-weighted average rate, so rate * qty is exactly the amount purchased.
-      // A quantity-typed line MUST carry a quantity: the dashboard multiplies amount by it and
-      // reads a missing one as zero, which would drop the line from every total in silence. When
-      // no rate came back to divide by, fall back to the whole amount at quantity 1.
-      const useQty = spec.qty && cell.qty > 0;
-      lines.push({
-        id: spec.type,
-        type: spec.type,
-        label: spec.label || sentenceCase(head),
-        amount: useQty ? cell.total / cell.qty : cell.total,
-        ...(spec.qty ? { quantity: useQty ? Math.round(cell.qty * 100) / 100 : 1 } : {}),
-        period: "year",
-        erpLines: cell.lines,
-        detail: cell.rows.sort((a, b) => (a.from < b.from ? 1 : -1)),   // newest period first
-      });
-    }
-    lines.sort((a, b) => b.amount * (b.quantity || 1) - a.amount * (a.quantity || 1));
+  for (const [veh, history] of byVeh) {
     profiles[veh] = {
       source: "erp-project",
       // No budget in this feed — the cost card shows a blank budget rather than inventing one.
       budget: { amount: "", period: "month" },
-      lines,
+      lines: foldLines(inWindow(history, win)),
+      history,
     };
   }
 
   return {
     profiles,
-    meta: { ...meta, heads: [...meta.heads].sort(), vehicles: Object.keys(profiles).length, from: isoLocal(from), to: isoLocal(to) },
+    meta: { ...meta, heads: [...meta.heads].sort(), vehicles: Object.values(profiles).filter((p) => p.lines.length).length, from: win.from, to: win.to },
   };
+}
+
+/* the folded lines of each window a profile has been asked for, by the lines it holds */
+const folded = new WeakMap();
+/**
+ * A cost profile as it stands on `date`: its lines folded over the 12 months up to that day. A
+ * profile with no history (one stored before it was kept, or a budget typed here) is as it is.
+ */
+export function profileOn(profile, date) {
+  if (!profile || !profile.history || !date) return profile;
+  const { from, to } = costWindow(date);
+  const held = [];
+  profile.history.forEach((e, i) => { if (e.from >= from && e.from <= to) held.push(i); });
+  let memo = folded.get(profile);
+  if (!memo) folded.set(profile, (memo = new Map()));
+  const key = held.join();
+  if (!memo.has(key)) memo.set(key, { ...profile, lines: foldLines(held.map((i) => profile.history[i])) });
+  return memo.get(key);
 }
 
 /* ============================== DIESEL FEED ==============================

@@ -5,12 +5,14 @@
  * recorded is costed on GPS km and one it did not falls back to plan km, saying so; a hired
  * bus costs one day tariff on the day's km, the same both ways; a planned run counts only on a
  * day its service ran and standing costs only on a day the bus worked, both read from the
- * punches; a bus that drove with no fill on record is not ₹0 by diesel; and a hired van with no
- * plan run and no GPS is marked unpriced rather than read as free. */
+ * punches; a bus that drove with no fill on record is not ₹0 by diesel, and no fill is counted
+ * twice; standing costs come from the 12 months up to each day; and a hired van with no plan run
+ * and no GPS is marked unpriced rather than read as free. */
 import {
-  indexGps, priceOn, kmOn, dieselOn, variableCost, isHiredBus, cameInOn, attendanceRules, workedOn, busDay,
+  indexGps, priceOn, kmOn, dieselOn, variableCost, isHiredBus, cameInOn, attendanceRules, workedOn, busDay, ratesOn, noFillOn,
   FALLBACK_KMPL, DIESEL_PER_LITRE, MAX_SPREAD_DAYS, ESTIMATE_DAYS,
 } from "./dailyCost.js";
+import { mapErpCosts } from "./erp.js";
 import { rentTariff } from "./optimiser/engine.js";
 
 let pass = 0, fail = 0;
@@ -102,23 +104,28 @@ const dates = (from, n) => Array.from({ length: n }, (_, i) => new Date(Date.par
 {
   ok(isHiredBus({ type: "Rental", planType: "own" }) && !isHiredBus({ type: "Owned", planType: "rent" }), "the ERP type wins over the plan's");
   ok(isHiredBus({ type: "", planType: "rent" }) && !isHiredBus({ type: "", planType: "own" }) && !isHiredBus({}), "a blank ERP type falls back to the plan");
+  ok(isHiredBus({ type: "", planType: "own" }, { type: "rent" }) && !isHiredBus({ type: "", planType: "rent" }, { type: "own" })
+    && isHiredBus({ type: "", planType: "rent" }, { km: 0, runs: [] }), "...the plan of the day's own week first, this week's when that one names no type");
 }
 
 /* ---- did a group come in: at least half of those who punched were present ---- */
 {
   const att = {
     "2026-10-01": { a: "P", b: "P", c: "A", d: "P" },
-    "2026-10-02": { a: "P", b: "A", c: "A", d: "A" },   // only a quarter came: not a working day for them
+    "2026-10-02": { a: "P", b: "A", c: "A", d: "A", z: "P" },   // a quarter of a–d came; z worked
     "2026-10-04": { a: "A", b: "A", c: "A", z: "P" },   // Sunday for a–c; z works on
-    "2026-10-05": { a: "A", b: "A" },                    // the feed's newest day, still filling up
+    "2026-10-05": { a: "A", b: "A" },                    // today, still filling up
   };
-  const came = cameInOn(att, { open: "2026-10-05", holidays: ["2026-10-03"] });
+  const came = cameInOn(att, { open: "2026-10-05", holidays: ["2026-10-02", "2026-10-03"] });
   ok(came(["a", "b", "c", "d"], "2026-10-01") && !came(["a", "b", "c", "d"], "2026-10-02"), "at least half present: came; fewer: did not");
   ok(came(["a", "b"], "2026-10-02"), "exactly half present counts as came");
   ok(!came(["a", "b", "c"], "2026-10-04") && came(["z"], "2026-10-04"), "a Sunday is judged by who came, not by the calendar");
   ok(came(["a", "b"], "2026-09-30") && came(["q"], "2026-10-01"), "no punches for the group: counted as a working day");
-  ok(!came(["a", "b"], "2026-10-03"), "a declared holiday is never a working day");
-  ok(came(["a", "b"], "2026-10-05"), "the feed's newest day is not judged while riders arrive");
+  ok(!came(["a", "b"], "2026-10-03") && !came(["q"], "2026-10-02"), "a declared holiday nobody in the group punched on is not a working day");
+  ok(came(["z"], "2026-10-02") && !came(["c", "d"], "2026-10-02"), "on a declared holiday the punches still decide: those who came worked");
+  ok(came(["a", "b"], "2026-10-05"), "today is not judged while riders arrive");
+  const stale = cameInOn(att, { open: "2026-10-06" });
+  ok(!stale(["a", "b"], "2026-10-05"), "a finished day is judged, even when it is the newest the feed holds (a pull that did not reach today)");
 
   const employees = [
     { id: "a", unit: "Gainup", shift: "S9", busId: "B1" }, { id: "b", unit: "Gainup", shift: "S9", busId: "B1" },
@@ -128,6 +135,7 @@ const dates = (from, n) => Array.from({ length: n }, (_, i) => new Date(Date.par
   ok(!rules.ranOn("s9", "2026-10-04") && rules.ranOn("rot-day", "2026-10-04"), "per service: 9 am did not run on Sunday, Rotational did");
   ok(!rules.ridersCame("B1", "2026-10-04") && rules.ridersCame("B1", "2026-10-01") && !rules.ridersCame("B2", "2026-10-01"), "per bus: its own mapped riders");
   ok(rules.ranOn("zen", "2026-10-01"), "a service with nobody on record: counted as run");
+  ok(!rules.ridersCame("NOBODY", "2026-10-01") && !rules.ridersCame("NOBODY", "2026-09-30"), "a bus nobody is mapped to has no riders to come");
 }
 
 /* ---- a bus worked: GPS, a planned run that ran, or (no run planned) its riders came ---- */
@@ -160,8 +168,12 @@ const dates = (from, n) => Array.from({ length: n }, (_, i) => new Date(Date.par
 
   const sun = busDay(owned, "2026-10-04", rates, run);
   ok(sun.worked && sun.km === 30 && sun.day.plan.skipped === 1 && near(sun.varKm, 600), "Sunday: only the Rotational run is costed");
-  ok(sun.noFill && sun.cost.byDiesel.source === "none" && sun.varDiesel === sun.varKm && sun.spendDiesel === 300 + sun.varKm,
-    "no fill covers a day the bus drove: diesel by km stands in, the ERP's own reading kept");
+  ok(!sun.noFill && sun.cost.byDiesel.source === "none" && sun.cost.byDiesel.next === "2026-10-20" && sun.varDiesel === 0,
+    "a day before a later fill that does not spread back to it: none, since that fill refills it");
+  const lastLongAgo = busDay(owned, "2026-10-04", rates, { ...run, diesel: { ...diesel, issues: { TN57CA3434: [["2026-09-10", 20, 2000]] } } });
+  ok(lastLongAgo.noFill && lastLongAgo.cost.byDiesel.source === "none" && lastLongAgo.varDiesel === lastLongAgo.varKm && lastLongAgo.spendDiesel === 300 + lastLongAgo.varKm,
+    "no fill accounts for a day the bus drove (the last one weeks back, none since): diesel by km stands in, the ERP's own reading kept");
+  ok(busDay(owned, "2026-10-04", rates, { ...run, diesel: { ...diesel, issues: {} } }).noFill, "...and so with no fill on record at all");
   ok(busDay(nineOnly, "2026-10-04", rates, run) === null, "a 9 am bus on Sunday: no km, no standing, nothing to show");
   const nineDiesel = { ...diesel, issues: { TN58BJ3636: [["2026-10-01", 10, 1000], ["2026-10-05", 70, 7000]] } };
   const sunFilled = busDay(nineOnly, "2026-10-04", rates, { ...run, diesel: nineDiesel });
@@ -190,6 +202,47 @@ const dates = (from, n) => Array.from({ length: n }, (_, i) => new Date(Date.par
   const looseRun = { ...run, ridersCame: (id, date) => date !== "2026-10-04" };
   ok(busDay(loose, "2026-10-01", rates, looseRun).standing === 300 && busDay(loose, "2026-10-04", rates, looseRun) === null,
     "no run planned: standing on the days its riders came, none on the others");
+
+  // a vehicle only the plans name, in a week whose plan has dropped it: nobody is mapped to it, so it did not work
+  const planOnly = { id: "TN57BM3636", type: "", planOnly: true, planType: "own",
+    planWeeks: { "2026-09-21": { km: 51.5, type: "own", runs: [{ service: "s9", km: 51.5 }] }, [week]: null } };
+  const rules = attendanceRules([{ id: "a", busId: "OTHER" }], { "2026-10-04": { a: "A" } }, { serviceOf: () => "s9" });
+  ok(busDay(planOnly, "2026-10-04", rates, { ...rules, diesel: null }) === null && busDay(planOnly, "2026-10-01", rates, { ...rules, diesel: null }) === null,
+    "a plan-only bus in a week no plan names it: no run, no riders, so no standing on any day");
+  ok(busDay(planOnly, "2026-09-24", rates, { ...rules, diesel: null }).standing === 300, "...and in a week its plan runs it, standing as usual");
+}
+
+/* ---- diesel as issued: over a stretch, exactly the fills, never more ---- */
+{
+  // 60 planned km a day at 5 km/L and ₹95/L, fills on 20 and 30 Sep: the 30th refills the ten days
+  // between, spread over its last seven; the three before take nothing, rather than diesel by km
+  const weeks = Object.fromEntries(["2026-09-14", "2026-09-21", "2026-09-28"].map((w) => [w, { km: 60, type: "own", runs: [{ service: "s9", km: 60 }] }]));
+  const bus = { id: "OWNX", type: "Owned", mileage: 5, planWeeks: weeks };
+  const run = { diesel: { issues: { OWNX: [["2026-09-20", 50, 4750], ["2026-09-30", 100, 9500]] }, prices: [["2026-09-01", 95]] },
+    ranOn: () => true, ridersCame: () => true };
+  const days = dates("2026-09-21", 10).map((d) => busDay(bus, d, { standing: 0, budget: 0, heads: {} }, run));
+  ok(near(days.reduce((s, f) => s + f.varDiesel, 0), 9500) && !days.some((f) => f.noFill), "two fills ten days apart: the stretch between costs what the later one issued, no stand-in on top",
+    days.map((f) => f.varDiesel.toFixed(0)).join(" "));
+  ok(noFillOn({ hired: false, byKm: { amount: 100 }, byDiesel: { source: "none", last: "2026-09-01" } })
+    && !noFillOn({ hired: false, byKm: { amount: 100 }, byDiesel: { source: "none", next: "2026-10-20" } })
+    && !noFillOn({ hired: false, byKm: null, byDiesel: { source: "none" } }), "the stand-in: drove, and no fill before or after accounts for the day");
+}
+
+/* ---- standing rates: the ERP lines of the 12 months up to each day ---- */
+{
+  const line = (head, from, amount) => ({ Veh_Name: "TN57CA3434", Proj_Activity_Name: head, From_Date: `${from} 00:00:00`, To_Date: "", Pur_Amount: String(amount), Rate: String(amount) });
+  const { profiles } = mapErpCosts([
+    line("ROAD TAX", "01-07-2025", 31200), line("ROAD TAX", "01-10-2025", 31200), line("ROAD TAX", "01-01-2026", 31200),
+    line("ROAD TAX", "01-04-2026", 31200), line("ROAD TAX", "01-07-2026", 31200), line("ROAD TAX", "01-10-2026", 31200),
+    line("VEHICLE INSURANCE", "15-07-2026", 62400),
+  ], { asOf: new Date(2026, 9, 5, 12).getTime() });
+  const p = profiles.TN57CA3434;
+  const july = ratesOn(p, "2026-07-14", 312), oct = ratesOn(p, "2026-10-04", 312);
+  ok(near(july.heads.taxes, (4 * 31200) / 312) && !july.heads.insurance && near(july.standing, 400), "a day in July: the four quarters up to it, not the insurance bought after it", JSON.stringify(july.heads));
+  ok(near(oct.heads.taxes, 400) && near(oct.heads.insurance, 200) && near(oct.standing, 600), "a day in October: the year up to it, insurance in");
+  ok(near(ratesOn(p, "2026-10-05", 312).heads.taxes, 400) && near(ratesOn(p, "2026-06-30", 312).heads.taxes, 400), "each day four quarters, never five or three");
+  ok(ratesOn(null, "2026-10-04", 312).standing === 0 && ratesOn({ lines: [{ type: "taxes", amount: 31200, period: "year" }] }, "2026-10-04", 312).standing === 100,
+    "no profile: nothing; a profile kept before its lines were (no history): its lines as they are");
 }
 
 console.log(`dailyCost tests: ${pass} passed, ${fail} failed`);

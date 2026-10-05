@@ -1,10 +1,12 @@
 /* Running cost: what this bus costs a day, both ways, and the lines that make it up. Standing lines
    come from the ERP costing feed; the day's diesel (or a hired bus's tariff) is worked out here and
-   tinted violet so it never reads as an ERP figure. Every figure comes from busCostFigures. */
+   tinted violet so it never reads as an ERP figure. Every figure comes from busCostFigures, and every
+   cost carries the name the Costs page and the Excel file give it (costName). */
 import React, { useRef, useState } from "react";
 import { ChevronRight, IndianRupee, Pencil, RotateCw } from "lucide-react";
 import { COST_PERIODS, COST_TYPE_MAP } from "../../../costModel.js";
 import { MAX_SPREAD_DAYS, RECENT_DAYS } from "../../../dailyCost.js";
+import { costName } from "../../../costReport.js";
 import { TARIFF_TEXT, budgetPatch, busCostFigures, costLineDaily, costPeriodLabel } from "../../../Dashboard.jsx";
 import { Alert, BothFigures, Button, Card, CardTitle, Empty, Eyebrow, Field, Input, Select, Tile, Tiles, Unit, cx } from "../../ui.jsx";
 import { DASH, clock, day, dayRange, kms, money, money1, moneySigned, plural } from "../../format.js";
@@ -31,7 +33,7 @@ function erpRow(l) {
 function workedRow(l, rec) {
   const { day: d, cost } = rec;
   if (l.id === "var-hire") return {
-    label: "Hire on the km driven", caption: `${kms(d.km)} km · ${kmFrom(d)}`, tint: true,
+    label: costName("hire"), caption: `${kms(d.km)} km · ${kmFrom(d)}`, tint: true,
     basis: [["Km", kmText(d)], ["Tariff", TARIFF_TEXT]],
   };
   if (l.id === "var-km") {
@@ -39,7 +41,7 @@ function workedRow(l, rec) {
     // the sources are listed in the basis rows; the caption only says when any of them is not measured
     const estimated = d.source !== "gps" || !k.kmplFromErp || !k.rateDate;
     return {
-      label: "Diesel by km", caption: `${l.quantity} L at ${money1(k.rate)}${estimated ? " · estimated" : ""}`, tint: true,
+      label: costName("dieselKm"), caption: `${l.quantity} L at ${money1(k.rate)}${estimated ? " · estimated" : ""}`, tint: true,
       basis: [["Km", kmText(d)],
         ["Mileage", k.kmplFromErp ? `${kms(k.kmpl)} km/L · ERP` : `${kms(k.kmpl)} km/L · usual mileage, not in the ERP`],
         ["Diesel price", k.rateDate ? `${money1(k.rate)} a litre · ERP, ${day(k.rateDate)}` : `${money(k.rate)} a litre · usual price, not in the ERP`],
@@ -47,12 +49,11 @@ function workedRow(l, rec) {
     };
   }
   const z = cost.byDiesel;
-  const label = "Diesel issued";
+  const label = costName("dieselIssued");
   if (!z) return { label, caption: "Not loaded yet", tint: false, basis: null };
   if (rec.noFill) return {
     label, caption: "No fill on record, by km used", tint: true,
-    basis: [["Issues", z.last ? `none since ${day(z.last)}` : z.next ? `the next one, ${day(z.next)}, covers only the ${MAX_SPREAD_DAYS} days before it` : "none on record"],
-      ["Diesel by km", money(cost.byKm.amount)]],
+    basis: [["Issues", z.last ? `none since ${day(z.last)}` : "none on record"], ["Diesel by km", money(cost.byKm.amount)]],
   };
   if (z.source === "issued") return {
     label, caption: `${l.quantity} L at ${money1(z.rate)} · ERP issue`, tint: false,
@@ -66,7 +67,7 @@ function workedRow(l, rec) {
   };
   return {
     label, caption: "None issued", tint: false,
-    basis: [["Issues", z.last ? `none since ${day(z.last)}` : z.next ? `the next one, ${day(z.next)}, covers only the ${MAX_SPREAD_DAYS} days before it` : "none on record"]],
+    basis: [["Issues", z.last ? `none since ${day(z.last)}` : z.next ? `the next one, ${day(z.next)}, refills it over the ${MAX_SPREAD_DAYS} days before it` : "none on record"]],
   };
 }
 
@@ -122,9 +123,9 @@ const ErpDetail = ({ rows }) => (
   </ul>
 );
 
-const GroupHead = ({ title, left }) => (
+const GroupHead = ({ title, left, right = "A day" }) => (
   <div className="flex items-baseline justify-between gap-4 px-3 pb-1" title={title}>
-    <Eyebrow>{left}</Eyebrow><Eyebrow>A day</Eyebrow>
+    <Eyebrow>{left}</Eyebrow><Eyebrow>{right}</Eyebrow>
   </div>
 );
 
@@ -172,15 +173,16 @@ function BudgetRow({ bus, info, dailyBudget, onSave }) {
   );
 }
 
-export default function CostCard({ bus, hired, dieselMissing, profile, rec, date, wd, costMeta, costStatus, onSync, info, onSaveBudget }) {
+export default function CostCard({ bus, hired, dieselMissing, profile, rec, date, wd, costStatus, onSync, info, onSaveBudget }) {
   const [open, setOpen] = useState({});
-  const { lines, vlines, dailyBudget, totKm, totDiesel, monthKm, monthDiesel, varianceKm, varianceDiesel } = busCostFigures(profile, rec, date, wd);
+  const { lines, vlines, dailyBudget, idle, window, totKm, totDiesel, monthKm, monthDiesel, varianceKm, varianceDiesel } = busCostFigures(profile, rec, date, wd);
   const toggle = (id) => setOpen((o) => ({ ...o, [id]: !o[id] }));
   const busy = costStatus.phase === "syncing";
   const worked = vlines.map((l) => ({ l, row: workedRow(l, rec) }));
   const anyTint = worked.some((w) => w.row.tint);
   const has = lines.length || dailyBudget || vlines.length;
-  const totalNote = ["Not counting driver salary", totDiesel == null && dieselMissing && "by diesel not loaded yet"].filter(Boolean).join(" · ");
+  const totalNote = [idle && lines.length > 0 && "Did not work this day: no standing cost, and the month is standing costs only", "Not counting driver salary",
+    totDiesel == null && dieselMissing && "by diesel not loaded yet"].filter(Boolean).join(" · ");
   const budgetRow = <BudgetRow bus={bus} info={info} dailyBudget={dailyBudget} onSave={onSaveBudget} />;
 
   return (
@@ -223,8 +225,8 @@ export default function CostCard({ bus, hired, dieselMissing, profile, rec, date
             {budgetRow}
             {(lines.length > 0 || !hired) && (
               <section className="py-4">
-                <GroupHead left="From the ERP · last 12 months"
-                  title={costMeta ? `${dayRange(costMeta.from, costMeta.to)} · each line spread over ${wd} working days a year` : undefined} />
+                <GroupHead left="From the ERP · last 12 months" right="A working day"
+                  title={`${dayRange(window.from, window.to)} · each line spread over ${wd} working days a year`} />
                 {lines.length ? (
                   <ul className="divide-y divide-line">
                     {lines.map((l) => {

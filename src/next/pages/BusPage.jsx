@@ -89,7 +89,7 @@ function BusDetail({ fleet, bus, medCph, toast }) {
           <HeroCard bus={bus} f={f} isRange={isRange} onLatest={(d) => setRange({ from: d, to: d })} />
           {f.m && <GlanceCard f={f} isRange={isRange} showNetValue={settings.showNetValue} dieselMissing={dieselMissing} />}
           <CostCard bus={bus} hired={hired} dieselMissing={dieselMissing} profile={fleet.busCosts[bus.id]} rec={f.cardRec} date={f.cardDate} wd={wd}
-            costMeta={fleet.costMeta} costStatus={fleet.costStatus} onSync={() => fleet.syncCosts()} info={info}
+            costStatus={fleet.costStatus} onSync={() => fleet.syncCosts()} info={info}
             onSaveBudget={(patch) => { fleet.setBusField(bus.id, patch); toast("Budget saved"); }} />
           <KmDieselCard bus={bus} endDate={endDate} run={fleet.run}
             gpsStatus={fleet.gpsStatus} gpsFeed={fleet.gpsFeed} onSyncGps={() => fleet.syncGps({ full: true, silent: false })}

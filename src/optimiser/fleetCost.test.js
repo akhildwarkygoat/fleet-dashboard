@@ -4,6 +4,7 @@
  * fleet's adjusted cost. The two are computed by different routes on purpose (per-run
  * shares vs once-per-vehicle), so agreement is evidence rather than tautology. */
 import { fleetCost, standingPerDay, STANDING, DIESEL_PER_KM } from "./fleetCost.js";
+import { rentTariff } from "./engine.js";
 
 let pass = 0, fail = 0;
 const ok = (cond, label, detail = "") => {
@@ -42,14 +43,20 @@ const STAND = standingPerDay();
   });
 }
 
-/* ---- rentals never share: a hire on two runs is two hires ---- */
+/* ---- a rented van is paid one day tariff on its day's total km ---- */
 {
   const fc = fleetCost([
     { svc: svc("a"), plan: { routes: [route("VAN1", 40, 15, "rent")] } },
     { svc: svc("b"), plan: { routes: [route("VAN1", 40, 15, "rent")] } },
   ]);
-  ok(near(fc.fleet.standalone, fc.fleet.adjusted), "rental: sharing changes nothing");
+  ok(near(fc.fleet.adjusted, rentTariff(80)) && near(fc.fleet.standalone, 2 * rentTariff(40)), "rental: one tariff on 80 km a day, a tariff each if hired alone");
   ok(fc.fleet.ownedBuses === 0, "rental: no owned standing cost");
+  const two = fleetCost([
+    { svc: svc("rday"), plan: { routes: [route("TN18D8500", 149.6, 19, "rent")] } },
+    { svc: svc("rhalf"), plan: { routes: [route("TN18D8500", 38.7, 12, "rent")] } },
+  ]);
+  ok(near(two.fleet.adjusted, rentTariff(188.3)) && near(two.services[0].adjusted, (rentTariff(188.3) * 149.6) / 188.3),
+    "two runs of 149.6 and 38.7 km: ₹3,521 a day, shared by km, not ₹2,798 + ₹1,700", two.fleet.adjusted.toFixed(2));
 }
 
 /* ---- THE INVARIANT: services must sum to the fleet ---- */

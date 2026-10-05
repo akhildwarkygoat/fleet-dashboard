@@ -49,7 +49,7 @@ Three tiers, because they behave differently:
 |---|---|---|
 | Loan, driver, maintenance | The **vehicle** existing that day | Split equally across its runs |
 | Diesel | The **run** — its own kilometres | Charged whole, never shared |
-| Rental slab | The **hire** — a rented van is paid one day tariff on the day's total km | Charged whole, never shared |
+| Rental slab | The **hire** — a rented van is paid one day tariff on the day's total km | Charged once a day, split across its runs by km |
 
 **Changed 05-10-2026 (transport manager):** a rented van is paid **one** day tariff on its
 day's **total** km, not a tariff per run. A van that drives a 149.6 km run and a 38.7 km run is
@@ -57,8 +57,9 @@ paid the tariff on 188.3 km (₹3,521.21), not ₹2,798 + ₹1,700. The tariff i
 `rentTariff`: up to 80 km ₹1,700; 80 to 95 km ₹1,900; over 95 km ₹18.70 a km, never under
 ₹1,900 (so 95 to about 101.6 km is still ₹1,900). `planRuns.js` now adds up only the km of a
 van's runs, and `dailyCost.js` prices the day the same way on a planned day and a GPS day.
-The Planner's fleet board (`fleetCost.js`) still prices each run of a plan on its own when it
-compares plans; it does not feed the Costs page.
+The Planner's fleet board (`fleetCost.js`) prices it the same way: the fleet pays the van one
+tariff on its day's km, shared across its runs by km. Only "each service in full" prices a run on
+its own, as if that service hired the van alone.
 
 For an owned bus `b` making `n(b)` runs across all finalised plans:
 

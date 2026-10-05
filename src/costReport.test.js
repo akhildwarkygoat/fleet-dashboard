@@ -3,17 +3,17 @@
  * What the Costs page and its export promise: the right days for a day / week / month, with today left
  * out of a week or a month and out of the file; standing costs only on a day a bus worked; a rented van
  * with no plan run and no GPS left blank and out of the cost per head; diesel by km standing in where
- * no fill is on record, and said so; every sum agreeing to the paisa on every sheet; one name per cost;
- * and a workbook with real dates, ₹ in Indian grouping, and explanations that match the code.
+ * no fill is on record, and said so; every planned run that did not run counted; every sum agreeing
+ * to the paisa on every sheet; one name per cost; and a workbook with real dates, ₹ in Indian
+ * grouping, columns wide enough for their figures, and explanations that match the code.
  * The records are built by dailyCost.js busDay, as the dashboard builds them. */
 import XLSX from "xlsx"; // the CommonJS build in Node: its default export carries SSF
 import {
   periodRange, shiftPeriod, latestDate, datesIn, datesShown, datesText, costRows, sumRows, groupRows, costWorkbook,
   costHeadNames, companyTotals, busTotals, busCount, costLines, shareOf, costExplainers, explainersFor, noRouteVehicles,
-  NO_FILL, NOT_PRICED, XL,
+  NO_FILL, NOT_PRICED, NO_COMPANY, RIDER_CHECK, XL,
 } from "./costReport.js";
-import { busDay, FALLBACK_KMPL } from "./dailyCost.js";
-import { profileDailySpend, profileDailyBudget } from "./costModel.js";
+import { busDay, ratesOn, FALLBACK_KMPL } from "./dailyCost.js";
 import { rentTariff } from "./optimiser/engine.js";
 
 let pass = 0, fail = 0;
@@ -47,7 +47,7 @@ const paise = (a, b) => near(a, b, 0.001);
 }
 
 /* ---- a week of a small fleet, as the dashboard records it ----
-   OWN1   owned, 9 am + Rotational runs; a fill covers 1 Oct only, so 2 and 4 Oct have no fill on record
+   OWN1   owned, 9 am + Rotational runs; its one fill is on 1 Oct, so 2 and 4 Oct take its ERP average
    HIRE1  rented, two Zenwear runs a day: paid one tariff on the day's km; Zenwear is off on 2 Oct
    VAN1   rented, carries riders, in no plan and no GPS: not priced
    GHOST  "owned" only by the plan's default (no ERP type, no costs), no seats, ERP maps few riders
@@ -84,15 +84,15 @@ const riders = (busId, date) => (RIDERS[busId] && RIDERS[busId][date]) || 0;
 const DATES = ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", TODAY];
 // 2 Oct: Zenwear off; 3 Oct: nobody; Sunday 4 Oct: only the Rotational shifts
 const ranOn = (svc, date) => (date === "2026-10-03" ? false : date === "2026-10-04" ? svc.startsWith("rot-") : date === "2026-10-02" ? svc !== "zen" : true);
-const diesel = { issues: { OWN1: [["2026-10-01", 20, 2000], ["2026-10-20", 50, 5000]] }, prices: [["2026-09-01", 100]] };
+const diesel = { issues: { OWN1: [["2026-10-01", 20, 2000]] }, prices: [["2026-09-01", 100]] };
 const recordsOf = (run) => buses.flatMap((b) => DATES.map((date) => {
-  const fig = busDay(b, date, { standing: profileDailySpend(busCosts[b.id], 312), budget: profileDailyBudget(busCosts[b.id], 312) }, run);
+  const fig = busDay(b, date, ratesOn(busCosts[b.id], date, 312), run);
   return fig && { busId: b.id, date, ...fig };
 })).filter(Boolean);
 const run = { diesel, ranOn, ridersCame: () => true, ridersOn: riders };
 const records = recordsOf(run);
 const week = periodRange("week", "2026-10-01");
-const { rows, heads } = costRows({ buses, records, busCosts, wd: 312, dates: datesShown(DATES, week, TODAY), riders });
+const { rows, heads, missed } = costRows({ buses, records, busCosts, dates: datesShown(DATES, week, TODAY), riders });
 const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === date);
 
 /* ---- rows ---- */
@@ -106,11 +106,14 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
   ok(thu.dieselKm === 2000 && thu.dieselIssued === 2000 && thu.dieselIssuedSource === "ERP issue" && thu.totalKm === 2240.06 && thu.totalDiesel === 2240.06, "both totals add standing to that day's diesel");
 
   const fri = row("OWN1", "2026-10-02");
-  ok(fri.dieselIssuedSource === NO_FILL && fri.dieselIssued === fri.dieselKm && fri.dieselIssuedLitres === fri.dieselKmLitres, "no fill on record: diesel by km stands in, and says so");
+  ok(fri.dieselIssuedSource === "ERP average" && fri.dieselIssued === 2000, "after the latest fill: its ERP average");
 
   const sun = row("OWN1", "2026-10-04");
   ok(sun.km === 40 && sun.runs === 1 && sun.skipped === 1 && sun.standingTotal === 240.06 && /1 planned run did not run/.test(sun.note), "Sunday: only the Rotational run, standing charged since the bus worked", sun.note);
-  ok(!row("OWN1", "2026-10-03"), "a day nothing ran and nobody came: no row");
+  ok(!row("HIRE1", "2026-10-03") && !row("GHOST", "2026-10-03"), "a day nothing ran and nobody came: no row");
+  const sat = row("OWN1", "2026-10-03");
+  ok(sat && !sat.worked && sat.standingTotal === 0 && sat.km === 0 && sat.dieselIssuedSource === "ERP average" && sat.totalDiesel === 2000 && sat.skipped === 2
+    && /only diesel as issued/.test(sat.note), "a day it did not run: no standing, only its ERP average as issued", sat && sat.note);
   ok(!row("PLAN1", "2026-10-04"), "a 9 am bus on Sunday: no km, no standing, no row");
 
   const hire = row("HIRE1", "2026-10-01");
@@ -118,13 +121,17 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
     "a rented bus is one day tariff on the day's total km, both ways", String(hire.hire));
   const hireOff = row("HIRE1", "2026-10-02");
   ok(hireOff && hireOff.riders === 2 && hireOff.totalKm === 0 && hireOff.priced && /services were off/.test(hireOff.note), "its service off: no hire, the stray riders kept", hireOff && hireOff.note);
+  ok(hireOff.kind === "Hired" && hireOff.runs === 0 && hireOff.skipped === 2, "...both its planned runs counted as not run, none as run", `${hireOff.runs} ${hireOff.skipped}`);
+  ok(missed.length === 6 && missed.reduce((s, m) => s + m.runs, 0) === 8 && missed.some((m) => m.busId === "GHOST" && m.date === "2026-10-04"),
+    "bus-days with no row whose planned runs did not run are kept for the totals", JSON.stringify(missed.map((m) => `${m.busId} ${m.date} ${m.runs}`)));
 
   const van = row("VAN1", "2026-10-01");
   ok(van.kind === "Hired" && van.priced === false && van.totalKm === null && van.hire === null && van.km === null && van.note === NOT_PRICED, "a van with no plan run and no GPS: Hired, blank, noted");
 
   const ghost = row("GHOST", "2026-10-01");
   ok(ghost.kind === "Owned?" && ghost.seats === null && ghost.standingTotal === 0, "owned only by the plan's default: Owned?, seats blank");
-  ok(near(ghost.dieselKm, Math.round((50 / FALLBACK_KMPL) * 100 * 100) / 100) && ghost.dieselIssuedSource === NO_FILL, "...and no ₹0 by diesel");
+  ok(near(ghost.dieselKm, Math.round((50 / FALLBACK_KMPL) * 100 * 100) / 100) && ghost.dieselIssuedSource === NO_FILL
+    && ghost.dieselIssued === ghost.dieselKm && ghost.dieselIssuedLitres === ghost.dieselKmLitres, "...and no fill on record: diesel by km stands in, and says so");
   ok(row("OWN1", "2026-10-01").kind === "Owned", "an ERP-owned bus is Owned");
 
   const plan1 = row("PLAN1", "2026-10-01");
@@ -139,10 +146,10 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
   ok(all.standing.taxes === 320.18 && all.standing.insurance === 600, "standing only on the days each bus worked", `${all.standing.taxes} ${all.standing.insurance}`);
   ok(all.unpricedRiders === 44 && all.unpricedBuses === 1 && all.unpricedBusDays === 2 && all.pricedRiders === all.riders - 44, "riders on the unpriced van counted apart");
   ok(near(all.cphKm, all.totalKm / all.pricedRiders) && all.cphKm > all.totalKm / all.riders, "cost per head is over priced riders only", String(all.cphKm));
-  ok(all.standInDays === 6 && all.standInBuses === 3 && all.fillDays === 1 && paise(all.dieselFill + all.dieselAverage + all.dieselStandIn, all.dieselIssued),
-    "diesel as issued is fills + ERP average + by km stand-in", `${all.standInDays} ${all.standInBuses} ${all.fillDays}`);
-  ok(all.skippedRuns === 1, "planned runs that did not run are counted", String(all.skippedRuns));
-  ok(all.days === 3 && all.daysRun === rows.filter((r) => r.worked).length, "days with data and bus-days run");
+  ok(all.standInDays === 4 && all.standInBuses === 2 && all.fillDays === 1 && all.averageDays === 3 && paise(all.dieselFill + all.dieselAverage + all.dieselStandIn, all.dieselIssued),
+    "diesel as issued is fills + ERP average + by km stand-in", `${all.standInDays} ${all.standInBuses} ${all.fillDays} ${all.averageDays}`);
+  ok(all.skippedRuns === 5, "planned runs that did not run are counted, on rows with no record too", String(all.skippedRuns));
+  ok(all.days === 4 && all.daysRun === rows.filter((r) => r.worked).length && all.daysRun === 10, "days with data and bus-days run", `${all.days} ${all.daysRun}`);
   const byCompany = companyTotals(rows, heads);
   ok(paise(byCompany.reduce((s, c) => s + c.s.totalKm, 0), all.totalKm) && paise(byCompany.reduce((s, c) => s + c.s.totalDiesel, 0), all.totalDiesel), "the companies add up to the fleet");
   ok(paise(busTotals(rows, heads).reduce((s, b) => s + b.s.totalKm, 0), all.totalKm), "the buses add up to the fleet");
@@ -154,7 +161,7 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
   ok(perBus.OWN1.daysRun === 3 && near(perBus.OWN1.avgRiders, 50) && near(perBus.OWN1.plannedRidersADay, (70 + 70 + 30) / 3), "days run, riders a day and planned riders a day");
   ok(perBus.VAN1.cphKm === null && perBus.VAN1.totalKm === 0, "an unpriced bus has no cost per head");
 
-  const noFeed = costRows({ buses, records: recordsOf({ ...run, diesel: null }), busCosts, wd: 312, dates: ["2026-10-01"], riders });
+  const noFeed = costRows({ buses, records: recordsOf({ ...run, diesel: null }), busCosts, dates: ["2026-10-01"], riders });
   const nf = sumRows(noFeed.rows, noFeed.heads);
   ok(nf.dieselMissing && nf.totalDiesel === null && nf.cphDiesel === null && nf.cpkDiesel === null && nf.dieselIssued === null, "diesel feed not loaded: the diesel total stays unknown");
 
@@ -187,14 +194,16 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
 
 /* ---- the workbook ---- */
 {
-  const withToday = costRows({ buses, records, busCosts, wd: 312, dates: datesIn(DATES, week).concat(TODAY), riders });
+  const withToday = costRows({ buses, records, busCosts, dates: datesIn(DATES, week).concat(TODAY), riders });
   ok(withToday.rows.some((r) => r.date === TODAY), "(the rows handed over do hold today)");
-  const wb = costWorkbook({ rows: withToday.rows, heads: withToday.heads, period: periodRange("month", "2026-10-01"), wd: 312,
-    headNames: costHeadNames(busCosts), today: TODAY, holidays: [], noRoute: noRouteVehicles(buses, busCosts, 312), gps: "Bus app · 10:30" });
+  const wb = costWorkbook({ rows: withToday.rows, heads: withToday.heads, missed: withToday.missed, period: periodRange("month", "2026-10-01"), wd: 312,
+    headNames: costHeadNames(busCosts), today: TODAY, holidays: [], noRoute: noRouteVehicles(buses, busCosts, 312),
+    gps: { phase: "ok", at: new Date(2026, 9, 5, 10, 30).getTime() } });
   ok(wb.SheetNames.join("|") === "Totals|Summary by bus|Bus by day|How costs work", "workbook sheets", wb.SheetNames.join("|"));
   const tot = wb.Sheets.Totals, detail = wb.Sheets["Bus by day"], summary = wb.Sheets["Summary by bus"], how = wb.Sheets["How costs work"];
   ok(tot.A1.v === "Fleet costs, 1 to 4 Oct 2026", "the title gives the real dates covered", tot.A1.v);
   ok(/4 Oct is a Sunday/.test(tot.A2.v) && /Today, 5 Oct, is left out until the day is over/.test(tot.A2.v) && !/—/.test(tot.A2.v), "the period line names the Sunday and today", tot.A2.v);
+  ok(tot.A2.v.startsWith("4 days with data in October 2026, month to date.") && !/31 Oct/.test(tot.A2.v), "...and names the month, not its 1 to 31 span", tot.A2.v);
 
   const table = (ws, headerRow) => XLSX.utils.sheet_to_json(ws, { range: headerRow, defval: null });
   const days = table(detail, 0);
@@ -211,7 +220,9 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
 
   const scopes = table(tot, 4).slice(0, 5);
   const fleet = scopes[0];
-  ok(fleet.Scope === "Whole fleet" && scopes.slice(1).map((s) => s.Scope).join() === "Gainup,Technotek,Zenwear,No company", "Totals: the fleet, each company, no company last", scopes.map((s) => s.Scope).join());
+  ok(fleet.Scope === "Whole fleet" && scopes.slice(1).map((s) => s.Scope).join() === `Gainup,Technotek,Zenwear,${NO_COMPANY}`, "Totals: the fleet, each company, the plan-only buses last", scopes.map((s) => s.Scope).join());
+  ok(days.filter((r) => r.Bus === "PLAN1").every((r) => r.Company === NO_COMPANY) && table(summary, 0).find((r) => r.Bus === "PLAN1").Company === NO_COMPANY,
+    "the plan-only bus has the one name for its company on every sheet");
   const add = (list, k) => Math.round(list.reduce((s, r) => s + (r[k] || 0), 0) * 100) / 100;
   for (const k of ["Total by km", "Total by diesel issued", "Standing total", "Road tax", "Diesel as issued"]) {
     ok(paise(fleet[k], add(scopes.slice(1), k)) && paise(fleet[k], add(table(summary, 0), k)) && paise(fleet[k], add(days, k)), `${k}: Totals = companies = buses = days`, `${fleet[k]} ${add(days, k)}`);
@@ -222,20 +233,37 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
   ok(notes.some((n) => /^Diesel as issued, ₹.*no fill is on record/.test(n)), "Totals: how much of the diesel as issued is fills, average, by km");
   ok(notes.some((n) => /^Not priced: 1 rented bus on 2 bus-days carried 44 rider-days \(Technotek 44\)/.test(n)), "Totals: what was not priced, by company");
   ok(notes.some((n) => /^Owned vehicles with ERP costs but on no route: 1,/.test(n)) && notes.includes("SPARE") && !scopes.some((s) => s.Scope === "SPARE"), "owned vehicles on no route listed under the totals, not in them");
-  ok(notes.some((n) => /^Km from: GPS on 0 bus-days, the plan on/.test(n) && /Bus app · 10:30/.test(n)), "Totals: where the km came from");
+  ok(notes.some((n) => /^Km from: GPS on 0 bus-days, the plan on/.test(n) && n.endsWith("Bus attendance app: last pulled 5 Oct 2026, 10:30.")), "Totals: where the km came from, and the bus app's feed in words",
+    notes.find((n) => /^Km from/.test(n)));
+  ok(notes.includes("Planned runs that did not run, their service being off that day: 13. They cost nothing."), "Totals: every planned run that did not run, rows or not",
+    notes.find((n) => /^Planned runs/.test(n)));
 
   const busRows = table(summary, 0);
   const ghost = busRows.find((r) => r.Bus === "GHOST");
-  ok(ghost.Check.startsWith("Not reliable") && ghost["Owned / hired"] === "Owned?", "Summary: not reliable flag and Owned?");
+  ok(ghost.Check === RIDER_CHECK && ghost["Owned / hired"] === "Owned?", "Summary: not reliable flag and Owned?");
+  ok(ghost["Standing total"] === null && ghost["Road tax"] === null && ghost["Total by km"] > 0
+    && days.filter((r) => r.Bus === "GHOST").every((r) => r["Standing total"] === null && r["Road tax"] === null), "an Owned? bus's standing costs are blank, not ₹0");
   ok(busRows.find((r) => r.Bus === "OWN1")["Days run"] === 3 && busRows.find((r) => r.Bus === "VAN1")["Total by km"] === null, "Summary: days run; an unpriced bus blank");
 
-  const howCells = XLSX.utils.sheet_to_json(how, { header: 1 }).flat().filter((v) => typeof v === "string");
-  ok(howCells.every((v) => v.length <= 320 && !/—/.test(v)), "How costs work: one sentence a row, no em dashes", String(Math.max(...howCells.map((v) => v.length))));
-  ok(howCells.includes("Road tax") && howCells.includes("Seats") && !howCells.includes("AdBlue"), "How costs work: the heads present and the column notes");
-  const fits = (ws, hr) => XLSX.utils.sheet_to_json(ws, { header: 1 })[hr].every((h, i) => ws["!cols"][i].wch >= String(h).length);
-  ok(fits(detail, 0) && fits(summary, 0) && fits(tot, 4), "no header is wider than its column");
+  const howRows = XLSX.utils.sheet_to_json(how, { header: 1 }).slice(3);
+  const howCells = howRows.flat().filter((v) => typeof v === "string");
+  ok(howCells.every((v) => !/—/.test(v)) && howRows.every((r) => r.length <= 2), "How costs work: two columns, no em dashes");
+  ok(howRows.every((r) => !r[0] || r[0].length <= how["!cols"][0].wch) && howRows.every((r) => !r[1] || r[1].length <= how["!cols"][1].wch),
+    "How costs work: no text longer than its column, so none is cut or runs off", String(Math.max(...howRows.map((r) => String(r[1] || "").length))));
+  ok(howCells.includes("Road tax") && howCells.includes("Seats") && howCells.includes(NO_COMPANY) && !howCells.includes("AdBlue"), "How costs work: the heads present and the column notes");
+  // the Note at the end of a row may run on into the empty cells beyond it; nothing else may
+  const fits = (ws) => { const all = XLSX.utils.sheet_to_json(ws, { header: 1 }), last = all[0].length - 1;
+    return all.every((r) => r.every((v, i) => i === last || v == null
+      || ws["!cols"][i].wch >= String(typeof v === "number" ? v.toLocaleString("en-IN", { maximumFractionDigits: 2 }) : v).length)); };
+  ok(fits(detail) && fits(summary), "no header, figure or text is wider than its column, but the last column's notes");
+  const sheetWidth = (ws, name) => ws["!cols"][XLSX.utils.sheet_to_json(ws, { header: 1, range: ws === tot ? 4 : 0 })[0].indexOf(name)].wch;
+  ok(sheetWidth(tot, "Road tax") >= XLSX.SSF.format(XL.money, fleet["Road tax"]).length && sheetWidth(summary, "Check") >= RIDER_CHECK.length,
+    "Totals' money columns fit their figures, the Check column its text");
+  const big = costWorkbook({ rows: [{ ...rows[0], standing: { taxes: 133337.36 }, standingTotal: 133337.36 }], heads: ["taxes"], period: week, wd: 312, headNames: {} });
+  ok(big.Sheets.Totals["!cols"][14].wch >= "₹1,33,337.36".length + 1, "a lakh of road tax still fits its column", String(big.Sheets.Totals["!cols"][14].wch));
 
   const later = costWorkbook({ rows: [], heads: ["erp:parking"], period: week, wd: 312, headNames: { "erp:parking": "Parking" } });
+  ok(later.Sheets.Totals.A2.v === "0 days with data in the week starting Monday 28 Sep 2026.", "a week's period line", later.Sheets.Totals.A2.v);
   ok(XLSX.utils.sheet_to_json(later.Sheets["How costs work"], { header: 1 }).some((r) => r[0] === "Parking"), "a head the ERP added later still gets a line");
   ok(later.Sheets.Totals.A1.v === "Fleet costs, no days with data", "an empty period says so");
 

@@ -3,16 +3,17 @@
  * ----------------------------------------------------------------------------
  * One row per bus per day, built from what the dashboard already works out for that day
  * (mergeCostsIntoRecords → dailyCost.js busDay): the bus's standing costs from the ERP costing
- * feed split by head, charged on a day it worked, and its km-variable cost both ways (diesel
- * priced on km travelled, and diesel as the ERP issued it; a hired bus is its day tariff both
- * ways). Every amount is rounded to the paisa once, as its row is built, so the per-bus,
- * per-company and fleet sums agree to the paisa on every sheet and on the page. The same rows feed
- * the Costs page (both looks) and the .xlsx, and every cost has one name, its explainer's title.
+ * feed split by head (the 12 months up to that day), charged on a day it worked, and its
+ * km-variable cost both ways (diesel priced on km travelled, and diesel as the ERP issued it; a
+ * hired bus is its day tariff both ways). Every amount is rounded to the paisa once, as its row is
+ * built, so the per-bus, per-company and fleet sums agree to the paisa on every sheet and on the
+ * page. The same rows feed the Costs page (both looks) and the .xlsx, and every cost has one name,
+ * its explainer's title.
  *
  * Pure apart from the XLSX writer (no React, no storage).
  * ==========================================================================*/
 import * as XLSX from "xlsx";
-import { COST_TYPE_MAP, lineDaily, profileDailySpend } from "./costModel.js";
+import { COST_TYPE_MAP, profileDailySpend } from "./costModel.js";
 import { DIESEL_PER_LITRE, FALLBACK_KMPL, MAX_SPREAD_DAYS, RECENT_DAYS, ESTIMATE_DAYS, isHiredBus, planOn } from "./dailyCost.js";
 import { vehKey } from "./erp.js";
 
@@ -90,32 +91,31 @@ export function costHeadNames(busCosts) {
 /** A cost's one name: a fixed one for the costs the dashboard knows, else the ERP head's. */
 export const costName = (key, headNames) => TITLES[key] || (headNames && headNames[key]) || headLabel(key);
 
-/** ₹ per working day of each standing head for one bus's cost profile. */
-function standingByHead(profile, wd) {
-  const out = {};
-  for (const l of (profile && profile.lines) || []) out[l.type] = (out[l.type] || 0) + lineDaily(l, wd);
-  return out;
-}
-const hasCostLines = (busCosts, id) => !!(busCosts && busCosts[id] && (busCosts[id].lines || []).length);
+const hasCostLines = (busCosts, id) => {
+  const p = busCosts && busCosts[id];
+  return !!p && ((p.lines || []).length > 0 || (p.history || []).length > 0);
+};
 
 /* How a bus-day was read, in the words the sheets and the pages use. */
 export const NO_FILL = "No fill on record, by km used";
 export const NOT_PRICED = "Not priced: no plan run or GPS";
+/* the buses no rider is mapped to: only the plans in force name them, so no company can be read */
+export const NO_COMPANY = "Plan only, no company";
+export const companyName = (c) => (!c || c === "—" ? NO_COMPANY : c);
 const ISSUED_FROM = { issued: "ERP issue", estimate: "ERP average", none: "None issued" };
 
 /* Why a row reads as it does, where its figures alone would not say. */
-function rowNote(b, date, rec, busCosts) {
+function rowNote(b, rec, skipped, busCosts) {
   if (rec && rec.unpriced) return NOT_PRICED;
   const notes = [];
   if (b.planOnly) notes.push("In the plan; no riders mapped in the ERP");
   if (!rec) {
-    const p = planOn(b, date);
-    notes.push(p.runs && p.runs.length ? "Did not run: its services were off that day"
+    notes.push(skipped ? "Did not run: its services were off that day"
       : hasCostLines(busCosts, b.id) ? "Did not work that day" : "Nothing to price: no plan run, no GPS, no ERP costs");
   } else if (!rec.worked) {
-    notes.push("Did not run: only diesel as issued is spread over the day");
-  } else if (rec.day.plan.skipped) {
-    notes.push(`${plural(rec.day.plan.skipped, "planned run", "planned runs")} did not run: service off that day`);
+    notes.push("Did not run: only diesel as issued is counted that day");
+  } else if (skipped) {
+    notes.push(`${plural(skipped, "planned run", "planned runs")} did not run: service off that day`);
   }
   return notes.join(". ");
 }
@@ -123,35 +123,41 @@ function rowNote(b, date, rec, busCosts) {
 /**
  * One row per bus per day with data in `dates`.
  * @param buses    the buses the costs cover (fleet.costBuses: the punch feed's and the plans' own)
- * @param records  the dashboard's merged records (dailyCost.js busDay: worked, varKm, varDiesel,
- *                 noFill, unpriced, day, cost)
+ * @param records  the dashboard's merged records (dailyCost.js busDay: worked, heads, varKm,
+ *                 varDiesel, noFill, unpriced, day, cost)
  * @param riders   (busId, date) → riders carried that day (the dashboard's attendance roll-up)
  * @param dates    the dates to cost (datesShown)
  * A bus is charged its standing costs only on a day it worked. A rented bus with riders but no plan
  * run and no GPS (`priced: false`) has no figures at all: blank, never ₹0.
+ * @returns { rows, heads, missed } — `missed` the bus-days with no row (nothing ran, nobody came)
+ *          whose planned runs did not run, so the totals can still count them
  */
-export function costRows({ buses, records, busCosts, wd, dates, riders }) {
+export function costRows({ buses, records, busCosts, dates, riders }) {
   const recs = new Map(records.map((r) => [r.busId + "|" + r.date, r]));
-  const heads = new Set(), rows = [];
-  const standing = new Map(buses.map((b) => [b.id, standingByHead(busCosts && busCosts[b.id], wd)]));
+  const heads = new Set(), rows = [], missed = [];
   for (const date of dates) for (const b of buses) {
     const found = recs.get(b.id + "|" + date), carried = riders(b.id, date) || 0;
     const rec = found && found.cost ? found : null;
-    if (!rec && !carried) continue;
-    const hired = isHiredBus(b);
-    const plan = rec && rec.day.plan, runs = (plan && plan.runs) || [], skipped = (plan && plan.skipped) || 0;
+    // with no record, none of the bus's planned runs ran: one that ran has km, and so a cost
+    const plan = rec ? rec.day.plan : planOn(b, date);
+    const runs = rec ? plan.runs || [] : [], skipped = rec ? plan.skipped || 0 : (plan.runs || []).length;
+    if (!rec && !carried) {
+      if (skipped) missed.push({ date, busId: b.id, company: b.unit || "", runs: skipped });
+      continue;
+    }
+    const hired = rec ? rec.cost.hired : isHiredBus(b, plan);
     const row = {
       date, busId: b.id, company: b.unit || "", seats: +b.capacity || null, riders: carried,
       kind: hired ? "Hired" : !b.type && !hasCostLines(busCosts, b.id) ? "Owned?" : "Owned",
       runs: runs.length + skipped ? runs.length : null, plannedRiders: sum(runs.map((r) => +r.riders || 0)) || null,
-      skipped, worked: !!(rec && rec.worked), planOnly: !!b.planOnly, note: rowNote(b, date, rec, busCosts),
+      skipped, worked: !!(rec && rec.worked), planOnly: !!b.planOnly, note: rowNote(b, rec, skipped, busCosts),
     };
     if (rec && rec.unpriced) {
       rows.push({ ...row, priced: false, km: null, kmSource: "", standing: {}, standingTotal: null, hire: null, dieselKm: null, dieselKmLitres: null,
         dieselIssued: null, dieselIssuedLitres: null, dieselIssuedSource: "", totalKm: null, totalDiesel: null });
       continue;
     }
-    const st = Object.fromEntries(Object.entries(row.worked ? standing.get(b.id) : {}).map(([h, v]) => [h, r2(v)]));
+    const st = Object.fromEntries(Object.entries(row.worked ? rec.heads : {}).map(([h, v]) => [h, r2(v)]));
     Object.keys(st).forEach((h) => heads.add(h));
     const cost = rec && rec.cost, day = rec && rec.day;
     const varKm = rec ? r2(rec.varKm) : 0;
@@ -170,15 +176,15 @@ export function costRows({ buses, records, busCosts, wd, dates, riders }) {
     });
   }
   const order = [...HEAD_ORDER.filter((h) => heads.has(h)), ...[...heads].filter((h) => !HEAD_ORDER.includes(h)).sort()];
-  return { rows, heads: order };
+  return { rows, heads: order, missed };
 }
 
 /* The ERP's rider mapping against the plan: a bus it maps under a quarter of the riders its planned
    runs carry has a cost per head that reads off, not one to act on. (Riders above its seats are no
    sign: the plans themselves put 60 or more on a 54-seater.) */
 const MAPPED_SHARE = 0.25;
-const riderCheck = (s) => (s.plannedRiders > 0 && s.ridersOnPlan < MAPPED_SHARE * s.plannedRiders
-  ? "Not reliable: the ERP maps far fewer riders to it than the plan carries" : "");
+export const RIDER_CHECK = "Not reliable: ERP maps far fewer riders than the plan";
+const riderCheck = (s) => (s.plannedRiders > 0 && s.ridersOnPlan < MAPPED_SHARE * s.plannedRiders ? RIDER_CHECK : "");
 
 const MONEY_KEYS = ["standingTotal", "hire", "dieselKm", "dieselIssued", "dieselFill", "dieselAverage", "dieselStandIn", "totalKm", "totalDiesel"];
 const DIESEL_KEYS = ["dieselIssued", "dieselIssuedLitres", "dieselFill", "dieselAverage", "dieselStandIn", "totalDiesel"];
@@ -241,7 +247,7 @@ export function groupRows(rows, key) {
 /** How many buses the rows cover. */
 export const busCount = (rows) => new Set(rows.map((r) => r.busId)).size;
 
-/** Each company: how many buses it ran and its sums; "No company" ("—") last, after the named ones. */
+/** Each company: how many buses it ran and its sums; the buses with no company ("—", NO_COMPANY) last. */
 export const companyTotals = (rows, heads) => groupRows(rows, "company")
   .map(([c, rs]) => ({ c, buses: busCount(rs), s: sumRows(rs, heads) }))
   .sort((a, b) => (a.c === "—") - (b.c === "—"));
@@ -289,15 +295,15 @@ export function costExplainers(wd) {
     { key: "two-ways", title: "Two totals: by km and by diesel issued", what: "Diesel is the one cost that changes with how far a bus drives, so it is worked out two independent ways.",
       how: "Total by km is standing costs + hire + diesel by km travelled. Total by diesel issued is standing costs + hire + diesel as issued. Every cost other than diesel is the same in both." },
     { key: "days", title: "Which days are costed", what: "A bus is costed for what it did that day, read from the punches rather than the calendar, since the factory works some Sundays and takes some weekdays off.",
-      how: "A planned run counts only on a day its service ran: at least half of that service's people who punched that day were present. A day with no punches for the service counts as run. On a holiday declared in Settings no service counts as run. A planned run that did not run costs nothing: no km, no diesel by km, no hire. A day the bus attendance app recorded journeys for a bus is always costed, on its GPS km, holiday or not." },
+      how: "A planned run counts only on a day its service ran: at least half of that service's people who punched that day were present. A day with no punches for the service counts as run, unless it is a holiday declared in Settings. So on a declared holiday a service whose people still came counts as run, and one whose people punched nothing does not. A planned run that did not run costs nothing: no km, no diesel by km, no hire. A day the bus attendance app recorded journeys for a bus is always costed, on its GPS km, holiday or not. Today is judged only once it is over." },
     { key: "dieselKm", title: TITLES.dieselKm, what: "The diesel the bus should have burnt for the distance it drove.",
       how: `Km ÷ the bus's mileage (km per litre from the ERP, or ${FALLBACK_KMPL.toFixed(2)} km/L, ₹18 a km at ₹100 a litre, when the ERP has none) × that day's diesel price from the ERP (₹${DIESEL_PER_LITRE} a litre when no price is known yet). The km is the bus attendance app's GPS when it recorded the bus that day: every journey its leaders started and ended, added up ("GPS"). On a day the app recorded nothing, the planned km stands in ("Plan"): the km of every run in that week's plans whose service ran that day (9 am, 7 am, Zenwear and the three Rotational shifts), added up.` },
     { key: "dieselIssued", title: TITLES.dieselIssued, what: "The diesel the ERP actually filled into the bus.",
-      how: `A fill tops up what was burnt since the previous fill, so its litres and cost are spread evenly over the days since then, at most ${MAX_SPREAD_DAYS} days back ("ERP issue"), whether or not the bus ran on each of them. For the days after a bus's latest fill, its own average over the ${RECENT_DAYS} days before it stands in for up to ${ESTIMATE_DAYS} days ("ERP average"), until the next fill replaces it. On a day an owned bus drove and no fill covers it, its diesel by km stands in ("${NO_FILL}"), so the total is not short. How much of the total is fills, ERP average and diesel by km is shown with it.` },
+      how: `A fill tops up what was burnt since the previous fill, so its litres and cost are spread evenly over the days since then, at most ${MAX_SPREAD_DAYS} days back ("ERP issue"), whether or not the bus ran on each of them. For the days after a bus's latest fill, its own average over the ${RECENT_DAYS} days before it stands in for up to ${ESTIMATE_DAYS} days ("ERP average"), until the next fill replaces it. On a day an owned bus drove that no fill accounts for, before or after, its diesel by km stands in ("${NO_FILL}"), so the total is not short. A day before a later fill that is spread over only the ${MAX_SPREAD_DAYS} days before it reads none: that fill refills the day's diesel, so it is counted there, not twice. How much of the total is fills, ERP average and diesel by km is shown with it.` },
     { key: "hire", title: TITLES.hire, what: "A rented bus is paid one day tariff on the day's total km, however many runs it makes. Its owner buys the diesel and pays its other costs.",
       how: "Up to 80 km ₹1,700. Over 80 and up to 95 km ₹1,900. Over 95 km ₹18.70 a km, but never less than ₹1,900, so up to about 101.6 km it is still ₹1,900. Priced on the GPS km, or on the planned km of its runs that ran. The same in both totals; a rented bus has no standing costs here. A rented bus that carried riders but has no plan run and no GPS is not priced (see Not priced)." },
     { key: "standing", title: "Standing costs (owned buses)", what: "What an owned bus costs just by being on the road, whether it drives 10 km or 100.",
-      how: `From the ERP's costing feed, per bus: road tax, insurance, FC works (the yearly fitness certificate), outside services and repairs, RTO expenses, tyres (count × price) and AdBlue (litres × price). It takes the lines whose period starts in the last 12 months up to the latest sync, so a yearly line that started more than 12 months ago (insurance from April last year, say) counts nothing until its renewal is entered in the ERP. A yearly amount becomes a daily one by dividing by the working days in the year (${wd}: Settings → Working days, minus declared holidays); a monthly amount is × 12 first. It is charged only on a day the bus worked: the bus app recorded it, one of its planned runs ran, or, for a bus with no run planned, at least half of its own riders who punched came in.` },
+      how: `From the ERP's costing feed, per bus: road tax, insurance, FC works (the yearly fitness certificate), outside services and repairs, RTO expenses, tyres (count × price) and AdBlue (litres × price). Each day takes the lines whose period starts in the last 12 months up to that day, so a past month is costed on the year before it. A yearly line that started more than 12 months before the day (insurance from April last year, say) counts nothing until its renewal is entered in the ERP. A yearly amount becomes a daily one by dividing by the working days in the year (${wd}: Settings → Working days, minus declared holidays); a monthly amount is × 12 first. It is charged only on a day the bus worked: the bus app recorded it, one of its planned runs ran, or, for a bus with no run planned, at least half of its own riders who punched came in. A bus no rider is mapped to and with no run planned that week did not work.` },
     { key: "taxes", title: TITLES.taxes, what: "The vehicle's road tax.", how: "ERP head ROAD TAX, the last 12 months, spread over working days." },
     { key: "insurance", title: TITLES.insurance, what: "The vehicle's insurance.", how: "ERP head VEHICLE INSURANCE, the last 12 months, spread over working days." },
     { key: "fc", title: TITLES.fc, what: "Work to pass the yearly fitness certificate (FC).", how: "ERP head FC WORK, the last 12 months, spread over working days." },
@@ -316,7 +322,9 @@ export function costExplainers(wd) {
     { key: "today", title: "Today", what: "Today's riders are still arriving.",
       how: "Today is left out of the week and month totals, and out of the Excel file, until the day is over. The Day view shows it so far, marked as such." },
     { key: "kind", sheet: true, title: "Owned / hired", what: "Who owns the bus.",
-      how: "Hired: the ERP type says rented, or, with no ERP type, the plan does. Owned: the ERP says owned, or the bus has ERP cost lines. Owned?: the ERP gives no type and no cost lines, so only the plan builder's default calls it owned, and its standing costs are not known." },
+      how: "Hired: the ERP type says rented, or, with no ERP type, that week's plan does. Owned: the ERP says owned, or the bus has ERP cost lines. Owned?: the ERP gives no type and no cost lines, so only the plan builder's default calls it owned; its standing costs are not known, so they are left blank, and its totals hold its diesel only." },
+    { key: "noCompany", title: NO_COMPANY, what: "Buses the plans in force run that the ERP maps no riders to.",
+      how: "A bus's company is read from the riders mapped to it, so these have none (the 9 am service, for one, is shared by Gainup and Technotek). They are costed on their planned runs and counted in the whole fleet's total, with no riders of their own." },
     { key: "seats", sheet: true, title: "Seats", what: "The bus's seat count from the ERP.", how: "Blank where the ERP has no seat count for the bus." },
     { key: "daysRun", sheet: true, title: "Days run", what: "The days the bus worked.",
       how: "A day the bus app recorded it, one of its planned runs ran, or, for a bus with no run planned, its riders came in (see Which days are costed)." },
@@ -325,7 +333,7 @@ export function costExplainers(wd) {
     { key: "kmFrom", sheet: true, title: "Km from", what: "Where a day's km comes from.",
       how: "GPS: the bus attendance app's journeys. Plan: the planned km of the runs that ran. Blank: neither, so no km." },
     { key: "dieselFrom", sheet: true, title: "Diesel as issued from", what: "How a day's diesel as issued was read.",
-      how: `ERP issue: a fill spread over the days it covers. ERP average: the bus's recent average after its latest fill. ${NO_FILL}: no fill covers a day the bus drove, so its diesel by km stands in. None issued: no fill covers the day and the bus drove no km. Not loaded: the ERP's diesel feed had not loaded.` },
+      how: `ERP issue: a fill spread over the days it covers. ERP average: the bus's recent average after its latest fill. ${NO_FILL}: no fill, before or after, accounts for a day the bus drove, so its diesel by km stands in. None issued: no fill covers the day, and either the bus drove no km or a later fill refills it. Not loaded: the ERP's diesel feed had not loaded.` },
   ];
 }
 /** The explainers by key, for each cost line's "what it is". */
@@ -347,14 +355,22 @@ const indian = (dp, sign) => {
 };
 export const XL = { money: indian(2, "₹"), km: indian(1), count: indian(0), date: "ddd dd-mmm-yyyy" };
 const xlDate = (s) => (Date.parse(s + "T00:00:00Z") - Date.UTC(1899, 11, 30)) / 864e5;
+/* how many characters a value takes on screen in its format ("₹1,33,337.36"), to size its column */
+const DECIMALS = { [XL.money]: 2, [XL.km]: 1, [XL.count]: 0 };
+const shownLength = (v, z) => (z === XL.date ? "Thu 01-Oct-2026".length
+  : (z === XL.money ? 1 : 0) + Number(v).toLocaleString("en-IN", { minimumFractionDigits: DECIMALS[z], maximumFractionDigits: DECIMALS[z] }).length);
 
-/* A column: its header, the value of an item, its number format, a width wider than the header's. */
+/* A column: its header, the value of an item, its number format, a width it is at least. */
 const col = (h, v, z, w) => ({ h, v, z, w });
 const tableOf = (cols, items) => [cols.map((c) => c.h), ...items.map((x) => cols.map((c) => {
   const v = c.v(x);
   return v == null || v === "" ? null : c.z ? { v, z: c.z } : v;
 }))];
-const widthsOf = (cols) => cols.map((c) => Math.max(String(c.h).length + 2, c.w || 10));
+/* each column as wide as its header and its widest value, so no figure turns into #####; text no
+   wider than TEXT_WIDTH, which only the notes at the end of a row pass, into the empty cells beyond */
+const TEXT_WIDTH = 60;
+const widthsOf = (cols, items) => cols.map((c) => Math.max(String(c.h).length + 2, c.w || 10,
+  ...items.map((x) => { const v = c.v(x); return v == null || v === "" ? 0 : c.z ? shownLength(v, c.z) + 2 : Math.min(TEXT_WIDTH, String(v).length + 2); })));
 
 /* A sheet from rows of cells; a cell is a value, or { v, z } for a number in a format. */
 function sheetOf(aoa, widths) {
@@ -366,31 +382,61 @@ function sheetOf(aoa, widths) {
   return ws;
 }
 
-/* "4 days with data in the month 1 to 31 Oct 2026. 4 Oct is a Sunday. Today, 5 Oct, is left out
+/* Text broken into lines of at most `width` characters at the spaces: the free SheetJS build cannot
+   wrap a cell, so a long sentence takes several rows instead of running off the screen. */
+const HOW_WIDTH = 110;
+function wrapText(text, width = HOW_WIDTH) {
+  const lines = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    if (line && line.length + 1 + word.length > width) { lines.push(line); line = word; } else line = line ? line + " " + word : word;
+  }
+  return line ? [...lines, line] : lines;
+}
+
+/* "4 days with data in October 2026, month to date. 4 Oct is a Sunday. Today, 5 Oct, is left out
    until the day is over." */
 function periodLine(period, dates, today, holidays) {
   const list = (ds) => ds.map(dayMonth).join(", ").replace(/, ([^,]*)$/, " and $1");
   const sundays = dates.filter((d) => utc(d).getUTCDay() === 0), hols = dates.filter((d) => (holidays || []).includes(d));
+  const running = !!today && today >= period.from && today <= period.to;
+  const span = period.kind === "month" ? period.label : `the week starting ${WEEKDAYS[1]} ${dateText(period.from)}`;
   const out = [period.kind === "day" ? `${WEEKDAYS[utc(period.from).getUTCDay()]} ${dateText(period.from)}.`
-    : `${plural(dates.length, "day", "days")} with data in the ${period.kind} ${datesText(period.from, period.to)}.`];
+    : `${plural(dates.length, "day", "days")} with data in ${span}${running ? `, ${period.kind} to date` : ""}.`];
   if (period.kind !== "day" && sundays.length) out.push(`${list(sundays)} ${sundays.length === 1 ? "is a Sunday" : "are Sundays"}.`);
   if (hols.length) out.push(`${list(hols)} ${hols.length === 1 ? "is a declared holiday" : "are declared holidays"}.`);
-  if (today && period.kind !== "day" && today >= period.from && today <= period.to) out.push(`Today, ${dayMonth(today)}, is left out until the day is over.`);
+  if (running && period.kind !== "day") out.push(`Today, ${dayMonth(today)}, is left out until the day is over.`);
   return out.join(" ");
+}
+
+/* The bus attendance app's feed when the file was made, in words: { phase, at } (Dashboard gpsStatus). */
+function gpsText(gps) {
+  const d = gps.at ? new Date(gps.at) : null;
+  const at = d ? `${dateText(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)}, ${pad(d.getHours())}:${pad(d.getMinutes())}` : "";
+  if (gps.phase === "ok") return `last pulled ${at}`;
+  if (gps.phase === "syncing") return "pulling when the file was made";
+  if (gps.phase === "offline") return at ? `offline, last pulled ${at}` : "offline";
+  if (gps.phase === "error") return "could not be read when the file was made";
+  if (gps.phase === "off") return "not linked";
+  return "not read yet when the file was made";
 }
 
 /**
  * Builds the .xlsx: Totals, Summary by bus, Bus by day, How costs work. Returns the workbook.
- * `today` is never in it, whatever the rows hold: its riders are still arriving. `noRoute` are the
- * owned vehicles on no route (noRouteVehicles), listed under the totals; `gps` the bus app feed's
- * state when exported; `holidays` the declared ones, named on the period line.
+ * `today` is never in it, whatever the rows hold: its riders are still arriving. `missed` are
+ * costRows' bus-days with no row whose planned runs did not run; `noRoute` the owned vehicles on
+ * no route (noRouteVehicles), listed under the totals; `gps` the bus app feed's { phase, at } when
+ * exported; `holidays` the declared ones, named on the period line.
  */
-export function costWorkbook({ rows: given, heads, period, wd, headNames, today, holidays, noRoute = [], gps }) {
+export function costWorkbook({ rows: given, heads, missed = [], period, wd, headNames, today, holidays, noRoute = [], gps }) {
   const rows = today ? given.filter((r) => r.date !== today) : given;
   const name = (h) => costName(h, headNames);
   const dates = [...new Set(rows.map((r) => r.date))].sort();
   const all = sumRows(rows, heads);
   const companies = companyTotals(rows, heads), buses = busTotals(rows, heads);
+  const missedRuns = sum(missed.filter((m) => m.date !== today).map((m) => m.runs));
+  // an Owned? bus's standing costs are not known: blank, not ₹0 (the sums still read them as 0)
+  const unknownStanding = (r) => r.kind === "Owned?";
 
   const sumCols = (get) => [
     col(name("hire"), (x) => get(x).hire, XL.money),
@@ -398,8 +444,8 @@ export function costWorkbook({ rows: given, heads, period, wd, headNames, today,
     col(name("dieselIssued"), (x) => get(x).dieselIssued, XL.money),
     col("of which ERP average", (x) => get(x).dieselAverage, XL.money),
     col("of which by km, no fill on record", (x) => get(x).dieselStandIn, XL.money),
-    ...heads.map((h) => col(name(h), (x) => get(x).standing[h] || 0, XL.money)),
-    col("Standing total", (x) => get(x).standingTotal, XL.money),
+    ...heads.map((h) => ({ ...col(name(h), (x) => get(x).standing[h] || 0, XL.money), standing: true })),
+    { ...col("Standing total", (x) => get(x).standingTotal, XL.money), standing: true },
     col("Total by km", (x) => get(x).totalKm, XL.money),
     col("Total by diesel issued", (x) => get(x).totalDiesel, XL.money),
     col("Cost per head (by km)", (x) => r2(get(x).cphKm), XL.money),
@@ -407,8 +453,10 @@ export function costWorkbook({ rows: given, heads, period, wd, headNames, today,
   ];
 
   // Totals: the fleet and each company, then how they were read and what they leave out
+  const scopes = [{ label: "Whole fleet", buses: busCount(rows), s: all },
+    ...companies.map(({ c, buses: n, s }) => ({ label: companyName(c), buses: n, s }))];
   const scopeCols = [
-    col("Scope", (x) => x.label, null, Math.max(14, ...companies.map((c) => c.c.length + 2))),
+    col("Scope", (x) => x.label, null, 14),
     col("Buses", (x) => x.buses, XL.count),
     col("Days with data", (x) => x.s.days, XL.count),
     col("Bus-days run", (x) => x.s.daysRun, XL.count),
@@ -418,17 +466,16 @@ export function costWorkbook({ rows: given, heads, period, wd, headNames, today,
     col("Km", (x) => x.s.km, XL.km),
     ...sumCols((x) => x.s),
   ];
-  const scopes = [{ label: "Whole fleet", buses: busCount(rows), s: all },
-    ...companies.map(({ c, buses: n, s }) => ({ label: c === "—" ? "No company" : c, buses: n, s }))];
   const flagged = buses.filter((b) => b.s.check).length;
   const busDays = (n) => plural(n, "bus-day", "bus-days");
   const unpricedBy = companies.filter((c) => c.s.unpricedRiders)
-    .map((c) => `${c.c === "—" ? "no company" : c.c} ${c.s.unpricedRiders.toLocaleString("en-IN")}`).join(", ");
+    .map((c) => `${companyName(c.c)} ${c.s.unpricedRiders.toLocaleString("en-IN")}`).join(", ");
+  const skipped = all.skippedRuns + missedRuns;
   const notes = [
     all.dieselIssued == null ? "Diesel as issued is blank: the ERP's diesel feed had not loaded for every day."
       : all.dieselIssued > 0 && `Diesel as issued, ${rupees(all.dieselIssued)}: ERP fills ${rupees(all.dieselFill)} on ${busDays(all.fillDays)}, ERP average ${rupees(all.dieselAverage)} on ${busDays(all.averageDays)}, and diesel by km where no fill is on record ${rupees(all.dieselStandIn)} on ${busDays(all.standInDays)} (${plural(all.standInBuses, "bus", "buses")}).`,
-    `Km from: GPS on ${busDays(all.gpsDays)}, the plan on ${busDays(all.planDays)}.${gps ? ` Bus attendance app when exported: ${gps}.` : ""}`,
-    all.skippedRuns > 0 && `Planned runs that did not run, their service being off that day: ${all.skippedRuns.toLocaleString("en-IN")}. They cost nothing.`,
+    `Km from: GPS on ${busDays(all.gpsDays)}, the plan on ${busDays(all.planDays)}.${gps ? ` Bus attendance app: ${gpsText(gps)}.` : ""}`,
+    skipped > 0 && `Planned runs that did not run, their service being off that day: ${skipped.toLocaleString("en-IN")}. They cost nothing.`,
     all.unpricedRiders > 0 && `Not priced: ${plural(all.unpricedBuses, "rented bus", "rented buses")} on ${busDays(all.unpricedBusDays)} carried ${plural(all.unpricedRiders, "rider-day", "rider-days")} (${unpricedBy}). They have no plan run and no GPS, so their hire is not known: their cost is left blank and their riders are left out of the cost per head.`,
     flagged > 0 && `Cost per head not reliable for ${plural(flagged, "bus", "buses")}: the ERP's rider mapping does not match the plan (Summary by bus, Check).`,
   ].filter(Boolean);
@@ -438,7 +485,7 @@ export function costWorkbook({ rows: given, heads, period, wd, headNames, today,
   const totals = [
     [`Fleet costs, ${dates.length ? datesText(dates[0], dates[dates.length - 1]) : "no days with data"}`],
     [periodLine(period, dates, today, holidays)],
-    [`Standing costs: ERP cost lines of the last 12 months, spread over ${wd} working days a year and charged on the days a bus worked. Amounts in ₹.`],
+    [`Standing costs: for each day, the ERP cost lines of the 12 months up to it, spread over ${wd} working days a year and charged on the days a bus worked. Amounts in ₹.`],
     [],
     ...tableOf(scopeCols, scopes),
     [], ...notes.map((n) => [n]),
@@ -446,59 +493,64 @@ export function costWorkbook({ rows: given, heads, period, wd, headNames, today,
     [], ["How each figure is worked out: see the sheet \"How costs work\"."],
   ];
 
-  // Summary by bus: an unpriced bus's money stays blank, as on its days
+  // Summary by bus: an unpriced bus's money stays blank, as on its days, and so do standing costs not known
   const busNote = ({ rows: rs, s }) => [
     rs[0].planOnly && "In the plan; no riders mapped in the ERP",
-    rs[0].kind === "Owned?" && "Owned only by the plan builder's default: the ERP has no type and no cost lines for it",
+    rs[0].kind === "Owned?" && "Owned only by the plan builder's default: the ERP has no type and no cost lines for it, so its standing costs are not known",
     s.unpricedBusDays > 0 && `${NOT_PRICED} (${plural(s.unpricedBusDays, "day", "days")})`,
     s.skippedRuns > 0 && `${plural(s.skippedRuns, "planned run", "planned runs")} did not run: service off that day`,
     s.standInDays > 0 && `No fill on record on ${plural(s.standInDays, "day", "days")}, by km used`,
   ].filter(Boolean).join(". ");
   const unpricedOnly = (x) => x.s.unpricedBusDays === x.s.busDays;
   const summaryCols = [
-    col("Bus", (x) => x.id, null, 14), col("Company", (x) => x.rows[0].company), col("Owned / hired", (x) => x.rows[0].kind),
+    col("Bus", (x) => x.id, null, 14), col("Company", (x) => companyName(x.rows[0].company)), col("Owned / hired", (x) => x.rows[0].kind),
     col("Seats", (x) => x.rows[0].seats, XL.count), col("Days run", (x) => x.s.daysRun, XL.count),
     col("Days on GPS km", (x) => x.s.gpsDays, XL.count),
     col("Rider-days (people × days)", (x) => x.s.riders, XL.count),
     col("Average riders a day", (x) => r1(x.s.avgRiders), XL.km),
     col("Planned riders a day", (x) => r1(x.s.plannedRidersADay), XL.km),
     col("Km", (x) => (unpricedOnly(x) ? null : x.s.km), XL.km),
-    ...sumCols((x) => x.s).map((c) => ({ ...c, v: (x) => (unpricedOnly(x) ? null : c.v(x)) })),
-    col("Check", (x) => x.s.check, null, 40), col("Note", busNote, null, 40),
+    ...sumCols((x) => x.s).map((c) => ({ ...c, v: (x) => (unpricedOnly(x) || (c.standing && unknownStanding(x.rows[0])) ? null : c.v(x)) })),
+    col("Check", (x) => x.s.check), col("Note", busNote, null, 40),
   ];
   const summary = tableOf(summaryCols, buses);
 
   // Bus by day
   const detailCols = [
-    col("Date", (r) => xlDate(r.date), XL.date, 16), col("Bus", (r) => r.busId, null, 14), col("Company", (r) => r.company),
+    col("Date", (r) => xlDate(r.date), XL.date, 16), col("Bus", (r) => r.busId, null, 14), col("Company", (r) => companyName(r.company)),
     col("Owned / hired", (r) => r.kind), col("Seats", (r) => r.seats, XL.count),
     col("Riders that day", (r) => r.riders, XL.count), col("Planned riders", (r) => r.plannedRiders, XL.count), col("Runs", (r) => r.runs, XL.count),
     col("Km", (r) => r.km, XL.km), col("Km from", (r) => r.kmSource),
     col(name("hire"), (r) => r.hire, XL.money), col(name("dieselKm"), (r) => r.dieselKm, XL.money),
     col("Diesel by km (litres)", (r) => r.dieselKmLitres, XL.km),
     col(name("dieselIssued"), (r) => r.dieselIssued, XL.money), col("Diesel as issued (litres)", (r) => r.dieselIssuedLitres, XL.km),
-    col("Diesel as issued from", (r) => r.dieselIssuedSource, null, NO_FILL.length + 2),
-    ...heads.map((h) => col(name(h), (r) => (r.priced ? r.standing[h] || 0 : null), XL.money)),
-    col("Standing total", (r) => r.standingTotal, XL.money), col("Total by km", (r) => r.totalKm, XL.money),
+    col("Diesel as issued from", (r) => r.dieselIssuedSource),
+    ...heads.map((h) => col(name(h), (r) => (r.priced && !unknownStanding(r) ? r.standing[h] || 0 : null), XL.money)),
+    col("Standing total", (r) => (unknownStanding(r) ? null : r.standingTotal), XL.money), col("Total by km", (r) => r.totalKm, XL.money),
     col("Total by diesel issued", (r) => r.totalDiesel, XL.money),
     col("Cost per head (by km)", (r) => (r.priced && r.riders && r.totalKm > 0 ? r2(r.totalKm / r.riders) : null), XL.money),
     col("Cost per head (by diesel)", (r) => (r.priced && r.riders && r.totalDiesel > 0 ? r2(r.totalDiesel / r.riders) : null), XL.money),
     col("Note", (r) => r.note, null, 40),
   ];
-  const detail = tableOf(detailCols, [...rows].sort((a, b) => a.date.localeCompare(b.date) || a.busId.localeCompare(b.busId)));
+  const detailRows = [...rows].sort((a, b) => a.date.localeCompare(b.date) || a.busId.localeCompare(b.busId));
+  const detail = tableOf(detailCols, detailRows);
 
-  // How costs work: one sentence a row, so nothing runs off the screen
-  const how = [["How every cost is worked out"], [], ["Cost", "What it is", "How it is worked out"]];
-  for (const e of explainersFor(wd, heads, { sheet: true })) {
-    e.how.split(/(?<=\.)\s+(?=[A-Z"(₹])/).forEach((line, i) => how.push(i ? ["", "", line] : [e.title, e.what, line]));
-  }
-  for (const h of heads.filter((x) => !TITLES[x])) how.push([name(h), OTHER_HEAD_WHAT, "From the ERP costing feed, the last 12 months, spread over working days."]);
+  // How costs work: the name in column A, then what it is and how it is worked out in column B, a
+  // line a row, so nothing runs off the screen or is cut by the cell beside it
+  const how = [["How every cost is worked out"], [], ["Cost", "What it is, and how it is worked out"]];
+  const entry = (title, what, sentences) => {
+    const [first, ...rest] = wrapText(what);
+    how.push([title, first], ...rest.map((l) => ["", l]), ...sentences.flatMap((t) => wrapText(t)).map((l) => ["", l]), []);
+  };
+  for (const e of explainersFor(wd, heads, { sheet: true })) entry(e.title, e.what, e.how.split(/(?<=\.)\s+(?=[A-Z"(₹])/));
+  for (const h of heads.filter((x) => !TITLES[x])) entry(name(h), OTHER_HEAD_WHAT, ["From the ERP costing feed, the last 12 months, spread over working days."]);
+  const titleWidth = Math.max(...how.map((r) => (r.length > 1 ? String(r[0]).length : 0))) + 2;
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, sheetOf(totals, widthsOf(scopeCols)), "Totals");
-  XLSX.utils.book_append_sheet(wb, sheetOf(summary, widthsOf(summaryCols)), "Summary by bus");
-  XLSX.utils.book_append_sheet(wb, sheetOf(detail, widthsOf(detailCols)), "Bus by day");
-  XLSX.utils.book_append_sheet(wb, sheetOf(how, [32, 60, 110]), "How costs work");
+  XLSX.utils.book_append_sheet(wb, sheetOf(totals, widthsOf(scopeCols, scopes)), "Totals");
+  XLSX.utils.book_append_sheet(wb, sheetOf(summary, widthsOf(summaryCols, buses)), "Summary by bus");
+  XLSX.utils.book_append_sheet(wb, sheetOf(detail, widthsOf(detailCols, detailRows)), "Bus by day");
+  XLSX.utils.book_append_sheet(wb, sheetOf(how, [titleWidth, HOW_WIDTH + 2]), "How costs work");
   return wb;
 }
 
