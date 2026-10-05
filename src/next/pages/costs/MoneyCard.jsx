@@ -1,13 +1,14 @@
 /* Where the money goes: every cost line of the period with what it is, its amount and its share of
    the total by km. Diesel is worked out two ways, so its two lines sit together in one tile; only
-   "by km" counts in the shares, "as issued" counts in the total by diesel. Lines and shares come from
-   costLines and shareOf (costReport.js), the same as the old page and the Excel file. */
+   "by km" counts in the shares, "as issued" counts in the total by diesel. Lines, names and shares
+   come from costLines and shareOf (costReport.js), the same as the old page and the Excel file. Owned
+   vehicles with ERP costs but on no route are named under the total, never inside it. */
 import React from "react";
 import { ReceiptText, RotateCw } from "lucide-react";
 import { shareOf, OTHER_HEAD_WHAT } from "../../../costReport.js";
 import { BothFigures, Button, Card, CardTitle, Eyebrow, Progress, cx } from "../../ui.jsx";
-import { money } from "../../format.js";
-import { EmptyStrip, lineName } from "./parts.jsx";
+import { money, plural } from "../../format.js";
+import { EmptyStrip } from "./parts.jsx";
 
 const DIESEL = new Set(["dieselKm", "dieselIssued"]);
 // name and what it is · amount · share; on a phone the share bar takes its own row
@@ -40,11 +41,12 @@ function Line({ name, what, amount, sub, alt, total, onSatin }) {
   );
 }
 
-/** `lines` from costLines, `all` the period's sums (sumRows), `explain` the page's explainers by key. */
-export default function MoneyCard({ lines, all, explain, syncing, onSyncCosts, className }) {
+/** `lines` from costLines, `all` the period's sums (sumRows), `explain` the explainers by key,
+ *  `noRoute` the owned vehicles on no route (noRouteVehicles). */
+export default function MoneyCard({ lines, all, explain, noRoute = [], syncing, onSyncCosts, className }) {
   const total = all.totalKm;
   const row = (l, onSatin) => (
-    <Line key={l.key} name={lineName(l, explain)} what={(explain[l.key] || {}).what || OTHER_HEAD_WHAT}
+    <Line key={l.key} name={l.label} what={(explain[l.key] || {}).what || OTHER_HEAD_WHAT}
       amount={l.amount} alt={l.alt} total={total} onSatin={onSatin}
       sub={l.key === "dieselIssued" && l.amount == null ? "not loaded for every day" : l.sub} />
   );
@@ -100,6 +102,12 @@ export default function MoneyCard({ lines, all, explain, syncing, onSyncCosts, c
           <p className="text-[15px] font-bold text-ink">Total</p>
           <BothFigures fmt={money} km={all.totalKm} diesel={all.totalDiesel} />
         </div>
+        {noRoute.length > 0 && (
+          <p className="mt-3 text-[13px] leading-snug text-ink-3">
+            Not in the total: {plural(noRoute.length, "owned vehicle", "owned vehicles")} with ERP costs but on no route,{" "}
+            {money(noRoute.reduce((s, v) => s + v.daily, 0))} of standing costs a working day ({noRoute.map((v) => v.id).join(", ")}).
+          </p>
+        )}
       </div>
     </Card>
   );

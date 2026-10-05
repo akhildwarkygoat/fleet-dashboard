@@ -4,6 +4,9 @@
  * Each bus carries a cost profile { budget:{amount,period}, lines:[{id,type,amount,quantity,period}] }
  * from the ERP costing feed. Every line is normalised to a per-day figure: a yearly amount is spread
  * over the working days of the year, a monthly one is annualised first.
+ * The yearly amount is what the ERP approved over the last 12 months (erp.js mapErpCosts), and the
+ * daily figure is charged only on a day the bus worked (dailyCost.js busDay), so a year of working
+ * days adds back up to it once.
  * ==========================================================================*/
 export const COST_TYPES = [
   { key: "diesel", label: "Diesel", qty: true, qtyLabel: "litres / day", period: "day" },

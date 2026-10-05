@@ -198,25 +198,24 @@ const isoLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
 /**
  * Fold costing rows into one read-only profile per vehicle.
  *
- * Window: the INDIAN FINANCIAL YEAR (1 April → 31 March) that `asOf` falls in, by each
- * line's From_Date — the same year the ERP itself plans and approves against, so a total
- * here reconciles with the ERP's own FY figures.
+ * Window: the 12 months ending at `asOf` (the sync), by each line's From_Date. A trailing year
+ * is a whole year's cost all year round: it holds four quarters of road tax and the latest
+ * yearly lines, and it rolls forward on its own. From August to October 2026 the window was the
+ * financial year instead, which read low for most of the year because periods not yet started
+ * have no row; the transport manager moved it back on 05-10-2026.
  *
- * Note this is FY-to-date in practice: a period that has not started yet has no row in
- * the feed, so early in the financial year the total is genuinely lower than a full
- * year's cost. That is the ERP's position, not a gap in the reading.
+ * The catch: a line counts when its period STARTS inside the window, so a yearly line that
+ * started more than 12 months ago (insurance from 1 April last year, say) drops out until its
+ * renewal is entered in the ERP, and the bus shows no such cost meanwhile.
  *
  * Returns { profiles: { [vehicle]: profile }, meta: {...} }; a vehicle with no
  * approved spend in the window is absent rather than present with zeros.
  */
-export function mapErpCosts(rows, { asOf = Date.now() } = {}) {
-  // the financial year `asOf` sits in: April→March, whole calendar days at both ends so a
-  // line starting at midnight on 1 April is never clipped by the time of day
-  const a = new Date(asOf);
-  const fyStart = a.getMonth() >= 3 ? a.getFullYear() : a.getFullYear() - 1;
-  const from = new Date(fyStart, 3, 1); from.setHours(0, 0, 0, 0);
-  const to = new Date(fyStart + 1, 2, 31); to.setHours(23, 59, 59, 999);
-  const fy = `${fyStart}-${String((fyStart + 1) % 100).padStart(2, "0")}`;
+export function mapErpCosts(rows, { asOf = Date.now(), days = 365 } = {}) {
+  // whole calendar days at both ends: asOf mid-afternoon must not clip a line that started at
+  // midnight exactly `days` ago, and setDate() keeps month boundaries honest
+  const to = new Date(asOf); to.setHours(23, 59, 59, 999);
+  const from = new Date(to); from.setDate(from.getDate() - (days - 1)); from.setHours(0, 0, 0, 0);
   const tally = new Map();  // veh -> { head -> { total, qty, rated, lines } }
   const meta = { rows: (rows || []).length, used: 0, skippedUnapproved: 0, outsideWindow: 0, total: 0, heads: new Set() };
 
@@ -284,7 +283,7 @@ export function mapErpCosts(rows, { asOf = Date.now() } = {}) {
 
   return {
     profiles,
-    meta: { ...meta, heads: [...meta.heads].sort(), vehicles: Object.keys(profiles).length, fy, from: isoLocal(from), to: isoLocal(to) },
+    meta: { ...meta, heads: [...meta.heads].sort(), vehicles: Object.keys(profiles).length, from: isoLocal(from), to: isoLocal(to) },
   };
 }
 

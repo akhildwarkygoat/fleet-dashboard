@@ -1,14 +1,17 @@
 /* Costs: what the fleet spent over a day, a week or a month, always both ways (by km and by diesel),
    where the money goes, each company's part, and how every cost is worked out. Every figure comes
-   from costReport.js, the same rows the old page and the Excel export use, so the three agree. */
+   from costReport.js, the same rows the old page and the Excel export use, so the three agree.
+   Today's riders are still arriving, so a week or a month leaves today out until the day is over;
+   only today's own Day view shows it, marked, and the Excel file never has it. */
 import React, { useMemo, useRef } from "react";
 import { Bus, CalendarX2, ChevronLeft, ChevronRight, Download, RotateCw, WifiOff } from "lucide-react";
 import {
-  PERIODS, periodRange, shiftPeriod, latestDate, datesIn, costRows, sumRows, costHeadNames, companyTotals, busCount,
-  costLines, groupRows, downloadCosts,
+  PERIODS, periodRange, shiftPeriod, latestDate, datesShown, costRows, sumRows, costHeadNames, companyTotals, busCount,
+  busTotals, costLines, explainersFor, noRouteVehicles, downloadCosts,
 } from "../../costReport.js";
+import { gpsLabel, localIso } from "../../Dashboard.jsx";
 import { Alert, Button, Choice, Field, IconButton, Input, PageHead, cx, useRise } from "../ui.jsx";
-import { count, day, dayRange } from "../format.js";
+import { count, day, dayRange, plural } from "../format.js";
 import CompanyCard from "./costs/CompanyCard.jsx";
 import CostsLoading from "./costs/CostsLoading.jsx";
 import { CostCard, SplitCard } from "./costs/FigureCards.jsx";
@@ -16,7 +19,7 @@ import HowCard from "./costs/HowCard.jsx";
 import MoneyCard from "./costs/MoneyCard.jsx";
 import TopBuses from "./costs/TopBuses.jsx";
 import TotalCard from "./costs/TotalCard.jsx";
-import { EmptyStrip, pageExplainers, useKept } from "./costs/parts.jsx";
+import { EmptyStrip, useKept } from "./costs/parts.jsx";
 
 const weekday = (iso) => new Date(iso + "T00:00:00Z").toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" });
 /** "Thu 01 Oct", "Week 28 Sep – 04 Oct", "September 2026". */
@@ -38,30 +41,34 @@ const spread = (n) => cx("grid gap-3 sm:grid-cols-2 sm:[&>*:last-child:nth-child
   n % 3 === 0 && "lg:grid-cols-3 lg:[&>*:last-child:nth-child(odd)]:col-span-1");
 
 export default function CostsPage({ fleet }) {
-  const { loaded, effBuses: buses, effRecords: records, busCosts, wd, costDates: dates, ridersOn, settings,
-    erpStatus, syncErp, costStatus, syncCosts, dieselStatus, syncDiesel } = fleet;
+  const { loaded, costBuses: buses, effRecords: records, busCosts, wd, costDates: dates, ridersOn, settings,
+    erpStatus, syncErp, costStatus, syncCosts, dieselStatus, syncDiesel, gpsStatus, gpsFeed } = fleet;
   const [kind, setKind] = useKept("kind");
   const [picked, setAnchor] = useKept("anchor");
   // until a date is picked, the page follows the latest date with data
   const latest = latestDate(dates);
   const anchor = picked || latest;
   const period = periodRange(kind, anchor);
+  const today = localIso();
+  const isToday = kind === "day" && period.from === today;
+  const todayLeftOut = kind !== "day" && today >= period.from && today <= period.to && dates.includes(today);
 
   const headNames = useMemo(() => costHeadNames(busCosts), [busCosts]);
   const { rows, heads } = useMemo(() => costRows({
-    buses, records, busCosts, wd, riders: ridersOn, dates: datesIn(dates, period),
-  }), [buses, records, busCosts, wd, ridersOn, dates, period.from, period.to]); // eslint-disable-line react-hooks/exhaustive-deps
+    buses, records, busCosts, wd, riders: ridersOn, dates: datesShown(dates, period, today),
+  }), [buses, records, busCosts, wd, ridersOn, dates, period.kind, period.from, period.to, today]); // eslint-disable-line react-hooks/exhaustive-deps
   const all = useMemo(() => sumRows(rows, heads), [rows, heads]);
-  // "No company" last, after the named companies
-  const companies = useMemo(() => companyTotals(rows, heads).sort((a, b) => (a.c === "—") - (b.c === "—")), [rows, heads]);
-  const explainers = useMemo(() => pageExplainers(wd), [wd]);
+  const noRoute = useMemo(() => noRouteVehicles(buses, busCosts, wd), [buses, busCosts, wd]);
+  const companies = useMemo(() => companyTotals(rows, heads), [rows, heads]);
+  const explainers = useMemo(() => explainersFor(wd, heads), [wd, heads]);
   const explain = useMemo(() => Object.fromEntries(explainers.map((e) => [e.key, e])), [explainers]);
   const lines = useMemo(() => costLines(all, heads, headNames, count), [all, heads, headNames]);
   const listed = useMemo(() => new Set(lines.map((l) => l.key)), [lines]);
   const noCosts = !lines.length; // nothing to price at all: the totals are not known, not ₹0
-  // each bus's sums, as on the Excel file's Summary by bus, highest cost per head first
-  const perBus = useMemo(() => groupRows(rows, "busId").map(([id, rs]) => ({ id, s: sumRows(rs, heads) }))
-    .filter((x) => x.s.cphKm != null).sort((a, b) => b.s.cphKm - a.s.cphKm), [rows, heads]);
+  // each bus's sums, as on the Excel file's Summary by bus, highest cost per head first; a bus whose
+  // cost per head is not reliable (its Check) is left out and counted
+  const costed = useMemo(() => busTotals(rows, heads).filter((x) => x.s.cphKm != null), [rows, heads]);
+  const perBus = useMemo(() => costed.filter((x) => !x.s.check).sort((a, b) => b.s.cphKm - a.s.cphKm), [costed]);
   const byId = useMemo(() => new Map(buses.map((b) => [b.id, b])), [buses]);
 
   // an idle ERP with automatic sync on is about to pull (as on Live); with it off, nothing will come
@@ -86,9 +93,9 @@ export default function CostsPage({ fleet }) {
           </Field>
           <IconButton label={`Next ${kind}`} icon={ChevronRight} onClick={() => setAnchor(shiftPeriod(anchor, kind, 1))} />
         </div>
-        <Button variant="white" icon={Download} className="w-full sm:w-auto" disabled={waiting || !rows.length}
-          title="Totals, each bus, each bus each day, and how every cost works"
-          onClick={() => downloadCosts({ rows, heads, period, wd, headNames })}>
+        <Button variant="white" icon={Download} className="w-full sm:w-auto" disabled={waiting || !rows.length || isToday}
+          title={isToday ? "Today is left out of the Excel file until the day is over" : "Totals, each bus, each bus each day, and how every cost works"}
+          onClick={() => downloadCosts({ rows, heads, period, wd, headNames, today, holidays: settings.holidays, noRoute, gps: gpsLabel(gpsStatus, gpsFeed) })}>
           Export to Excel
         </Button>
       </>
@@ -132,6 +139,10 @@ export default function CostsPage({ fleet }) {
           ) : !dates.length ? (
             <EmptyStrip icon={Bus} title="No data from the ERP yet" hint="Costs appear here once the ERP has the fleet’s riders and km."
               action={<Button variant="primary" icon={RotateCw} onClick={() => syncErp()}>Sync now</Button>} />
+          ) : todayLeftOut ? (
+            <EmptyStrip icon={CalendarX2} title={`Nothing finished yet in ${periodText(kind, period)}`}
+              hint="Today is left out of the week and month until the day is over. The Day view shows it so far."
+              action={<Button variant="primary" onClick={() => { setKind("day"); setAnchor(today); }}>Show today</Button>} />
           ) : (
             <EmptyStrip icon={CalendarX2} title={`Nothing recorded ${kind === "day" ? "on" : "in"} ${periodText(kind, period)}`}
               hint={elsewhere ? `The latest costs are for ${periodText(kind, periodRange(kind, latest))}.` : undefined}
@@ -145,15 +156,22 @@ export default function CostsPage({ fleet }) {
 
   // Fewer than three companies leave the company column short: the buses costing most per head fill it.
   const tall = lines.length >= TALL;
+  const riderLabel = kind === "day" ? "Riders" : "Rider-days";
+  const notes = [
+    isToday && "Today: riders still arriving, so these figures grow until the day is over.",
+    todayLeftOut && `Today, ${day(today)}, is left out until the day is over.`,
+    all.unpricedRiders > 0 && `${count(all.unpricedRiders)} ${riderLabel.toLowerCase()} on ${plural(all.unpricedBuses, "rented bus", "rented buses")} not priced: no plan run or GPS. Left out of the cost per head.`,
+  ].filter(Boolean);
   const top = companies.length < 3 && !noCosts ? perBus.slice(0, tall ? 5 : 3) : [];
   const side = [
     ...companies.map(({ c, buses: n, s }) => (
-      <CompanyCard key={c} c={c} buses={n} s={s} total={all.totalKm} noCosts={noCosts} className={companies.length >= 3 ? "xl:flex-1" : undefined} />
+      <CompanyCard key={c} c={c} buses={n} s={s} total={all.totalKm} noCosts={noCosts} riders={riderLabel}
+        className={companies.length >= 3 ? "xl:flex-1" : undefined} />
     )),
-    ...(top.length ? [<TopBuses key="top" items={top} byId={byId} className="xl:flex-1" />] : []),
+    ...(top.length ? [<TopBuses key="top" items={top} byId={byId} leftOut={costed.length - perBus.length} className="xl:flex-1" />] : []),
   ];
   const money = (
-    <MoneyCard lines={lines} all={all} explain={explain} syncing={costStatus.phase === "syncing"} onSyncCosts={() => syncCosts()}
+    <MoneyCard lines={lines} all={all} explain={explain} noRoute={noRoute} syncing={costStatus.phase === "syncing"} onSyncCosts={() => syncCosts()}
       className="flex-1" />
   );
 
@@ -165,13 +183,13 @@ export default function CostsPage({ fleet }) {
         {/* one row on desk; below 1280 the total takes the whole width and the three figures share the next row */}
         <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
           <div data-rise-deep className="sm:col-span-3 xl:col-span-2">
-            <TotalCard all={all} period={periodText(kind, period)} buses={busCount(rows)} noCosts={noCosts} />
+            <TotalCard all={all} period={periodText(kind, period)} buses={busCount(rows)} noCosts={noCosts} notes={notes} />
           </div>
           <div data-rise-deep className="flex">
             <CostCard all={all} noCosts={noCosts} className="flex-1" />
           </div>
           <div data-rise-deep className="flex">
-            <SplitCard label="Riders carried" note="Each person counted once a day" value={all.riders}
+            <SplitCard label={riderLabel} note={kind === "day" ? "Each person counted once" : "Each person counted once a day they came"} value={all.riders}
               companies={companies} pick={(s) => s.riders} className="flex-1" />
           </div>
           <div data-rise-deep className="flex">

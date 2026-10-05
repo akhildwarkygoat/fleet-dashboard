@@ -1,6 +1,6 @@
 /* Small pieces the bus page needs that the kit does not have. */
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { variableCost } from "../../../dailyCost.js";
+import { isHiredBus } from "../../../dailyCost.js";
 import { BothFigures, Unit, cx } from "../../ui.jsx";
 import { duration, money } from "../../format.js";
 import { motion } from "../../motion.js";
@@ -18,8 +18,8 @@ export function useKept(key, initial) {
   return [value, set];
 }
 
-/** Hired or owned, by the rule the costs use (the plan's own type first, else the ERP type). */
-export const isHired = (bus) => variableCost(bus, { source: null }, null, null).hired;
+/** Hired or owned, by the rule the costs use (the ERP type first, else the plan's type). */
+export const isHired = isHiredBus;
 
 /** Rise the cards marked data-rise-deep when the page mounts. A layout effect, so the cards never
  *  paint once before the rise hides them. */

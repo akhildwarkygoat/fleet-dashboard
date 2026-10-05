@@ -49,7 +49,16 @@ Three tiers, because they behave differently:
 |---|---|---|
 | Loan, driver, maintenance | The **vehicle** existing that day | Split equally across its runs |
 | Diesel | The **run** — its own kilometres | Charged whole, never shared |
-| Rental slab | The **hire** — a rented van is hired per run | Charged whole, never shared |
+| Rental slab | The **hire** — a rented van is paid one day tariff on the day's total km | Charged whole, never shared |
+
+**Changed 05-10-2026 (transport manager):** a rented van is paid **one** day tariff on its
+day's **total** km, not a tariff per run. A van that drives a 149.6 km run and a 38.7 km run is
+paid the tariff on 188.3 km (₹3,521.21), not ₹2,798 + ₹1,700. The tariff is engine.js
+`rentTariff`: up to 80 km ₹1,700; 80 to 95 km ₹1,900; over 95 km ₹18.70 a km, never under
+₹1,900 (so 95 to about 101.6 km is still ₹1,900). `planRuns.js` now adds up only the km of a
+van's runs, and `dailyCost.js` prices the day the same way on a planned day and a GPS day.
+The Planner's fleet board (`fleetCost.js`) still prices each run of a plan on its own when it
+compares plans; it does not feed the Costs page.
 
 For an owned bus `b` making `n(b)` runs across all finalised plans:
 
@@ -139,8 +148,8 @@ Each step is useful alone and safe to stop after.
 - **A finalised draft is deleted.** Fall back to optimised, and say so rather than blanking.
 - **A bus appears in two plans at the same gate time.** That is a real collision — the
   Timings clock already detects it; the cost model should not quietly average it away.
-- **Rented buses.** No standing cost to share; a rental on two runs is two hires. The split
-  applies to owned only.
+- **Rented buses.** No standing cost to share; a rental on two runs is one hire, on both runs'
+  km together (see the 05-10-2026 change above). The split applies to owned only.
 - **`workingDays`** (26) already amortises the monthly loan. Do not divide by runs *and*
   re-amortise — the daily loan figure is the input to the split.
 - **Zero-seat buses** — five vehicles have no `Seat` in the ERP. They currently plan as

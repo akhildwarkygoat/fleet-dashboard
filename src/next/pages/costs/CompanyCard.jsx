@@ -6,8 +6,9 @@ import { BothFigures, BothInline, Card, CompanyDot, Progress, Tile, Tiles, cx } 
 import { count, money, money1 } from "../../format.js";
 
 /** `c` the company ("—" when a bus has none), `buses` how many it ran, `s` its sums, `total` the
- *  fleet's total by km; `noCosts` when the period has nothing to price, so money reads "—", not ₹0. */
-export default function CompanyCard({ c, buses, s, total, noCosts, className }) {
+ *  fleet's total by km; `noCosts` when the period has nothing to price, so money reads "—", not ₹0;
+ *  `riders` what its riders count is called ("Rider-days" over more than a day). */
+export default function CompanyCard({ c, buses, s, total, noCosts, riders = "Riders", className }) {
   const name = c === "—" ? "No company" : c;
   return (
     <Card data-rise-deep className={cx("flex flex-col", className)}>
@@ -23,7 +24,7 @@ export default function CompanyCard({ c, buses, s, total, noCosts, className }) 
       <div className="mt-auto pt-4">
         <Tiles className="grid-cols-3">
           <Tile size="sm" label="Buses" value={count(buses)} />
-          <Tile size="sm" label="Riders" value={count(s.riders)} />
+          <Tile size="sm" label={riders} value={count(s.riders)} />
           <Tile size="sm" label="Km" value={count(s.km)} />
         </Tiles>
         <p className="mt-3 text-[13px] text-ink-3">

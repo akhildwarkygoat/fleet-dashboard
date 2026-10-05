@@ -2,9 +2,15 @@
  *
  * The properties that matter: a diesel issue is never counted twice or lost (its litres,
  * spread over the days it refilled, add back up to what was issued); a day the bus app
- * recorded is costed on GPS km and one it did not falls back to plan km, saying so; and a
- * hired bus costs the same both ways. */
-import { indexGps, priceOn, kmOn, dieselOn, variableCost, FALLBACK_KMPL, DIESEL_PER_LITRE, MAX_SPREAD_DAYS, ESTIMATE_DAYS } from "./dailyCost.js";
+ * recorded is costed on GPS km and one it did not falls back to plan km, saying so; a hired
+ * bus costs one day tariff on the day's km, the same both ways; a planned run counts only on a
+ * day its service ran and standing costs only on a day the bus worked, both read from the
+ * punches; a bus that drove with no fill on record is not ₹0 by diesel; and a hired van with no
+ * plan run and no GPS is marked unpriced rather than read as free. */
+import {
+  indexGps, priceOn, kmOn, dieselOn, variableCost, isHiredBus, cameInOn, attendanceRules, workedOn, busDay,
+  FALLBACK_KMPL, DIESEL_PER_LITRE, MAX_SPREAD_DAYS, ESTIMATE_DAYS,
+} from "./dailyCost.js";
 import { rentTariff } from "./optimiser/engine.js";
 
 let pass = 0, fail = 0;
@@ -83,12 +89,107 @@ const dates = (from, n) => Array.from({ length: n }, (_, i) => new Date(Date.par
     "no ERP mileage or price: planner defaults, and no diesel figure without the feed");
   ok(variableCost(owned, { km: 0, source: null }, null, price).byKm === null, "no km at all: nothing to price by km");
 
-  const hired = { id: "TN20BM9126", type: "Rental", planType: "rent", planCost: 1900 };
+  const hired = { id: "TN20BM9126", type: "Rental", planType: "rent" };
   const onPlan = variableCost(hired, { km: 92, source: "plan" }, null, price);
-  ok(onPlan.hired && onPlan.byKm.amount === 1900 && onPlan.byDiesel === onPlan.byKm, "hired, plan day: the plan's own tariff, same both ways");
+  ok(onPlan.hired && onPlan.byKm.amount === rentTariff(92) && onPlan.byDiesel === onPlan.byKm, "hired, plan day: the day tariff on the planned km, same both ways");
+  ok(near(variableCost(hired, { km: 96, source: "plan" }, null, price).byKm.amount, 1900), "over 95 km the tariff never drops under ₹1,900");
   const onGps = variableCost(hired, { km: 120, source: "gps" }, null, price);
   ok(near(onGps.byKm.amount, rentTariff(120)) && onGps.byDiesel.amount === onGps.byKm.amount, "hired, GPS day: tariff on km driven, same both ways");
   ok(variableCost({ id: "R", type: "Rental" }, { km: 70, source: "gps" }, null, price).hired, "hired without a plan route: told by its ERP type");
+}
+
+/* ---- hired or owned: the ERP's type decides when it says anything ---- */
+{
+  ok(isHiredBus({ type: "Rental", planType: "own" }) && !isHiredBus({ type: "Owned", planType: "rent" }), "the ERP type wins over the plan's");
+  ok(isHiredBus({ type: "", planType: "rent" }) && !isHiredBus({ type: "", planType: "own" }) && !isHiredBus({}), "a blank ERP type falls back to the plan");
+}
+
+/* ---- did a group come in: at least half of those who punched were present ---- */
+{
+  const att = {
+    "2026-10-01": { a: "P", b: "P", c: "A", d: "P" },
+    "2026-10-02": { a: "P", b: "A", c: "A", d: "A" },   // only a quarter came: not a working day for them
+    "2026-10-04": { a: "A", b: "A", c: "A", z: "P" },   // Sunday for a–c; z works on
+    "2026-10-05": { a: "A", b: "A" },                    // the feed's newest day, still filling up
+  };
+  const came = cameInOn(att, { open: "2026-10-05", holidays: ["2026-10-03"] });
+  ok(came(["a", "b", "c", "d"], "2026-10-01") && !came(["a", "b", "c", "d"], "2026-10-02"), "at least half present: came; fewer: did not");
+  ok(came(["a", "b"], "2026-10-02"), "exactly half present counts as came");
+  ok(!came(["a", "b", "c"], "2026-10-04") && came(["z"], "2026-10-04"), "a Sunday is judged by who came, not by the calendar");
+  ok(came(["a", "b"], "2026-09-30") && came(["q"], "2026-10-01"), "no punches for the group: counted as a working day");
+  ok(!came(["a", "b"], "2026-10-03"), "a declared holiday is never a working day");
+  ok(came(["a", "b"], "2026-10-05"), "the feed's newest day is not judged while riders arrive");
+
+  const employees = [
+    { id: "a", unit: "Gainup", shift: "S9", busId: "B1" }, { id: "b", unit: "Gainup", shift: "S9", busId: "B1" },
+    { id: "c", unit: "Gainup", shift: "S9", busId: "B2" }, { id: "z", unit: "Gainup", shift: "ROT", busId: "B2" },
+  ];
+  const rules = attendanceRules(employees, att, { serviceOf: (e) => (e.shift === "ROT" ? "rot-day" : "s9"), open: "2026-10-05" });
+  ok(!rules.ranOn("s9", "2026-10-04") && rules.ranOn("rot-day", "2026-10-04"), "per service: 9 am did not run on Sunday, Rotational did");
+  ok(!rules.ridersCame("B1", "2026-10-04") && rules.ridersCame("B1", "2026-10-01") && !rules.ridersCame("B2", "2026-10-01"), "per bus: its own mapped riders");
+  ok(rules.ranOn("zen", "2026-10-01"), "a service with nobody on record: counted as run");
+}
+
+/* ---- a bus worked: GPS, a planned run that ran, or (no run planned) its riders came ---- */
+{
+  const ridersCame = (busId) => busId === "CAME";
+  const gpsDay = { source: "gps", km: 40, plan: { km: 0, runs: [], skipped: 2 } };
+  ok(workedOn({ id: "X" }, "2026-10-04", gpsDay, ridersCame), "the bus app recorded it: worked, whatever the plan says");
+  ok(workedOn({ id: "X" }, "2026-10-04", { source: "plan", km: 30, plan: { km: 30, runs: [{ service: "rot-day", km: 30 }], skipped: 1 } }, ridersCame), "one planned run ran: worked");
+  ok(!workedOn({ id: "CAME" }, "2026-10-04", { source: null, km: 0, plan: { km: 0, runs: [], skipped: 2 } }, ridersCame), "planned runs, none ran: not worked, even if riders turned up");
+  ok(workedOn({ id: "CAME" }, "2026-10-04", { source: null, km: 0, plan: { km: 0, runs: [] } }, ridersCame)
+    && !workedOn({ id: "STAYED" }, "2026-10-04", { source: null, km: 0, plan: { km: 0, runs: [] } }, ridersCame), "no run planned: worked when its riders came");
+  ok(workedOn({ id: "STAYED" }, "2026-10-04", { source: "plan", km: 30, plan: { km: 30 } }, ridersCame), "a plan with no runs on record stands as planned");
+}
+
+/* ---- one bus-day as the records carry it ---- */
+{
+  const week = "2026-09-28";
+  const runs = [{ service: "s9", km: 50 }, { service: "rot-day", km: 30 }];
+  const owned = { id: "TN57CA3434", type: "Owned", mileage: 5, planWeeks: { [week]: { km: 80, type: "own", runs } } };
+  const nineOnly = { id: "TN58BJ3636", type: "Owned", mileage: 5, planWeeks: { [week]: { km: 50, type: "own", runs: [runs[0]] } } };
+  const ranOn = (svc, date) => date !== "2026-10-04" || svc.startsWith("rot-");   // Sunday: Rotational only
+  const rates = { standing: 300, budget: 100 };
+  // the fill after 1 Oct is too late to refill the 4th, so no fill covers that day
+  const diesel = { issues: { TN57CA3434: [["2026-10-01", 20, 2000], ["2026-10-20", 50, 5000]] }, prices: [["2026-09-01", 100]] };
+  const run = { diesel, ranOn, ridersCame: () => true, ridersOn: () => 0 };
+
+  const thu = busDay(owned, "2026-10-01", rates, run);
+  ok(thu.worked && thu.standing === 300 && thu.budget === 100 && thu.km === 80, "a weekday: every run, standing charged");
+  ok(near(thu.varKm, 1600) && thu.varDiesel === 2000 && !thu.noFill && thu.spend === 1900 && thu.spendDiesel === 2300, "both ways: diesel by km, and the fill as issued");
+
+  const sun = busDay(owned, "2026-10-04", rates, run);
+  ok(sun.worked && sun.km === 30 && sun.day.plan.skipped === 1 && near(sun.varKm, 600), "Sunday: only the Rotational run is costed");
+  ok(sun.noFill && sun.cost.byDiesel.source === "none" && sun.varDiesel === sun.varKm && sun.spendDiesel === 300 + sun.varKm,
+    "no fill covers a day the bus drove: diesel by km stands in, the ERP's own reading kept");
+  ok(busDay(nineOnly, "2026-10-04", rates, run) === null, "a 9 am bus on Sunday: no km, no standing, nothing to show");
+  const nineDiesel = { ...diesel, issues: { TN58BJ3636: [["2026-10-01", 10, 1000], ["2026-10-05", 70, 7000]] } };
+  const sunFilled = busDay(nineOnly, "2026-10-04", rates, { ...run, diesel: nineDiesel });
+  ok(sunFilled && !sunFilled.worked && sunFilled.standing === 0 && sunFilled.spend === 0 && sunFilled.varDiesel === 1750,
+    "a fill spread over a day the bus did not work still lands, with no standing");
+
+  const noFeed = busDay(owned, "2026-10-02", rates, { ...run, diesel: null });
+  ok(noFeed.spendDiesel === null && noFeed.varDiesel === null && !noFeed.noFill, "diesel feed not loaded: by diesel unknown, not by km");
+
+  const offDay = { ...run, ranOn: () => false, gpsIdx: indexGps([{ serviceDate: "2026-10-02", busId: "TN58BJ3636", km: 44 }]) };
+  const gpsHol = busDay(nineOnly, "2026-10-02", rates, offDay);
+  ok(gpsHol.worked && gpsHol.day.source === "gps" && gpsHol.km === 44 && gpsHol.standing === 300, "GPS wins: a bus the app recorded worked, even on a day its service did not run");
+
+  const van = { id: "TN02AB5688", type: "Rental" };
+  const carried = busDay(van, "2026-10-01", { standing: 0, budget: 0 }, { ...run, ridersOn: () => 24 });
+  ok(carried && carried.unpriced && carried.cost.hired && carried.spend === 0 && carried.spendDiesel === 0 && carried.worked,
+    "a hired van with riders but no plan run and no GPS: unpriced, and its zeros say so");
+  ok(busDay(van, "2026-10-01", { standing: 0, budget: 0 }, run) === null, "...and with no riders, nothing at all");
+  const plannedVan = { id: "TN05V6697", type: "Rental", planWeeks: { [week]: { km: 76.9, type: "rent", runs: [{ service: "s9", km: 76.9 }] } } };
+  ok(busDay(plannedVan, "2026-10-04", { standing: 0, budget: 0 }, { ...run, ridersOn: () => 2 }) === null,
+    "a hired van whose planned run did not run is not unpriced: it did not run");
+  const vanDay = busDay(plannedVan, "2026-10-01", { standing: 0, budget: 0 }, run);
+  ok(vanDay.varKm === 1700 && vanDay.varDiesel === 1700 && !vanDay.unpriced, "a hired van on a planned day: its tariff both ways");
+
+  const loose = { id: "TN57ZZ0001", type: "Owned" };
+  const looseRun = { ...run, ridersCame: (id, date) => date !== "2026-10-04" };
+  ok(busDay(loose, "2026-10-01", rates, looseRun).standing === 300 && busDay(loose, "2026-10-04", rates, looseRun) === null,
+    "no run planned: standing on the days its riders came, none on the others");
 }
 
 console.log(`dailyCost tests: ${pass} passed, ${fail} failed`);

@@ -1,6 +1,5 @@
 /* Small pieces the Costs page needs that the kit does not have. */
 import React, { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { costExplainers } from "../../../costReport.js";
 import { Card, cx } from "../../ui.jsx";
 import { motion } from "../../motion.js";
 
@@ -28,20 +27,6 @@ export function Count({ value, format, pulse, className }) {
   useLayoutEffect(() => () => tween.current && tween.current.kill(), []);
   return <span ref={el} className={cx("inline-block", className)} />;
 }
-
-/* One name per cost on this page, in the cost lines and in How every cost is worked out alike. The
-   shared explainers also feed the old page and the Excel sheet, so they are cleaned here only: no em
-   dashes in sentences, no ERP table names. */
-const NAMES = { dieselKm: "Diesel by km travelled", dieselIssued: "Diesel as issued", tiremaint: "Tyre maintenance" };
-const WHAT = { dieselIssued: "The diesel the ERP actually filled into the bus." };
-const plain = (s) => s.replace(/ — /g, ": ");
-
-/** The explainers as this page shows them. */
-export const pageExplainers = (wd) => costExplainers(wd).map((e) => ({
-  ...e, title: NAMES[e.key] || e.title, what: WHAT[e.key] || plain(e.what), how: plain(e.how),
-}));
-/** A cost line's name: its explainer's title where there is one. */
-export const lineName = (line, explain) => NAMES[line.key] || (explain[line.key] || {}).title || line.label;
 
 /** Nothing here, as one short strip: the quiet icon, what is missing and the action that fills it,
  *  in a row on a wide screen so no tall empty card is left; stacked and centred on a phone. */

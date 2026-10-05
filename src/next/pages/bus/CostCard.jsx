@@ -10,9 +10,9 @@ import { Alert, BothFigures, Button, Card, CardTitle, Empty, Eyebrow, Field, Inp
 import { DASH, clock, day, dayRange, kms, money, money1, moneySigned, plural } from "../../format.js";
 import { MoneyTile, VioletKey, useFocusBack, useKept } from "./parts.jsx";
 
-const kmFrom = (d) => (d.source === "gps" ? "GPS km" : "from the finalised plan");
+const kmFrom = (d) => (d.source === "gps" ? "GPS km" : "planned km, the runs that ran");
 function kmText(d) {
-  if (d.source === "plan") return `${kms(d.km)} km · from the finalised plan`;
+  if (d.source === "plan") return `${kms(d.km)} km · planned, the runs that ran${d.plan && d.plan.skipped ? ` (${d.plan.skipped} did not)` : ""}`;
   const g = d.gps;
   return `${kms(d.km)} km · GPS, ${plural(g.journeys, "trip", "trips")}${g.active ? `, ${g.active} still out` : d.inProgress ? " so far" : ""}`;
 }
@@ -32,7 +32,7 @@ function workedRow(l, rec) {
   const { day: d, cost } = rec;
   if (l.id === "var-hire") return {
     label: "Hire on the km driven", caption: `${kms(d.km)} km · ${kmFrom(d)}`, tint: true,
-    basis: [["Km", kmText(d)], ["Tariff", d.source === "plan" ? "the finalised plan’s own figure" : TARIFF_TEXT]],
+    basis: [["Km", kmText(d)], ["Tariff", TARIFF_TEXT]],
   };
   if (l.id === "var-km") {
     const k = cost.byKm;
@@ -49,6 +49,11 @@ function workedRow(l, rec) {
   const z = cost.byDiesel;
   const label = "Diesel issued";
   if (!z) return { label, caption: "Not loaded yet", tint: false, basis: null };
+  if (rec.noFill) return {
+    label, caption: "No fill on record, by km used", tint: true,
+    basis: [["Issues", z.last ? `none since ${day(z.last)}` : z.next ? `the next one, ${day(z.next)}, covers only the ${MAX_SPREAD_DAYS} days before it` : "none on record"],
+      ["Diesel by km", money(cost.byKm.amount)]],
+  };
   if (z.source === "issued") return {
     label, caption: `${l.quantity} L at ${money1(z.rate)} · ERP issue`, tint: false,
     basis: [["Issue", `${kms(z.issue.litres)} L on ${day(z.issue.date)} · ${money(z.issue.amount)}`],
@@ -172,7 +177,6 @@ export default function CostCard({ bus, hired, dieselMissing, profile, rec, date
   const { lines, vlines, dailyBudget, totKm, totDiesel, monthKm, monthDiesel, varianceKm, varianceDiesel } = busCostFigures(profile, rec, date, wd);
   const toggle = (id) => setOpen((o) => ({ ...o, [id]: !o[id] }));
   const busy = costStatus.phase === "syncing";
-  const fy = costMeta && costMeta.fy ? `FY ${costMeta.fy}` : "this financial year";
   const worked = vlines.map((l) => ({ l, row: workedRow(l, rec) }));
   const anyTint = worked.some((w) => w.row.tint);
   const has = lines.length || dailyBudget || vlines.length;
@@ -219,7 +223,7 @@ export default function CostCard({ bus, hired, dieselMissing, profile, rec, date
             {budgetRow}
             {(lines.length > 0 || !hired) && (
               <section className="py-4">
-                <GroupHead left={`From the ERP · ${fy}`}
+                <GroupHead left="From the ERP · last 12 months"
                   title={costMeta ? `${dayRange(costMeta.from, costMeta.to)} · each line spread over ${wd} working days a year` : undefined} />
                 {lines.length ? (
                   <ul className="divide-y divide-line">
@@ -234,7 +238,7 @@ export default function CostCard({ bus, hired, dieselMissing, profile, rec, date
                       );
                     })}
                   </ul>
-                ) : <p className="px-3 py-2 text-[13px] text-ink-3">No ERP cost lines for this bus in {fy}.</p>}
+                ) : <p className="px-3 py-2 text-[13px] text-ink-3">No ERP cost lines for this bus in the last 12 months.</p>}
               </section>
             )}
             {worked.length > 0 && (
@@ -257,7 +261,7 @@ export default function CostCard({ bus, hired, dieselMissing, profile, rec, date
         <div className="-mx-3 divide-y divide-line">
           <Empty icon={IndianRupee} title="No costs for this bus yet" className="pb-8 pt-4"
             hint={hired ? "It is hired and has no km yet, so there is no tariff to work out."
-              : `Nothing bought for it in ${fy} and no km or diesel to price. Approve its cost lines in the ERP, then Sync costs.`} />
+              : `Nothing bought for it in the last 12 months and no km or diesel to price. Approve its cost lines in the ERP, then Sync costs.`} />
           {budgetRow}
         </div>
       )}

@@ -11,29 +11,32 @@
  * the week of each day (rotation.js), so a day three weeks ago is costed on the plans that
  * were running then.
  *
- * A hired van is paid per run, so its hire adds up run by run too (FINALISED_PLANS_PLAN.md).
+ * Each run keeps its service, so a day can count only the runs whose service ran (dailyCost.js
+ * planOn). A hired van is paid one day tariff on the day's total km, not a fee per run
+ * (FINALISED_PLANS_PLAN.md), so only the km adds up here and dailyCost.js prices the day.
  * Pure functions here; loadPlanWeeks is the one that fetches.
  * ==========================================================================*/
-import { vehKey } from "./erp.js";
+import { vehKey, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
 
-/** Add one plan's routes to a day's map: vehKey(vehicle) → { km, cost, type, runs }. Keyed by vehKey so
+/** Add one plan's routes to a day's map: vehKey(vehicle) → { km, type, runs }. Keyed by vehKey so
  *  "TN57 BR 3434" in one feed and "TN57BR3434" in a plan are the same bus. */
 export function addPlanRuns(day, plan, service) {
   for (const r of (plan && plan.routes) || []) {
     const id = vehKey(r.name);
     if (!id) continue;
-    const km = +r.km || 0, hire = r.type === "rent" ? +r.cost || 0 : null;
-    const v = day.get(id) || { km: 0, cost: null, type: r.type, runs: [] };
+    const km = +r.km || 0;
+    const v = day.get(id) || { km: 0, type: r.type, runs: [] };
     v.km += km;
-    if (hire != null) v.cost = (v.cost || 0) + hire;
-    v.runs.push({ service, km, cost: hire, type: r.type, stops: r.seq || [], riders: r.riders, ride: r.ride });
+    v.runs.push({ service, km, type: r.type, stops: r.seq || [], riders: r.riders, ride: r.ride });
     day.set(id, v);
   }
   return day;
 }
 
-/** The plan stand-in for one bus on one week: { km, cost, type } (cost only for a hired van). */
-export const planDayOf = (v) => (v ? { km: Math.round(v.km * 10) / 10, cost: v.cost, type: v.type } : null);
+/** The plan stand-in for one bus on one week: { km, type, runs }, each run its service, km and riders. */
+export const planDayOf = (v) => (v
+  ? { km: Math.round(v.km * 10) / 10, type: v.type, runs: v.runs.map((r) => ({ service: r.service, km: r.km, riders: r.riders })) }
+  : null);
 
 /**
  * Every bus's planned day for each week asked for: { [mondayIso]: Map(vehicle → day) }.
@@ -56,4 +59,21 @@ export async function loadPlanWeeks(weeks, services, sourceFor, fetchJson) {
     out[week] = day;
   }
   return out;
+}
+
+/* Vehicles in the plans in force that the punch feed does not carry, so no rider is mapped to them:
+   the fleet list is built from the punch feed, and without these the costs left out a bus the plan
+   runs every day (TN57BM3636 in the 9 am plan, with ERP cost lines of its own). Costed only: they
+   have no company and no riders, so Live and the Bus page keep to the punch feed's buses. */
+export function planOnlyBuses(buses, planWeeks, busCosts) {
+  if (!planWeeks) return [];
+  const known = new Set(buses.map((b) => vehKey(b.id)));
+  const costName = new Map(Object.keys(busCosts || {}).map((v) => [vehKey(v), v]));
+  const out = new Map();
+  for (const day of Object.values(planWeeks)) for (const key of day.keys()) {
+    if (known.has(key) || out.has(key)) continue;
+    const id = costName.get(key) || key;
+    out.set(key, { id, vehicle: id, unit: "", capacity: 0, type: "", mileage: 0, route: RUN_OPTIMISER, driver: NEEDS_ERP, phone: NEEDS_ERP, planOnly: true });
+  }
+  return [...out.values()];
 }

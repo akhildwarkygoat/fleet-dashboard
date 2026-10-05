@@ -1,18 +1,22 @@
 /* The buses that cost most per head in the period, by km: the same per-bus sums as the Excel file's
    "Summary by bus" sheet. It stands beside the company cards when fewer than three companies ran, so
-   that column is filled with something to act on. Each bus opens its own page. */
+   that column is filled with something to act on. Each bus opens its own page. A bus whose cost per
+   head is not reliable (the ERP maps far fewer riders to it than its plan carries) is left out, so a
+   mapping gap never tops the list; the sub says how many. */
 import React from "react";
 import { ChevronRight } from "lucide-react";
 import { BothInline, Card, CardTitle, cx } from "../../ui.jsx";
-import { money1 } from "../../format.js";
+import { money1, plural } from "../../format.js";
 import { hrefFor } from "../../route.js";
 import { routeOf } from "../live/figures.js";
 
-/** `items` are [{ id, s }] (s from sumRows), highest first; `byId` the buses by id. */
-export default function TopBuses({ items, byId, className }) {
+/** `items` are [{ id, s }] (s from sumRows), highest first; `byId` the buses by id; `leftOut` how many
+ *  buses were left out as not reliable. */
+export default function TopBuses({ items, byId, leftOut = 0, className }) {
   return (
     <Card data-rise-deep className={cx("flex flex-col", className)}>
-      <CardTitle title="Highest cost per head a day" sub="By km, among the buses in this period" className="!mb-2" />
+      <CardTitle title="Highest cost per head a day" className="!mb-2"
+        sub={leftOut ? `By km. ${plural(leftOut, "bus", "buses")} left out: the ERP maps far fewer riders than the plan carries` : "By km, among the buses in this period"} />
       <ul className="divide-y divide-line">
         {items.map(({ id, s }) => {
           const bus = byId.get(id);

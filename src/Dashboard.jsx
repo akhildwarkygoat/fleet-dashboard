@@ -9,8 +9,8 @@ import CostsView from "./CostsView.jsx";
 import { serviceIdFor, SERVICES } from "./optimiser/services.js";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
 import { fetchErpRaw, fetchErpCostRaw, fetchErpDieselRaw, mapErpToDashboard, mapErpCosts, mapErpDiesel, canonVehicle, vehKey, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
-import { indexGps, priceOn, kmOn, dieselOn, variableCost, MAX_SPREAD_DAYS, RECENT_DAYS, LOW_GPS_SHARE } from "./dailyCost.js";
-import { loadPlanWeeks, planDayOf } from "./planRuns.js";
+import { indexGps, priceOn, kmOn, dieselOn, variableCost, busDay, attendanceRules, MAX_SPREAD_DAYS, RECENT_DAYS, LOW_GPS_SHARE } from "./dailyCost.js";
+import { loadPlanWeeks, planDayOf, planOnlyBuses } from "./planRuns.js";
 import { planSourceForWeek, FINALISED_EVENT } from "./optimiser/finalisedPlans.js";
 import { mondayOf } from "./optimiser/rotation.js";
 import { syncTiFromGps } from "./optimiser/tiGps.js";
@@ -115,29 +115,25 @@ const DEPTS = ["Cutting", "Stitching", "Finishing", "Quality", "Packing", "Admin
 const DESIGS = ["Tailor", "Helper", "Supervisor", "Checker", "Operator", "Line Lead"];
 
 /* ---- per-bus cost model: costModel.js (each ERP cost line → ₹ per working day, summed → `standing`) ---- */
-/* Each bus's day: its standing costs (ERP cost lines, the same every day) plus that day's
-   km-variable cost, worked out two ways by dailyCost.js —
-     spend        diesel priced on the km travelled (GPS from the bus attendance app, else plan km)
-     spendDiesel  diesel as the ERP issued it; null while the diesel feed has not loaded, so a
-                  missing figure reads as missing rather than as ₹0
-   A hired bus is its day tariff on km both ways. `day` and `cost` ride along so a view can say
-   where each number came from. */
+/* Each bus's day (dailyCost.js busDay): its standing costs (ERP cost lines, charged on a day it
+   worked) plus that day's km-variable cost, worked out two ways —
+     spend        diesel priced on the km travelled (GPS from the bus attendance app, else the km of
+                  the planned runs whose service ran)
+     spendDiesel  diesel as the ERP issued it, diesel by km where no fill covers a day the bus drove;
+                  null while the diesel feed has not loaded, so a missing figure reads as missing
+   A hired bus is one day tariff on the day's km both ways. `day` and `cost` ride along so a view
+   can say where each number came from; `worked`, `noFill` and `unpriced` say how it was read. */
 function mergeCostsIntoRecords(records, buses, attendance, busCosts, wd, run = {}) {
   const dates = Object.keys(attendance || {});
   const byKey = new Map(records.map((r) => [r.busId + "|" + r.date, { ...r }]));
   buses.forEach((b) => {
     const prof = busCosts && busCosts[b.id];
-    const standing = profileDailySpend(prof, wd), budget = profileDailyBudget(prof, wd);
-    const issues = run.diesel ? run.diesel.issues[vehKey(b.id)] || [] : null;
+    const rates = { standing: profileDailySpend(prof, wd), budget: profileDailyBudget(prof, wd) };
     dates.forEach((d) => {
-      const day = kmOn(b, d, run.gpsIdx, run.today);
-      const cost = variableCost(b, day, issues && dieselOn(issues, d), run.diesel ? priceOn(run.diesel.prices, d) : null);
-      const byKm = cost.byKm ? cost.byKm.amount : 0;
-      const byDiesel = cost.byDiesel ? cost.byDiesel.amount : cost.hired ? byKm : null;
-      if (!standing && !budget && !byKm && !byDiesel && day.source !== "gps") return;
+      const fig = busDay(b, d, rates, run);
+      if (!fig) return;
       const k = b.id + "|" + d;
-      byKey.set(k, { ...(byKey.get(k) || { busId: b.id, date: d }), budget, standing, km: day.km,
-        spend: standing + byKm, spendDiesel: byDiesel == null ? null : standing + byDiesel, day, cost });
+      byKey.set(k, { ...(byKey.get(k) || { busId: b.id, date: d }), ...fig });
     });
   });
   return [...byKey.values()];
@@ -150,11 +146,11 @@ function mergeCostsIntoRecords(records, buses, attendance, busCosts, wd, run = {
    rentals. Here the assumed fixed part is REPLACED by the bus's real standing costs from the ERP
    costing feed, and the km part is worked out per day (dailyCost.js): the planned runs' km, all of
    them added up, is only the fallback for a day the bus attendance app did not record, and a rental
-   keeps the plans' own hire on those days. */
+   is paid one day tariff on that day's km. */
 /* Bumped whenever a cost profile gains fields the card relies on. A profile stored under an
    older shape still renders, but a background resync is kicked off so the new fields arrive
    without the user having to press Resync. */
-const COST_SHAPE = 3;                 // 2 = per-line `detail` rows · 3 = financial-year window (was trailing 12 months)
+const COST_SHAPE = 4;                 // 2 = per-line `detail` rows · 3 = financial-year window · 4 = trailing 12 months again
 
 /* The plans in force onto each bus: its planned day for every week loaded (planWeeks, which
    dailyCost.js falls back to), and this week's runs for the route summary and stops. The summary
@@ -170,7 +166,7 @@ function withPlanRoutes(buses, planWeeks, thisWeek) {
     const v = now && now.get(key);
     if (!v) return { ...b, planWeeks: weeks };
     const first = v.runs[0], dayKm = planDayOf(v).km;
-    return { ...b, planWeeks: weeks, planKm: first.km, planType: v.type, planCost: v.cost,
+    return { ...b, planWeeks: weeks, planKm: first.km, planType: v.type,
       planStops: first.stops, planRide: first.ride, planRiders: first.riders, planRuns: v.runs, planDayKm: dayKm,
       route: v.runs.length > 1 ? `${v.runs.length} runs · ${dayKm} km a day` : `${first.stops.length} stops · ${first.km} km · ${first.ride} min ride` };
   });
@@ -218,18 +214,21 @@ function metricsFor(rec, bus, workingDays) {
     ...moneyOf(spend, present, km, budget, workingDays),
   }, moneyOf(spendD, present, km, budget, workingDays));
 }
+/* Cost per head is over the riders whose bus has a price: a hired van with no plan run and no GPS
+   (rec.unpriced) carried people at a hire nobody knows, so they would only pull the figure down. */
 function aggregate(pairs, workingDays) {
-  let present = 0, absent = 0, cap = 0, km = 0, budget = 0, spend = 0, spendD = 0, count = 0;
+  let present = 0, priced = 0, absent = 0, cap = 0, km = 0, budget = 0, spend = 0, spendD = 0, count = 0;
   pairs.forEach(({ rec, bus }) => {
     const m = metricsFor(rec, bus, workingDays);
     present += m.present; absent += m.absent; cap += m.capacity; km += m.km; budget += m.budget; spend += m.spend; count++;
+    if (!rec.unpriced) priced += m.present;
     spendD = spendD == null || m.spend_diesel == null ? null : spendD + m.spend_diesel;
   });
   return withDiesel({
     count, present, absent, cap, km, budget,
     util: cap ? (present / cap) * 100 : 0,
-    ...moneyOf(spend, present, km, budget, workingDays),
-  }, moneyOf(count ? spendD : 0, present, km, budget, workingDays));
+    ...moneyOf(spend, priced, km, budget, workingDays),
+  }, moneyOf(count ? spendD : 0, priced, km, budget, workingDays));
 }
 function scopeFromAgg(a) {
   return {
@@ -254,7 +253,7 @@ function resolveRec(records, employees, attendance, busId, date) {
   return { busId, date, present: roll ? roll.present : +r.present || 0, absent: roll ? roll.absent : +r.absent || 0, km: +r.km || 0, budget: +r.budget || 0,
     spend: +r.spend || 0,
     // no record = no costs either way; a record without a diesel figure = the diesel feed has not loaded
-    spendDiesel: !rec ? 0 : rec.spendDiesel == null ? null : +rec.spendDiesel };
+    spendDiesel: !rec ? 0 : rec.spendDiesel == null ? null : +rec.spendDiesel, unpriced: !!r.unpriced };
 }
 function unionDates(records, attendance) { return [...new Set([...records.map((r) => r.date), ...Object.keys(attendance || {})])].sort(); }
 function busHasData(records, employees, attendance, busId, date) { return !!recOf(records, busId, date) || !!rollup(employees, attendance, busId, date); }
@@ -1003,8 +1002,9 @@ function Both({ t, km, diesel, fmt = inr, stack = false, size = "text-2xl", colo
 
 /* Where a day's km came from, in words. */
 function kmSourceText(day) {
-  if (!day || !day.source) return "no km — not recorded, not in the plan";
-  if (day.source === "plan") return "plan route km (the bus app did not record this day)";
+  const skipped = day && day.plan && day.plan.skipped;
+  if (!day || !day.source) return skipped ? "no km — its planned services did not run" : "no km — not recorded, not in the plan";
+  if (day.source === "plan") return `plan km of the runs that ran${skipped ? `, ${skipped} not run` : ""} (the bus app did not record this day)`;
   const g = day.gps, trips = `${g.journeys} trip${g.journeys === 1 ? "" : "s"}`;
   if (g.active) return `GPS · ${trips} · ${g.active} still out`;
   if (day.inProgress) return `GPS so far · ${trips}`;
@@ -1060,7 +1060,7 @@ function busKmDieselDays(bus, endDate, run) {
   if (!endDate) return { days: [], hired: false, sum: null };
   const issues = run.diesel ? run.diesel.issues[vehKey(bus.id)] || [] : null;
   const rows = Array.from({ length: 14 }, (_, i) => addDaysIso(endDate, -i)).map((d) => {
-    const day = kmOn(bus, d, run.gpsIdx, run.today);
+    const day = kmOn(bus, d, run.gpsIdx, run.today, run.ranOn);
     const cost = variableCost(bus, day, issues && dieselOn(issues, d), run.diesel ? priceOn(run.diesel.prices, d) : null);
     return { d, day, cost };
   });
@@ -1165,7 +1165,8 @@ function KmDieselCard({ t, bus, endDate, run }) {
    (VehicleEmpMapProjectDetails), each normalised to ₹/day; nothing here is editable — costs are
    corrected in the ERP and arrive on the next sync, or on the Resync button. Under them, the day's
    km-variable cost worked out two ways (dailyCost.js), each counted in one of the two totals. */
-const TARIFF_TEXT = "≤80 km → ₹1,700 · 80–95 km → ₹1,900 · over 95 km → ₹18.70/km";
+/* engine.js rentTariff: one tariff a day on the day's total km; above 95 km it never drops under ₹1,900 */
+const TARIFF_TEXT = "one a day on the day's km: ≤80 km → ₹1,700 · 80–95 km → ₹1,900 · over 95 km → ₹18.70/km, at least ₹1,900";
 /* The day's km-variable lines, as cost-card rows. `daily` is the exact figure the records carry. */
 function variableLines(rec, date) {
   if (!rec || !rec.cost) return [];
@@ -1175,19 +1176,23 @@ function variableLines(rec, date) {
   if (cost.hired) {
     if (!cost.byKm) return [];
     return [{ id: "var-hire", type: "hire", label: "Hire — day tariff on km", amount: cost.byKm.amount, period: "day", daily: cost.byKm.amount,
-      tag: kmTag, both: true, note: day.source === "gps" ? "Worked out from the km the bus attendance app recorded — not an ERP cost line." : "The finalised plan's tariff for this route — not an ERP cost line.",
-      basis: [when, kmRow, ["Tariff", day.source === "plan" ? "the finalised plan's own figure" : TARIFF_TEXT], ["Cost for the day", inr(cost.byKm.amount)]] }];
+      tag: kmTag, both: true, note: `Worked out from ${day.source === "gps" ? "the km the bus attendance app recorded" : "the planned km of its runs that ran"} — not an ERP cost line.`,
+      basis: [when, kmRow, ["Tariff", TARIFF_TEXT], ["Cost for the day", inr(cost.byKm.amount)]] }];
   }
   const out = [];
   const k = cost.byKm;
   if (k) out.push({ id: "var-km", type: "diesel", label: "Diesel — by km travelled", amount: k.rate, quantity: Math.round(k.litres * 100) / 100, period: "day", daily: k.amount,
-    tag: kmTag, note: `Worked out from ${day.source === "gps" ? "the km the bus attendance app recorded" : "the finalised plan's route km"} — not an ERP cost line.`,
+    tag: kmTag, note: `Worked out from ${day.source === "gps" ? "the km the bus attendance app recorded" : "the planned km of its runs that ran"} — not an ERP cost line.`,
     basis: [when, kmRow,
       ["Mileage", k.kmplFromErp ? `${km1(k.kmpl)} km/L (ERP)` : `${km1(k.kmpl)} km/L (planner default — no ERP mileage)`],
       ["Diesel price", k.rateDate ? `${inr1(k.rate)}/L (ERP, ${fmtDay(k.rateDate)})` : `${inr(k.rate)}/L (assumed — no ERP price yet)`],
       ["Litres", `${km1(k.litres)} L`], ["Cost for the day", inr(k.amount)]] });
   const d = cost.byDiesel;
-  if (!d) out.push({ id: "var-issued", type: "diesel", label: "Diesel — as issued", missing: true, daily: null, tag: "Not loaded", period: "day",
+  if (d && rec.noFill) out.push({ id: "var-issued", type: "diesel", label: "Diesel — as issued", amount: k.rate, quantity: Math.round(k.litres * 100) / 100, period: "day", daily: k.amount,
+    tag: "No fill on record", tagNote: "by km used",
+    note: "No ERP fill covers this day, so its diesel by km stands in for the diesel issued, as on the Costs page.",
+    basis: [when, ["Issues", d.last ? `none since ${fmtDay(d.last)}` : d.next ? `the next issue (${fmtDay(d.next)}) covers only the ${MAX_SPREAD_DAYS} days before it` : "none on record"], ["Diesel by km", inr(k.amount)]] });
+  else if (!d) out.push({ id: "var-issued", type: "diesel", label: "Diesel — as issued", missing: true, daily: null, tag: "Not loaded", period: "day",
     note: "The ERP's diesel feed has not loaded yet — see Settings → Km & diesel.", basis: [when] });
   else out.push({ id: "var-issued", type: "diesel", label: "Diesel — as issued", amount: d.rate, quantity: Math.round(d.litres * 100) / 100, period: "day", daily: d.amount,
     tag: d.source === "issued" ? "ERP issue" : d.source === "estimate" ? "ERP average" : "None issued",
@@ -1234,7 +1239,7 @@ function CostCard({ t, bus, profile, day, date, wd, costMeta, costPhase, onSyncC
   const { lines, vlines, dailyBudget, hired, totKm, totDiesel, monthKm, monthDiesel, varianceKm, varianceDiesel } = busCostFigures(profile, day, date, wd);
   const periodLabel = costPeriodLabel;
   const busy = costPhase === "syncing";
-  const windowLabel = costMeta && costMeta.fy ? `FY ${costMeta.fy} (${costMeta.from} → ${costMeta.to})` : "the current financial year";
+  const windowLabel = costMeta && costMeta.from ? `the 12 months ${costMeta.from} → ${costMeta.to}` : "the last 12 months";
 
   const row = (l, derived) => {
     const spec = COST_TYPE_MAP[l.type] || {};
@@ -1660,7 +1665,7 @@ function CostReportView({ t, buses, records, employees, attendance, settings, bu
       {/* ---------- level 1: unit-wise ---------- */}
       {!unitSel && (
         <>
-          <Card t={t} title="Unit-wise costs" hint={`Financial-year ERP cost lines plus the finalised plan's diesel, normalised to ₹/working-day (${wd} days) and rolled up by unit. Click a unit to see its buses.`}>
+          <Card t={t} title="Unit-wise costs" hint={`ERP cost lines of the last 12 months plus the finalised plan's diesel, normalised to ₹/working-day (${wd} days) and rolled up by unit. Click a unit to see its buses.`}>
             <div className="overflow-x-auto">
               <table className="w-full text-sm" style={{ minWidth: 760 }}>
                 <thead><tr style={{ background: t.surface2 }}>
@@ -1696,7 +1701,7 @@ function CostReportView({ t, buses, records, employees, attendance, settings, bu
               </table>
             </div>
             <div className="text-xs mt-3" style={{ color: t.muted }}>
-              Costs are read-only from the ERP and cover the financial year (1 April → 31 March) — corrections are made in the ERP. “To give” and “Received” are entered here; they sit outside the ERP and never change a cost line.
+              Costs are read-only from the ERP and cover the last 12 months, each line by the date its period starts — corrections are made in the ERP. “To give” and “Received” are entered here; they sit outside the ERP and never change a cost line.
             </div>
           </Card>
           <div className="mt-4">
@@ -1709,7 +1714,7 @@ function CostReportView({ t, buses, records, employees, attendance, settings, bu
       {/* ---------- level 2: bus-wise within a unit ---------- */}
       {unitSel && !busSel && (
         <>
-          <Card t={t} title={`${unitSel} — bus-wise costs`} hint={`Each bus's ₹/working-day, from its financial-year ERP cost lines plus the finalised plan's diesel. Click a bus for its full breakdown.`}>
+          <Card t={t} title={`${unitSel} — bus-wise costs`} hint={`Each bus's ₹/working-day, from its ERP cost lines of the last 12 months plus the finalised plan's diesel. Click a bus for its full breakdown.`}>
             {rows.filter((r) => r.bus.unit === unitSel).length ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm" style={{ minWidth: 820 }}>
@@ -2563,7 +2568,7 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
         </div>
         {costMeta && (
           <div className="flex flex-wrap gap-x-6 gap-y-1 mt-3 text-xs" style={{ color: t.muted }}>
-            <span>Financial year <b style={{ color: t.text }}>{costMeta.fy}</b> ({costMeta.from} → {costMeta.to})</span>
+            <span>Last 12 months <b style={{ color: t.text }}>{costMeta.from} → {costMeta.to}</b></span>
             <span>Costed buses <b style={{ color: t.text }}>{costMeta.vehicles}</b></span>
             <span>Cost lines <b style={{ color: t.text }}>{costMeta.used}</b> of {costMeta.rows}</span>
             <span>Total <b style={{ color: t.text }}>{inr(costMeta.total)}</b></span>
@@ -2571,12 +2576,12 @@ function SettingsView({ t, settings, setSettings, onReset, onExport, onSyncErp, 
           </div>
         )}
         <div className="text-xs mt-3" style={{ color: t.muted }}>
-          Costs cover the financial year (1 April → 31 March), the same year the ERP plans against — so early in the year the total is genuinely part-year. A line counts once it is approved; an unapproved line carries a zero amount and is left out. Rented buses have no cost lines in this feed. Diesel comes from its own feed (Km &amp; diesel below); <b style={{ color: t.text }}>driver salary is not included yet</b>.
+          Costs cover the last 12 months: a line counts when its period starts inside them, so a yearly line that started over a year ago (insurance from last April, say) drops out until its renewal is entered in the ERP. A line counts once it is approved; an unapproved line carries a zero amount and is left out. Rented buses have no cost lines in this feed. Diesel comes from its own feed (Km &amp; diesel below); <b style={{ color: t.text }}>driver salary is not included yet</b>.
           {costMeta && costMeta.heads && costMeta.heads.length ? ` Heads in this pull: ${costMeta.heads.join(", ")}.` : ""}
         </div>
       </Card>
 
-      <Card t={t} title="Km & diesel" hint="Every cost on the dashboard is shown two ways. By km: diesel priced on the km each bus travelled, at its ERP mileage and the ERP's diesel price — GPS from the bus attendance app, or the finalised plan's route km on a day the app did not record. By diesel: what the ERP issued, each issue spread over the days since the previous one. Hired buses cost their day tariff on km either way.">
+      <Card t={t} title="Km & diesel" hint="Every cost on the dashboard is shown two ways. By km: diesel priced on the km each bus travelled, at its ERP mileage and the ERP's diesel price — GPS from the bus attendance app, or on a day the app did not record, the planned km of the runs whose service ran (judged from the punches). By diesel: what the ERP issued, each issue spread over the days since the previous one; on a day a bus drove with no fill on record, its diesel by km. Hired buses cost one day tariff on the day's km either way.">
         {(() => {
           const today = gpsFeed && gpsFeed.today;
           const recorded = today ? gpsFeed.days.filter((d) => d.serviceDate === today).length : 0;
@@ -2820,15 +2825,13 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   const { buses: effBuses, profiles: busCosts } = useMemo(
     () => applyBusInfo(withPlanRoutes(buses, planWeeks, thisWeek), costProfiles, busInfo),
     [buses, costProfiles, planWeeks, thisWeek, busInfo]);
+  // the buses the costs cover: the fleet plus any vehicle only the plans in force name (planOnlyBuses)
+  const costBuses = useMemo(() => [...effBuses, ...withPlanRoutes(planOnlyBuses(effBuses, planWeeks, busCosts), planWeeks, thisWeek)],
+    [effBuses, planWeeks, busCosts, thisWeek]);
   const setBusField = useCallback((busId, patch) =>
     setBusInfo((prev) => ({ ...prev, [busId]: { ...prev[busId], ...patch } })), []);
   const gpsIdx = useMemo(() => (gpsFeed ? indexGps(gpsFeed.days) : null), [gpsFeed]);
-  const run = useMemo(() => ({ gpsIdx, today: gpsFeed && gpsFeed.today, diesel }), [gpsIdx, gpsFeed, diesel]);
-  const effRecords = useMemo(() => mergeCostsIntoRecords(records, effBuses, attendance, busCosts, wd, run),
-    [records, effBuses, attendance, busCosts, wd, run]);
-  // the Costs page: every date with data, and riders per bus-day from the attendance punches (indexed, since a
-  // month asks for ~3,000 bus-days)
-  const costDates = useMemo(() => unionDates(effRecords, attendance), [effRecords, attendance]);
+  // riders per bus-day from the attendance punches (indexed, since a month asks for ~3,000 bus-days)
   const ridersOn = useMemo(() => {
     const byBus = new Map(), recs = new Map(records.map((r) => [r.busId + "|" + r.date, r]));
     employees.forEach((e) => { if (!byBus.has(e.busId)) byBus.set(e.busId, []); byBus.get(e.busId).push(e); });
@@ -2839,6 +2842,18 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
       return r ? +r.present || 0 : 0;
     };
   }, [employees, attendance, records]);
+  // Which services ran and whose riders came in, from the punches: a planned run is costed only on a
+  // day its service ran, and standing costs only on a day the bus worked (dailyCost.js). The feed's
+  // newest day is still filling up, so it is not judged.
+  const attendanceRead = useMemo(() => attendanceRules(employees, attendance, {
+    serviceOf: (e) => serviceIdFor(e.unit, e.shift, e.slot), open: erpShiftDate, holidays: settings.holidays,
+  }), [employees, attendance, erpShiftDate, settings.holidays]);
+  const run = useMemo(() => ({ gpsIdx, today: gpsFeed && gpsFeed.today, diesel, ...attendanceRead, ridersOn }),
+    [gpsIdx, gpsFeed, diesel, attendanceRead, ridersOn]);
+  const effRecords = useMemo(() => mergeCostsIntoRecords(records, costBuses, attendance, busCosts, wd, run),
+    [records, costBuses, attendance, busCosts, wd, run]);
+  // the Costs page: every date with data
+  const costDates = useMemo(() => unionDates(effRecords, attendance), [effRecords, attendance]);
 
   const exportJSON = () => { const blob = new Blob([JSON.stringify({ buses, employees, attendance, records, busCosts, formulas, variables, settings }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "fleet_data.json"; a.click(); };
   // Clear the local copy back to config defaults (no dummy fleet) and pull fresh from the ERP.
@@ -2855,7 +2870,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
       setCostStatus({ phase: "ok", at, msg: `${meta.vehicles} buses · ${meta.used} cost lines` });
       Store.set("costProfiles", { profiles, meta, at, shape: COST_SHAPE });
       Store.set("lastCostSync", at);
-      if (!silent) toast(`Costing synced · ${meta.vehicles} buses · ${inr(meta.total)} in FY ${meta.fy}`);
+      if (!silent) toast(`Costing synced · ${meta.vehicles} buses · ${inr(meta.total)} over the last 12 months`);
       return meta;
     } catch (e) {
       setCostStatus({ phase: "error", at: Date.now(), msg: e.message || String(e) });
@@ -3012,7 +3027,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
     busInfo, setBusField, formulas, setFormulas, variables, setVariables, settings, setSettings,
     costProfiles, costMeta, costStatus, syncCosts, diesel, dieselStatus, syncDiesel,
     gpsFeed, gpsStatus, syncGps, gpsIdx, run, erpStatus, syncErp, erpShiftDate, erpRoll,
-    wd, effBuses, busCosts, effRecords, costDates, ridersOn, exportJSON, resetAll,
+    wd, effBuses, costBuses, busCosts, effRecords, costDates, ridersOn, exportJSON, resetAll,
   };
 }
 
@@ -3029,7 +3044,7 @@ export default function App() {
     loaded, buses, employees, attendance, records, ledger, setLedger, busInfo, setBusField,
     formulas, setFormulas, variables, setVariables, settings, setSettings,
     costMeta, costStatus, syncCosts, diesel, dieselStatus, syncDiesel, gpsFeed, gpsStatus, syncGps,
-    run, erpStatus, syncErp, erpShiftDate, erpRoll, wd, effBuses, busCosts, effRecords, costDates, ridersOn,
+    run, erpStatus, syncErp, erpShiftDate, erpRoll, wd, effBuses, costBuses, busCosts, effRecords, costDates, ridersOn,
     exportJSON, resetAll,
   } = useFleetData({ toast, onHome: () => setTab("live") });
   useEffect(() => {   // ignore any removed/old theme name
@@ -3178,7 +3193,8 @@ export default function App() {
               busCosts={busCosts} costMeta={costMeta} costPhase={costStatus.phase} onSyncCosts={() => syncCosts()}
               ledger={ledger} onAddLedger={(e) => setLedger((L) => [...L, e])} onDelLedger={(id) => setLedger((L) => L.filter((x) => x.id !== id))}
               busInfo={busInfo} onSetBusField={setBusField} toast={toast} />}
-            {tab === "fleetcosts" && <CostsView t={t} buses={effBuses} records={effRecords} busCosts={busCosts} wd={wd} dates={costDates} ridersOn={ridersOn} unitColor={unitColor} />}
+            {tab === "fleetcosts" && <CostsView t={t} buses={costBuses} records={effRecords} busCosts={busCosts} wd={wd} dates={costDates} ridersOn={ridersOn} unitColor={unitColor}
+              today={localIso()} holidays={settings.holidays} gps={gpsLabel(gpsStatus, gpsFeed)} />}
             {tab === "compare" && <CompareView t={t} unit={unit} buses={effBuses} records={effRecords} employees={employees} attendance={attendance} settings={settings} formulas={formulas} variables={variables} />}
             {tab === "optimiser" && <OptimiserTab t={t} toast={toast} erpBuses={buses} erpEmployees={employees} erpShifts={erpRoll} erpShiftDate={erpShiftDate} />}
             {tab === "settings" && <SettingsView t={t} settings={settings} setSettings={setSettings} onReset={resetAll}

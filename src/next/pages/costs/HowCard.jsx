@@ -5,7 +5,7 @@
 import React from "react";
 import { Card, CardTitle } from "../../ui.jsx";
 
-/** `explainers` from pageExplainers; `listed` the keys of the cost lines on screen. */
+/** `explainers` from explainersFor (costReport.js); `listed` the keys of the cost lines on screen. */
 export default function HowCard({ explainers, listed }) {
   return (
     <Card>

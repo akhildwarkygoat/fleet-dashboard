@@ -13,7 +13,7 @@ const Small = ({ children }) => <Unit className="!text-[13px]">{children}</Unit>
 const Violet = ({ children }) => <div className="mt-1"><Tag tone="violet" className="whitespace-nowrap !px-2.5 !py-0.5">{children}</Tag></div>;
 
 function KmCell({ d }) {
-  if (!d.source) return <><span className="font-semibold text-ink-4">{DASH}</span><Sub>not recorded</Sub></>;
+  if (!d.source) return <><span className="font-semibold text-ink-4">{DASH}</span><Sub>{d.plan.skipped ? "its services did not run" : "not recorded"}</Sub></>;
   return (
     <>
       <span className="font-semibold text-ink">{kms(d.km)}</span>

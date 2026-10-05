@@ -1,6 +1,7 @@
 /* The Costs page's one number: what the period cost, as a pair of equal weight (by km and by diesel),
    and what the period covers. The pair sits side by side when the card is wide enough, else one
-   above the other. */
+   above the other. Under it, what the figures leave out or are still waiting for (today, unpriced
+   vans), so a total is never read as more complete than it is. */
 import React from "react";
 import { Aura, Card, Eyebrow } from "../../ui.jsx";
 import { DASH, count, money } from "../../format.js";
@@ -18,8 +19,9 @@ function Figure({ value, label }) {
 }
 
 /** `all` is the period's sums (sumRows); `period` its name ("September 2026"); `buses` how many buses
- *  it covers; `noCosts` when the period has no cost line at all, so the total is not known, not ₹0. */
-export default function TotalCard({ all, period, buses, noCosts }) {
+ *  it covers; `noCosts` when the period has no cost line at all, so the total is not known, not ₹0;
+ *  `notes` short lines on what the total leaves out. */
+export default function TotalCard({ all, period, buses, noCosts, notes = [] }) {
   const dieselMissing = all.totalDiesel == null;
   return (
     <Card hero className="h-full overflow-hidden">
@@ -34,6 +36,7 @@ export default function TotalCard({ all, period, buses, noCosts }) {
           <b className="font-semibold text-ink">{period}</b> · <b className="font-semibold text-ink">{count(buses)}</b> {buses === 1 ? "bus" : "buses"} ·{" "}
           <b className="font-semibold text-ink">{count(all.days)}</b> {all.days === 1 ? "day" : "days"} recorded
         </p>
+        {notes.map((n) => <p key={n} className="mt-1.5 text-[13px] leading-snug text-ink-3">{n}</p>)}
       </div>
     </Card>
   );

@@ -1,36 +1,48 @@
 /* ============================================================================
  * CostsView.jsx — the Costs page: what the fleet spent over a day, a week or a month, every cost
- * explained, and the .xlsx export (costReport.js builds both, so they always agree).
+ * explained, and the .xlsx export (costReport.js builds both, so they always agree). Today is left
+ * out of a week or a month, and of the export, until the day is over; its own Day view shows it.
  * ==========================================================================*/
 import React, { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { Card, Btn, Tile, Segmented, Empty } from "./ui/kit.jsx";
 import {
-  PERIODS, periodRange, shiftPeriod, latestDate, datesIn, costRows, sumRows, costHeadNames, companyTotals, busCount,
-  costLines, shareOf, costExplainers, costExplainerMap, OTHER_HEAD_WHAT, downloadCosts,
+  PERIODS, periodRange, shiftPeriod, latestDate, datesShown, costRows, sumRows, costHeadNames, companyTotals, busCount,
+  costLines, shareOf, explainersFor, costExplainerMap, noRouteVehicles, OTHER_HEAD_WHAT, downloadCosts,
 } from "./costReport.js";
 
 const inr = (n) => (n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN"));
 const inr1 = (n) => (n == null ? "—" : "₹" + n.toLocaleString("en-IN", { maximumFractionDigits: 1 }));
 const num = (n) => Math.round(n || 0).toLocaleString("en-IN");
 
-/** dates: every date with data (sorted); ridersOn(busId, date): riders carried that day. */
-export default function CostsView({ t, buses, records, busCosts, wd, dates, ridersOn, unitColor }) {
+/** dates: every date with data (sorted); ridersOn(busId, date): riders carried that day; today: the
+ *  local date; holidays: the declared ones; gps: the bus app feed's state, for the export. */
+export default function CostsView({ t, buses, records, busCosts, wd, dates, ridersOn, unitColor, today, holidays, gps }) {
   const latest = latestDate(dates);
   const [kind, setKind] = useState("month");
   const [anchor, setAnchor] = useState(latest);
   const period = periodRange(kind, anchor);
+  const isToday = kind === "day" && period.from === today;
+  const todayLeftOut = kind !== "day" && today >= period.from && today <= period.to && dates.includes(today);
 
   const headNames = useMemo(() => costHeadNames(busCosts), [busCosts]);
   const { rows, heads } = useMemo(() => costRows({
     buses, records, busCosts, wd, riders: ridersOn,
-    dates: datesIn(dates, period),
-  }), [buses, records, busCosts, wd, ridersOn, dates, period.from, period.to]);
+    dates: datesShown(dates, period, today),
+  }), [buses, records, busCosts, wd, ridersOn, dates, period.kind, period.from, period.to, today]); // eslint-disable-line react-hooks/exhaustive-deps
   const all = useMemo(() => sumRows(rows, heads), [rows, heads]);
   const companies = useMemo(() => companyTotals(rows, heads), [rows, heads]);
   const explain = useMemo(() => costExplainerMap(wd), [wd]);
+  const noRoute = useMemo(() => noRouteVehicles(buses, busCosts, wd), [buses, busCosts, wd]);
 
   const lines = costLines(all, heads, headNames, num);
+  const riderLabel = kind === "day" ? "Riders" : "Rider-days";
+  const notes = [
+    isToday && "Today: riders still arriving, so these figures grow until the day is over.",
+    todayLeftOut && "Today is left out until the day is over.",
+    all.unpricedRiders > 0 && `${num(all.unpricedRiders)} ${riderLabel.toLowerCase()} on ${all.unpricedBuses} rented bus${all.unpricedBuses === 1 ? "" : "es"} not priced (no plan run or GPS), left out of the cost per head.`,
+    noRoute.length > 0 && `Not in the total: ${noRoute.length} owned vehicle${noRoute.length === 1 ? "" : "s"} with ERP costs but on no route, ${inr(noRoute.reduce((s, v) => s + v.daily, 0))} a working day.`,
+  ].filter(Boolean);
 
   const picker = kind === "month"
     ? <input type="month" value={anchor.slice(0, 7)} onChange={(e) => e.target.value && setAnchor(e.target.value + "-01")} className="rounded-xl px-3 py-2 text-sm tabular-nums" style={{ background: t.inputBg, border: "1px solid " + t.border, color: t.text }} aria-label="Month" />
@@ -48,20 +60,22 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
         <div className="flex items-center gap-2">{arrow(-1, ChevronLeft, "Previous")}{picker}{arrow(1, ChevronRight, "Next")}</div>
         <div className="text-sm font-semibold" style={{ color: t.text }}>{period.label}</div>
         <div className="ml-auto">
-          <Btn t={t} onClick={() => downloadCosts({ rows, heads, period, wd, headNames })} disabled={!rows.length} title="Totals, each bus, each bus each day, and how every cost works">
+          <Btn t={t} onClick={() => downloadCosts({ rows, heads, period, wd, headNames, today, holidays, noRoute, gps })} disabled={!rows.length || isToday}
+            title={isToday ? "Today is left out of the Excel file until the day is over" : "Totals, each bus, each bus each day, and how every cost works"}>
             <Download size={16} />Export to Excel
           </Btn>
         </div>
       </div>
 
-      {!rows.length ? <Empty t={t} title="No data in this period" sub={`Nothing was recorded between ${period.from} and ${period.to}. Pick another ${kind}.`} /> : <>
+      {!rows.length ? <Empty t={t} title="No data in this period" sub={todayLeftOut ? "Today is left out until the day is over; the Day view shows it so far." : `Nothing was recorded between ${period.from} and ${period.to}. Pick another ${kind}.`} /> : <>
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <Tile t={t} label="Total cost · by km" value={inr(all.totalKm)} sub={`${all.days} day${all.days === 1 ? "" : "s"} · ${busCount(rows)} buses`} />
           <Tile t={t} label="Total cost · by diesel" value={inr(all.totalDiesel)} sub={all.totalDiesel == null ? "diesel feed not loaded for every day" : "diesel as the ERP issued it"} />
           <Tile t={t} label="Cost per head" value={inr1(all.cphKm)} sub={`by diesel ${inr1(all.cphDiesel)}`} />
-          <Tile t={t} label="Riders carried" value={num(all.riders)} sub="people × days" />
+          <Tile t={t} label={riderLabel} value={num(all.riders)} sub={kind === "day" ? "people" : "people × days"} />
           <Tile t={t} label="Km travelled" value={num(all.km)} sub={all.cpkKm ? `${inr1(all.cpkKm)} per km` : undefined} />
         </div>
+        {notes.length > 0 && <div className="text-xs space-y-1" style={{ color: t.muted }}>{notes.map((n) => <div key={n}>{n}</div>)}</div>}
 
         <Card t={t} title="Where the money goes" hint="Every cost for the period. Shares are of the total by km; diesel as issued is the other way of counting the same diesel, so it has no share of its own.">
           <div className="overflow-x-auto">
@@ -89,11 +103,11 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
           <div className="overflow-x-auto">
             <table className="w-full text-sm tabular-nums">
               <thead><tr style={{ color: t.muted }} className="text-left">
-                {["Company", "Buses", "Riders", "Km", "Total · by km", "Total · by diesel", "Per head · by km", "Per head · by diesel"].map((h, i) => <th key={h} className={"py-2 pr-4 font-medium" + (i ? " text-right" : "")}>{h}</th>)}
+                {["Company", "Buses", riderLabel, "Km", "Total · by km", "Total · by diesel", "Per head · by km", "Per head · by diesel"].map((h, i) => <th key={h} className={"py-2 pr-4 font-medium" + (i ? " text-right" : "")}>{h}</th>)}
               </tr></thead>
               <tbody>{companies.map(({ c, buses: n, s }) => (
                 <tr key={c} style={{ borderTop: "1px solid " + t.border, color: t.text }}>
-                  <td className="py-2.5 pr-4 font-semibold"><span className="inline-block w-2.5 h-2.5 rounded-full mr-2 align-middle" style={{ background: unitColor ? unitColor(t, c) : t.primary }} />{c}</td>
+                  <td className="py-2.5 pr-4 font-semibold"><span className="inline-block w-2.5 h-2.5 rounded-full mr-2 align-middle" style={{ background: unitColor ? unitColor(t, c) : t.primary }} />{c === "—" ? "No company" : c}</td>
                   <td className="py-2.5 pr-4 text-right">{n}</td><td className="py-2.5 pr-4 text-right">{num(s.riders)}</td><td className="py-2.5 pr-4 text-right">{num(s.km)}</td>
                   <td className="py-2.5 pr-4 text-right font-semibold">{inr(s.totalKm)}</td><td className="py-2.5 pr-4 text-right">{inr(s.totalDiesel)}</td>
                   <td className="py-2.5 pr-4 text-right font-semibold">{inr1(s.cphKm)}</td><td className="py-2.5 pr-4 text-right">{inr1(s.cphDiesel)}</td>
@@ -106,7 +120,7 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
 
       <Card t={t} title="How every cost is worked out" hint="The same explanations go into the exported file's last sheet.">
         <div className="grid md:grid-cols-2 gap-x-8 gap-y-5">
-          {costExplainers(wd).map((e) => (
+          {explainersFor(wd, heads).map((e) => (
             <div key={e.key}>
               <div className="font-semibold" style={{ color: t.text }}>{e.title}</div>
               <div className="text-sm mt-0.5" style={{ color: t.text }}>{e.what}</div>
