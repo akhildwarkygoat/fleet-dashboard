@@ -10,7 +10,7 @@
  * and no GPS is marked unpriced rather than read as free. */
 import {
   indexGps, priceOn, kmOn, dieselOn, variableCost, isHiredBus, cameInOn, attendanceRules, workedOn, busDay, ratesOn, noFillOn,
-  FALLBACK_KMPL, DIESEL_PER_LITRE, MAX_SPREAD_DAYS, ESTIMATE_DAYS,
+  FALLBACK_KMPL, DIESEL_PER_LITRE, MAX_SPREAD_DAYS, ESTIMATE_DAYS, driverDaily, DRIVER_SALARY_MONTH,
 } from "./dailyCost.js";
 import { mapErpCosts } from "./erp.js";
 import { rentTariff } from "./optimiser/engine.js";
@@ -192,6 +192,17 @@ const dates = (from, n) => Array.from({ length: n }, (_, i) => new Date(Date.par
   ok(carried && carried.unpriced && carried.cost.hired && carried.spend === 0 && carried.spendDiesel === 0 && carried.worked,
     "a hired van with riders but no plan run and no GPS: unpriced, and its zeros say so");
   ok(busDay(van, "2026-10-01", { standing: 0, budget: 0 }, run) === null, "...and with no riders, nothing at all");
+
+  // driver salary: typed in Settings, a month ÷ 26, on each day an owned bus worked
+  const pay = { ...run, driverDaily: driverDaily(18000) };
+  const paid = busDay(owned, "2026-10-01", { ...rates, heads: { taxes: 300 } }, pay);
+  ok(near(driverDaily(18000), 18000 / 26) && driverDaily(undefined) === DRIVER_SALARY_MONTH / 26 && driverDaily(-5) === 0, "a month's salary ÷ 26; unset is ₹18,000; never below 0");
+  ok(near(paid.heads.driver, 18000 / 26) && near(paid.standing, 300 + 18000 / 26) && paid.heads.taxes === 300, "an owned bus that worked: its driver salary is a standing head");
+  const idle = busDay(nineOnly, "2026-10-04", { ...rates, heads: {} }, { ...pay, diesel: nineDiesel });
+  ok(idle && !idle.worked && !idle.heads.driver && idle.standing === 0, "a day the bus did not work: no driver salary");
+  ok(!busDay(van, "2026-10-01", { standing: 0, budget: 0, heads: {} }, { ...pay, ridersOn: () => 24 }).heads.driver, "a rented van: no driver salary, it is in the hire");
+  const unknown = busDay({ ...owned, type: "" }, "2026-10-01", { ...rates, heads: {} }, pay);
+  ok(unknown.worked && !unknown.heads.driver && unknown.standing === 300, "a bus 'owned' only by the plan's default (no ERP type, no cost lines): no driver salary");
   const plannedVan = { id: "TN05V6697", type: "Rental", planWeeks: { [week]: { km: 76.9, type: "rent", runs: [{ service: "s9", km: 76.9 }] } } };
   ok(busDay(plannedVan, "2026-10-04", { standing: 0, budget: 0 }, { ...run, ridersOn: () => 2 }) === null,
     "a hired van whose planned run did not run is not unpriced: it did not run");

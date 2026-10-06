@@ -203,8 +203,10 @@ export function sumRows(rows, heads) {
     totalKm: 0, totalDiesel: 0, dieselMissing: false, skippedRuns: 0, plannedRiders: 0, ridersOnPlan: 0, planRiderDays: 0 };
   heads.forEach((h) => { s.standing[h] = 0; });
   const unpriced = new Set(), standIn = new Set(), riderDates = new Set();
+  let workedRiders = 0;
   for (const r of rows) {
     s.riders += r.riders;
+    if (r.worked) workedRiders += r.riders;
     if (r.riders) riderDates.add(r.date);
     if (r.worked) s.daysRun++;
     s.skippedRuns += r.skipped;
@@ -230,6 +232,9 @@ export function sumRows(rows, heads) {
   if (s.dieselMissing) DIESEL_KEYS.forEach((k) => { s[k] = null; }); // part of it unknown: no low figure passed off as the total
   s.unpricedBuses = unpriced.size; s.standInBuses = standIn.size;
   s.avgRiders = riderDates.size ? s.riders / riderDates.size : null;
+  // a bus's riders a day over the days it worked: a Sunday or a holiday when one or two of its riders
+  // came, and it did not run, does not pull the average down (Akhil, 06-10-2026)
+  s.avgRidersWorked = s.daysRun ? workedRiders / s.daysRun : s.avgRiders;
   s.plannedRidersADay = s.planRiderDays ? s.plannedRiders / s.planRiderDays : null;
   // over the riders whose bus has a price: an unpriced van's riders would only pull the figure down
   s.cphKm = s.pricedRiders && s.totalKm > 0 ? s.totalKm / s.pricedRiders : null;
@@ -315,7 +320,7 @@ export function costExplainers(wd) {
     { key: "tires", title: TITLES.tires, what: "Tyres bought for the bus.", how: "ERP head TYRE: number of tyres × price, the last 12 months, spread over working days." },
     { key: "tiremaint", title: TITLES.tiremaint, what: "Tyre repairs and retreading.", how: "From the bus's cost lines: number of tyres × price, spread over working days." },
     { key: "adblue", title: TITLES.adblue, what: "The exhaust fluid diesel buses need.", how: "ERP head ADBLU: litres × price, the last 12 months, spread over working days." },
-    { key: "driver", title: TITLES.driver, what: "The driver's pay.", how: "Not counted: the ERP costing feed does not carry driver pay, so no total here includes it." },
+    { key: "driver", title: TITLES.driver, what: "The driver's pay, for each owned bus.", how: "The ERP does not carry driver pay, so it is typed in Settings → Driver salary a month (₹18,000 unless changed there, as on the transport department's own costing sheet). A month's pay ÷ 26 is charged on each day the bus worked, like the other standing costs. A rented bus's driver is paid by its owner, inside the hire." },
     { key: "riders", title: "Rider-days", what: "Each person counted once for each day they came, on any of the bus's runs: 30 people for 5 days is 150 rider-days.",
       how: "From the ERP's attendance punches for the employees mapped to the bus. A bus that makes several runs a day can carry more people than it has seats. Where the ERP maps under a quarter of the riders a bus's plan carries, its cost per head is marked not reliable: the riders and the km come from two different lists of who rides which bus." },
     { key: "notPriced", title: "Not priced", what: "A rented bus that carried riders on a day it has no plan run and no GPS.",
@@ -342,7 +347,7 @@ export function costExplainers(wd) {
 /** The explainers by key, for each cost line's "what it is". */
 export const costExplainerMap = (wd) => Object.fromEntries(costExplainers(wd).map((e) => [e.key, e]));
 /** The explainers worth showing: a standing head's only when the period has it (driver salary always,
- *  as the cost no total includes), and the spreadsheet's column notes only on the sheet. */
+ *  since it is typed in Settings, not read from the ERP), and the spreadsheet's column notes only on the sheet. */
 export const explainersFor = (wd, heads, { sheet = false } = {}) => costExplainers(wd).filter((e) =>
   (sheet || !e.sheet) && (!HEAD_ORDER.includes(e.key) || e.key === "driver" || (heads || []).includes(e.key)));
 /** "What it is" for a standing head the explainers do not name (one the ERP added later). */
@@ -512,7 +517,7 @@ export function costWorkbook({ rows: given, heads, missed = [], period, wd, head
     col("Seats", (x) => x.rows[0].seats, XL.count), col("Days run", (x) => x.s.daysRun, XL.count),
     col("Days on GPS km", (x) => x.s.gpsDays, XL.count),
     col("Rider-days (people × days)", (x) => x.s.riders, XL.count),
-    col("Average riders a day", (x) => r1(x.s.avgRiders), XL.km),
+    col("Average riders a day (days run)", (x) => r1(x.s.avgRidersWorked), XL.km),
     col("Planned riders a day", (x) => r1(x.s.plannedRidersADay), XL.km),
     col("Km", (x) => (unpricedOnly(x) ? null : x.s.km), XL.km),
     ...sumCols((x) => x.s).map((c) => ({ ...c, v: (x) => (unpricedOnly(x) || (c.standing && unknownStanding(x.rows[0])) ? null : c.v(x)) })),

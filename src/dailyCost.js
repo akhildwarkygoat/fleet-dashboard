@@ -243,6 +243,14 @@ export function variableCost(bus, day, diesel, price) {
 export const noFillOn = (cost) => !cost.hired && !!cost.byDiesel && cost.byDiesel.source === "none" && !cost.byDiesel.next
   && !!cost.byKm && cost.byKm.amount > 0;
 
+/* Driver salary. The ERP carries no driver pay, so it is typed in Settings: ₹ a month for each owned
+   bus (₹18,000, the transport department's own costing sheet), a working day being a month ÷ 26 as
+   that sheet divides it, charged on each day the bus worked like the other standing costs. A rented
+   bus's driver is the owner's, paid in the hire. Akhil, 06-10-2026. */
+export const DRIVER_SALARY_MONTH = 18000;
+export const DRIVER_DAYS_A_MONTH = 26;
+export const driverDaily = (month) => (month == null ? DRIVER_SALARY_MONTH : Math.max(0, +month || 0)) / DRIVER_DAYS_A_MONTH;
+
 /**
  * A bus's standing rates on `date`, ₹ a working day: each head of its ERP cost lines of the 12
  * months up to that day (erp.js profileOn), their sum, and its budget.
@@ -257,7 +265,8 @@ export function ratesOn(profile, date, wd) {
  * One bus's costs on one day, as the dashboard's records carry them (Dashboard.jsx
  * mergeCostsIntoRecords), so every page and the export read the same figures:
  *   standing, budget  the bus's rates a working day (ratesOn), on a day it worked (workedOn); 0 otherwise
- *   heads             the standing cost by head, on a day it worked
+ *   heads             the standing cost by head, on a day it worked; the driver salary
+ *                     (`run.driverDaily`) of a bus known to be owned is its "driver" head
  *   varKm             hire, or diesel priced on km (0 when there is no km)
  *   varDiesel         hire, or diesel as the ERP issued it; diesel by km on a day the bus drove that no
  *                     fill accounts for (`noFill`, noFillOn); null while the diesel feed has not loaded
@@ -265,7 +274,7 @@ export function ratesOn(profile, date, wd) {
  *   unpriced          a hired van that carried riders with no run planned that week and no GPS: its
  *                     hire is not known, so its figures are 0 and must not read as a cost
  * @param rates ratesOn(...) for the bus and day
- * @param run   { gpsIdx, today, diesel, ranOn, ridersCame, ridersOn }
+ * @param run   { gpsIdx, today, diesel, ranOn, ridersCame, ridersOn, driverDaily }
  * @returns the figures, or null when the day has nothing to show
  */
 export function busDay(bus, date, rates, run = {}) {
@@ -273,13 +282,17 @@ export function busDay(bus, date, rates, run = {}) {
   const day = kmOn(bus, date, run.gpsIdx, run.today, run.ranOn);
   const worked = workedOn(bus, date, day, run.ridersCame);
   const cost = variableCost(bus, day, issues && dieselOn(issues, date), run.diesel ? priceOn(run.diesel.prices, date) : null);
-  const standing = worked ? rates.standing : 0, budget = worked ? rates.budget : 0;
+  // only a bus known to be owned: the ERP says so, or has cost lines for it. One "owned" only by the
+  // plan builder's default (no type, no lines) may be hired, and its standing costs read as unknown
+  const owned = !cost.hired && (/own/i.test(bus.type || "") || Object.keys(rates.heads || {}).length > 0);
+  const driver = worked && owned && run.driverDaily > 0 ? run.driverDaily : 0;
+  const standing = worked ? rates.standing + driver : 0, budget = worked ? rates.budget : 0;
   const varKm = cost.byKm ? cost.byKm.amount : 0;
   const noFill = noFillOn(cost);
   const varDiesel = cost.hired ? varKm : !cost.byDiesel ? null : noFill ? varKm : cost.byDiesel.amount;
   const planned = day.plan.runs ? day.plan.runs.length + (day.plan.skipped || 0) : 0;
   const unpriced = cost.hired && !day.source && !planned && !!run.ridersOn && run.ridersOn(bus.id, date) > 0;
   if (!standing && !budget && !varKm && !varDiesel && day.source !== "gps" && !unpriced) return null;
-  return { budget, standing, heads: worked ? rates.heads : {}, km: day.km, spend: standing + varKm,
+  return { budget, standing, heads: !worked ? {} : driver ? { ...rates.heads, driver } : rates.heads, km: day.km, spend: standing + varKm,
     spendDiesel: varDiesel == null ? null : standing + varDiesel, varKm, varDiesel, worked, noFill, unpriced, day, cost };
 }

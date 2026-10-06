@@ -16,7 +16,8 @@
  * differences from their sheet, said on the sheet: the grid counts PEOPLE who came that day (the ERP
  * punches), not boardings up and down, so "Per head" is the cost of one person for a day, both ways;
  * and the diesel cost is the ERP's diesel as issued, priced at its own rate, not litres × ₹92.
- * Driver salary is not in any ERP feed, so its row stays blank rather than guessed. And each kind of
+ * Driver salary is not in any ERP feed: it is the monthly figure typed in Settings (dailyCost.js
+ * DRIVER_SALARY_MONTH, ₹18,000 as on their sheet), on the days a bus worked. And each kind of
  * cost keeps its own row, named as on the other tabs: their sheet folds road tax, insurance, FC and
  * RTO into "Insurance & Taxes" and tyres into "Maintenance"; Akhil, 06-10-2026: "dont merge different
  * types of costs keep them seperate unlike the reference sheet".
@@ -105,9 +106,12 @@ function busColumns(rows, companyName) {
     const riders = new Map(), priced = b.rows.filter((r) => r.priced);
     for (const r of b.rows) riders.set(r.date, (riders.get(r.date) || 0) + r.riders);
     const head = (h) => r2(priced.reduce((s, r) => s + (r.standing[h] || 0), 0));
+    const workedRows = b.rows.filter((r) => r.worked);
     const issued = priced.some((r) => r.dieselIssued == null) ? null : r2(priced.reduce((s, r) => s + r.dieselIssued, 0));
     return {
       ...b, riders, unpriced: b.rows.some((r) => !r.priced),
+      // riders a day over the days the bus worked, so a Sunday with two riders does not halve it
+      perWorkedDay: workedRows.length ? workedRows.reduce((s, r) => s + r.riders, 0) / workedRows.length : null,
       km: r2(priced.reduce((s, r) => s + r.km, 0)),
       litres: issued == null ? null : r2(priced.reduce((s, r) => s + r.dieselIssuedLitres, 0)),
       diesel: issued,
@@ -165,7 +169,6 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
   const rCost = rLastLine + 1, rHead = rCost + 1, rKmCost = rHead + 1;
   const costOf = (b) => r2(lines.reduce((s, l) => s + (l.get(b) || 0), 0));
   const ridersOf = (b) => [...b.riders.values()].reduce((s, n) => s + n, 0);
-  const workedDays = (b) => [...b.riders.values()].filter((n) => n > 0).length;
 
   /* ---- company vehicles (owned), from column A ---- */
   const oFirst = 1, oLast = oFirst + owned.length - 1, oTotal = oLast + 1;
@@ -188,9 +191,9 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
   lines.forEach((l, k) => put(rLine(k), 0, l.label, S.costName));
   [[rCost, "Total Cost"], [rHead, "Per head a day (up & down)"], [rKmCost, "KM Cost"]].forEach(([r, n]) => put(r, 0, n, S.costNameBold));
   owned.forEach((b, i) => {
-    const c = oFirst + i, col = (r) => A(r, c), riders = ridersOf(b), worked = workedDays(b);
+    const c = oFirst + i, col = (r) => A(r, c), riders = ridersOf(b);
     calc(rTotal, c, `SUM(${col(R0)}:${col(rTotal - 1)})`, riders, S.sum, money);
-    calc(rAvg, c, `IFERROR(${col(rTotal)}/COUNTIF(${col(R0)}:${col(rTotal - 1)},">0"),"")`, worked ? riders / worked : null, S.sum, "0");
+    put(rAvg, c, b.perWorkedDay == null ? null : r2(b.perWorkedDay), S.sum, "0");
     put(rKm, c, b.km, S.km, money);
     put(rLitres, c, b.litres, S.km, money);
     calc(rKmpl, c, `IFERROR(${col(rKm)}/${col(rLitres)},"")`, b.litres ? b.km / b.litres : null, S.km, "0.0");
@@ -211,7 +214,7 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
   const oCost = oTot(costOf);
   if (owned.length) {
     calc(rTotal, oTotal, oSum(rTotal), oRiders, S.costTotal, money);
-    calc(rAvg, oTotal, oSum(rAvg), owned.reduce((s, b) => s + (workedDays(b) ? ridersOf(b) / workedDays(b) : 0), 0), S.costTotal, "0");
+    calc(rAvg, oTotal, oSum(rAvg), r2(owned.reduce((s, b) => s + (b.perWorkedDay || 0), 0)), S.costTotal, "0");
     calc(rKm, oTotal, oSum(rKm), oKm, S.costTotal, money);
     calc(rLitres, oTotal, oSum(rLitres), oLitres, S.costTotal, money);
     calc(rKmpl, oTotal, `IFERROR(${A(rKm, oTotal)}/${A(rLitres, oTotal)},"")`, oLitres ? oKm / oLitres : null, S.costTotal, "0.0");
@@ -247,9 +250,9 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
   put(rPerHead, cFrom, "PER HEAD COST", S.perHeadName); put(rPerHead, cDate, "", S.perHeadName);
   merges.push({ s: { r: rPerHead, c: cFrom }, e: { r: rPerHead, c: cDate } });
   hired.forEach((b, i) => {
-    const c = hFirst + i, col = (r) => A(r, c), riders = ridersOf(b), worked = workedDays(b);
+    const c = hFirst + i, col = (r) => A(r, c), riders = ridersOf(b);
     calc(rTotal, c, `SUM(${col(R0)}:${col(rTotal - 1)})`, riders, S.sum, money);
-    calc(rAvg, c, `IFERROR(${col(rTotal)}/COUNTIF(${col(R0)}:${col(rTotal - 1)},">0"),"")`, worked ? riders / worked : null, S.sum, "0");
+    put(rAvg, c, b.perWorkedDay == null ? null : r2(b.perWorkedDay), S.sum, "0");
     put(rBillHead, c, b.id, S.busHead);
     const bills = half.map(([f, t]) => b.hireOn(f, t));
     bills.forEach((v, k) => put(rBills[k], c, b.unpriced && !v ? null : v, S.bill, money));
@@ -269,7 +272,7 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
   if (hired.length) {
     const hSum = (r) => `SUM(${span(r, hFirst, hLast)})`;
     calc(rTotal, hTotal, hSum(rTotal), hRiders, S.costTotal, money);
-    calc(rAvg, hTotal, hSum(rAvg), hired.reduce((s, b) => s + (workedDays(b) ? ridersOf(b) / workedDays(b) : 0), 0), S.costTotal, "0");
+    calc(rAvg, hTotal, hSum(rAvg), r2(hired.reduce((s, b) => s + (b.perWorkedDay || 0), 0)), S.costTotal, "0");
     put(rBillHead, hTotal, "Total", S.totalHead);
     rBills.forEach((r, k) => calc(r, hTotal, hSum(r), r2(hired.reduce((s, b) => s + (b.hireOn(...half[k]) || 0), 0)), S.costTotal, money));
     calc(rBillTotal, hTotal, hSum(rBillTotal), hCost, S.costTotal, money);
@@ -299,7 +302,8 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
   [
     "Riders: the people who came that day, from the ERP's punches for the riders mapped to each bus. Per head a day is the cost of one person for a day, up and down.",
     "Diesel cost: the diesel the ERP issued to the bus, at its own price that day (where no fill is on record, the diesel the km should burn). Every other cost has its own row: the ERP's cost lines of the last 12 months, spread over the working days and charged on the days the bus worked.",
-    "Driver Salary: not in any ERP feed, so it is blank and not in the totals.",
+    "Driver Salary: the ERP has no driver pay, so it is the monthly salary typed in Settings (₹18,000 unless changed) ÷ 26, on each day the bus worked. A contract vehicle's driver is in its hire.",
+    "Average a day: the bus's riders a day over the days it worked, so a Sunday or a holiday when one or two of its riders came does not pull it down.",
     "Contract vehicles: the hire is one day tariff on the day's km (GPS, or the planned runs that ran). Km and diesel for them are the owner's.",
     unpricedVans > 0 && `${unpricedVans} contract ${unpricedVans === 1 ? "vehicle has" : "vehicles have"} no bill: riders but no plan run and no GPS, so the hire is not known. ${unpricedVans === 1 ? "Its" : "Their"} riders are left out of the per head.`,
     "The other tabs carry the same figures day by day, both ways (by km and by diesel), with how each one is worked out.",

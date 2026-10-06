@@ -186,7 +186,7 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
   ok(!/financial year/i.test(text) && /last 12 months/.test(text), "standing costs: the last 12 months");
   ok(/one day tariff on the day's total km/.test(text) && /never less than ₹1,900/.test(text), "hire: one tariff a day, its ₹1,900 floor written down");
   ok(text.includes(FALLBACK_KMPL.toFixed(2) + " km/L"), "the fallback mileage as the code uses it");
-  ok(/Not counted/.test(ex.find((e) => e.key === "driver").how), "driver salary: not counted");
+  ok(/typed in Settings/.test(ex.find((e) => e.key === "driver").how) && /÷ 26/.test(ex.find((e) => e.key === "driver").how), "driver salary: typed in Settings, a month ÷ 26");
   const page = explainersFor(312, ["taxes"]).map((e) => e.key);
   ok(page.includes("taxes") && !page.includes("insurance") && page.includes("driver") && !page.includes("seats"), "the page: only the heads present, driver kept, no column notes");
   ok(explainersFor(312, ["taxes"], { sheet: true }).some((e) => e.key === "seats"), "the sheet: its column notes too");

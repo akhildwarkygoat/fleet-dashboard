@@ -10,7 +10,7 @@ import { costName } from "./costReport.js";
 import { serviceIdFor, SERVICES } from "./optimiser/services.js";
 import { getGoogleKey, setGoogleKey } from "./optimiser/google.js";
 import { fetchErpRaw, fetchErpCostRaw, fetchErpDieselRaw, mapErpToDashboard, mapErpCosts, mapErpDiesel, canonVehicle, vehKey, costWindow, profileOn, RUN_OPTIMISER, NEEDS_ERP } from "./erp.js";
-import { indexGps, priceOn, kmOn, dieselOn, variableCost, busDay, attendanceRules, noFillOn, ratesOn, MAX_SPREAD_DAYS, RECENT_DAYS, LOW_GPS_SHARE } from "./dailyCost.js";
+import { indexGps, priceOn, kmOn, dieselOn, variableCost, busDay, attendanceRules, noFillOn, ratesOn, driverDaily, DRIVER_SALARY_MONTH, MAX_SPREAD_DAYS, RECENT_DAYS, LOW_GPS_SHARE } from "./dailyCost.js";
 import { loadPlanWeeks, planDayOf, planOnlyBuses } from "./planRuns.js";
 import { planSourceForWeek, FINALISED_EVENT } from "./optimiser/finalisedPlans.js";
 import { mondayOf } from "./optimiser/rotation.js";
@@ -426,7 +426,7 @@ function sampleData() {
   ];
   // user-defined variables — independent values you set by hand (not derivable from other data)
   const variables = [{ id: uid(), name: "tailors", value: 40 }];
-  const settings = { showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true, erpRefreshMin: 30 };
+  const settings = { showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true, erpRefreshMin: 30, driverSalaryMonth: DRIVER_SALARY_MONTH };
   const erp = {};
   return { buses, employees, attendance, records, formulas, variables, settings, erp };
 }
@@ -2718,7 +2718,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   const [busInfo, setBusInfo] = useState({});             // vehicle -> { driver, phone, budgetAmount, budgetPeriod }
   const [formulas, setFormulas] = useState([]);
   const [variables, setVariables] = useState([]);
-  const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true, erpRefreshMin: 30 });
+  const [settings, setSettings] = useState({ showNetValue: true, workingDays: 312, holidays: [], bands: DEFAULT_BANDS.map((b) => ({ ...b })), erpAuto: true, erpRefreshMin: 30, driverSalaryMonth: DRIVER_SALARY_MONTH });
   const [erpStatus, setErpStatus] = useState({ phase: "idle", at: null, msg: "", progress: null }); // idle|syncing|ok|error — live ERP connection; progress = {done,total} routes on first load
   const busesRef = useRef([]); // current fleet, read inside the stable syncErp callback
   const staleCostShape = useRef(false); // stored profiles predate the current COST_SHAPE
@@ -2754,6 +2754,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
         if (!st.holidays) st.holidays = [];
         if (st.erpAuto == null) st.erpAuto = true;
         if (st.erpRefreshMin == null) st.erpRefreshMin = 30;
+        if (st.driverSalaryMonth == null) st.driverSalaryMonth = DRIVER_SALARY_MONTH;
         setSettings(st);
       } else {
         // No stored fleet yet — never seed dummy data. Keep only the config defaults
@@ -2895,8 +2896,8 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   const attendanceRead = useMemo(() => attendanceRules(costEmployees, attendance, {
     serviceOf: (e) => serviceIdFor(e.unit, e.shift, e.slot), open: todayIso, holidays: settings.holidays,
   }), [costEmployees, attendance, todayIso, settings.holidays]);
-  const run = useMemo(() => ({ gpsIdx, today: gpsFeed && gpsFeed.today, diesel, ...attendanceRead, ridersOn }),
-    [gpsIdx, gpsFeed, diesel, attendanceRead, ridersOn]);
+  const run = useMemo(() => ({ gpsIdx, today: gpsFeed && gpsFeed.today, diesel, ...attendanceRead, ridersOn, driverDaily: driverDaily(settings.driverSalaryMonth) }),
+    [gpsIdx, gpsFeed, diesel, attendanceRead, ridersOn, settings.driverSalaryMonth]);
   const effRecords = useMemo(() => mergeCostsIntoRecords(records, costBuses, attendance, busCosts, wd, run),
     [records, costBuses, attendance, busCosts, wd, run]);
   // the Costs page: every date with data
