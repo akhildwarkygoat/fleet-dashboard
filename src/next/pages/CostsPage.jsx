@@ -41,7 +41,7 @@ const spread = (n) => cx("grid gap-3 sm:grid-cols-2 sm:[&>*:last-child:nth-child
   n % 3 === 0 && "lg:grid-cols-3 lg:[&>*:last-child:nth-child(odd)]:col-span-1");
 
 export default function CostsPage({ fleet }) {
-  const { loaded, costBuses: buses, effRecords: records, busCosts, wd, costDates: dates, ridersOn, settings,
+  const { loaded, costBuses: buses, effRecords: records, busCosts, wd, costDates: dates, ridersOn, settings, attendanceFrom,
     erpStatus, syncErp, costStatus, syncCosts, dieselStatus, syncDiesel, gpsStatus } = fleet;
   const [kind, setKind] = useKept("kind");
   const [picked, setAnchor] = useKept("anchor");
@@ -160,6 +160,9 @@ export default function CostsPage({ fleet }) {
   const notes = [
     isToday && "Today: riders still arriving, so these figures grow until the day is over.",
     todayLeftOut && `Today, ${day(today)}, is left out until the day is over.`,
+    // the ERP sends only its last 11 days of punches; the days before the first kept one are gone
+    kind !== "day" && attendanceFrom && period.from < attendanceFrom && attendanceFrom <= period.to &&
+      `On record from ${day(attendanceFrom)} only. The ERP sends just its last 11 days of attendance, and every day since then is kept.`,
     all.unpricedRiders > 0 && `${count(all.unpricedRiders)} ${riderLabel.toLowerCase()} on ${plural(all.unpricedBuses, "rented bus", "rented buses")} not priced: no plan run or GPS. Left out of the cost per head.`,
   ].filter(Boolean);
   const top = companies.length < 3 && !noCosts ? perBus.slice(0, tall ? 5 : 3) : [];

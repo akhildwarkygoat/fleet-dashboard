@@ -34,6 +34,7 @@ import {
   Empty, Modal, Reveal, makeTooltip, withAlpha,
 } from "./ui/kit.jsx";
 import { prefersReduced, canEntrance, fxLift, fxDrop, fxPress, springTween, FX_CLEAR } from "./ui/motion.js";
+import { readHistory, addToHistory, historyDays, formerRiders, historyStart } from "./attendanceHistory.js";
 
 /* ERP shift strings that one service alone no longer identifies — "ROTATIONAL SHIFT" is
    shared by the three slots, which are told apart by the rider's punch slot. Derived from
@@ -2692,7 +2693,9 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   const goHome = () => { if (homeRef.current) homeRef.current(); };
   const [buses, setBuses] = useState([]);
   const [employees, setEmployees] = useState([]);
-  const [attendance, setAttendance] = useState({});
+  // the punch feed's own days (its last 11); `attendance` below adds every older day kept since
+  const [feedAttendance, setAttendance] = useState({});
+  const [attHistory, setAttHistory] = useState(null);   // attendanceHistory.js: every day ever synced, packed
   const [rotaHistory, setRotaHistory] = useState({});   // date -> Empl_no -> [bus, slot, P/A]; how Rotational actually ran
   const [records, setRecords] = useState([]);
   // Running costs come from the ERP costing feed and are read-only here. They live in their
@@ -2742,7 +2745,8 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
         // snapshot actually holds riders on a slot-divided shift, so a feed genuinely without
         // them can't re-sync on every load.
         if (emps.length && emps.some((e) => SLOT_SHIFTS.has(e.shift)) && !emps.some((e) => e.slot)) staleEmployees.current = true;
-        setBuses(b); setRecords(recs); setAttendance(att); setEmployees(emps); setRotaHistory((await Store.get("rotaHistory")) || {}); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
+        setBuses(b); setRecords(recs); setAttendance(att); setEmployees(emps);
+        setAttHistory(addToHistory(await Store.get("attendanceHistory"), att, emps)); setRotaHistory((await Store.get("rotaHistory")) || {}); setFormulas((await Store.get("formulas")) || []); setVariables((await Store.get("variables")) || []);
         const st = (await Store.get("settings")) || {};
         if (!st.bands || !st.bands.length) st.bands = DEFAULT_BANDS.map((x) => ({ ...x }));
         if (st.workingDays == null) st.workingDays = 312;
@@ -2756,6 +2760,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
         // (settings, custom metrics) and leave the fleet empty; the ERP sync below fills it.
         const s = sampleData(); setSettings(s.settings); setFormulas(s.formulas); setVariables(s.variables);
         setBuses([]); setEmployees([]); setAttendance({}); setRecords([]); setRotaHistory({});
+        setAttHistory(readHistory(await Store.get("attendanceHistory")));
       }
       // Costs are stored alongside the fleet so the last pull is on screen before the
       // first fetch of the day lands; they refresh with it.
@@ -2780,7 +2785,15 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   useEffect(() => { if (loaded) Store.set("buses", buses); }, [buses, loaded]);
   useEffect(() => { busesRef.current = buses; }, [buses]);
   useEffect(() => { if (loaded) Store.set("employees", employees); }, [employees, loaded]);
-  useEffect(() => { if (loaded) Store.set("attendance", attendance); }, [attendance, loaded]);
+  useEffect(() => { if (loaded) Store.set("attendance", feedAttendance); }, [feedAttendance, loaded]);
+  useEffect(() => { if (loaded && attHistory) Store.set("attendanceHistory", attHistory); }, [attHistory, loaded]);
+  /* Every day of punches on record: the kept history (the feed's older days), then the feed's own
+     days over it. Each view, the costs and the Excel file read this. */
+  const attendance = useMemo(() => ({ ...historyDays(attHistory, feedAttendance), ...feedAttendance }), [attHistory, feedAttendance]);
+  const attendanceFrom = useMemo(() => historyStart(attHistory) || Object.keys(feedAttendance).sort()[0] || "", [attHistory, feedAttendance]);
+  // riders who have left still count on the days they rode (attendanceHistory.js formerRiders);
+  // only the costs read them, so Live, Stops and the Planner keep to the feed's riders
+  const costEmployees = useMemo(() => [...employees, ...formerRiders(attHistory, employees)], [employees, attHistory]);
   useEffect(() => { if (loaded) Store.set("rotaHistory", rotaHistory); }, [rotaHistory, loaded]);
   useEffect(() => { if (loaded) Store.set("records", records); }, [records, loaded]);
   useEffect(() => { if (loaded) Store.set("formulas", formulas); }, [formulas, loaded]);
@@ -2818,7 +2831,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
 
      Each rider lands in exactly one service (serviceIdFor: unit beats shift), so the counts
      sum to the fleet instead of Zenwear's riders also being counted inside 9 am General. */
-  const erpShiftDate = useMemo(() => Object.keys(attendance || {}).sort().pop() || "", [attendance]);
+  const erpShiftDate = useMemo(() => Object.keys(feedAttendance || {}).sort().pop() || "", [feedAttendance]);
   const erpRoll = useMemo(() => {
     const day = (attendance || {})[erpShiftDate] || {};
     const unitOfBus = new Map((buses || []).map((b) => [b.id, b.unit]));
@@ -2866,22 +2879,22 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   // riders per bus-day from the attendance punches (indexed, since a month asks for ~3,000 bus-days)
   const ridersOn = useMemo(() => {
     const byBus = new Map(), recs = new Map(records.map((r) => [r.busId + "|" + r.date, r]));
-    employees.forEach((e) => { if (!byBus.has(e.busId)) byBus.set(e.busId, []); byBus.get(e.busId).push(e); });
+    costEmployees.forEach((e) => { if (!byBus.has(e.busId)) byBus.set(e.busId, []); byBus.get(e.busId).push(e); });
     return (busId, date) => {
       const emps = byBus.get(busId) || [], day = attendance && attendance[date];
       if (emps.length && day && emps.some((e) => day[e.id])) return emps.filter((e) => day[e.id] === "P").length;
       const r = recs.get(busId + "|" + date);
       return r ? +r.present || 0 : 0;
     };
-  }, [employees, attendance, records]);
+  }, [costEmployees, attendance, records]);
   // Which services ran and whose riders came in, from the punches: a planned run is costed only on a
   // day its service ran, and standing costs only on a day the bus worked (dailyCost.js). Today is
   // still filling up, so it is not judged; a finished day is, even the feed's newest when a pull
   // has not reached today (the same today the Costs page leaves out).
   const todayIso = localIso();
-  const attendanceRead = useMemo(() => attendanceRules(employees, attendance, {
+  const attendanceRead = useMemo(() => attendanceRules(costEmployees, attendance, {
     serviceOf: (e) => serviceIdFor(e.unit, e.shift, e.slot), open: todayIso, holidays: settings.holidays,
-  }), [employees, attendance, todayIso, settings.holidays]);
+  }), [costEmployees, attendance, todayIso, settings.holidays]);
   const run = useMemo(() => ({ gpsIdx, today: gpsFeed && gpsFeed.today, diesel, ...attendanceRead, ridersOn }),
     [gpsIdx, gpsFeed, diesel, attendanceRead, ridersOn]);
   const effRecords = useMemo(() => mergeCostsIntoRecords(records, costBuses, attendance, busCosts, wd, run),
@@ -3001,6 +3014,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
         });
       }
       setBuses(data.buses); setEmployees(data.employees); setAttendance(data.attendance); setRecords(data.records); setRotaHistory(data.rotaHistory || {});
+      setAttHistory((h) => addToHistory(h, data.attendance, data.employees));
 
       Store.set("lastErpSync", Date.now()); // freshness marker the refresh interval measures against
       setErpStatus({ phase: "ok", at: Date.now(), msg: `${data.buses.length} buses · ${data.employees.length} employees`, progress: null });
@@ -3057,7 +3071,7 @@ export function useFleetData({ toast: showToast, onHome } = {}) {
   }, [loaded, settings.erpAuto, settings.erpRefreshMin, syncErp, syncCosts, syncDiesel]);
 
   return {
-    loaded, buses, employees, attendance, records, rotaHistory, planWeeks, planByVeh, ledger, setLedger,
+    loaded, buses, employees, attendance, attendanceFrom, records, rotaHistory, planWeeks, planByVeh, ledger, setLedger,
     busInfo, setBusField, formulas, setFormulas, variables, setVariables, settings, setSettings,
     costProfiles, costMeta, costStatus, syncCosts, diesel, dieselStatus, syncDiesel,
     gpsFeed, gpsStatus, syncGps, gpsIdx, run, erpStatus, syncErp, erpShiftDate, erpRoll,
