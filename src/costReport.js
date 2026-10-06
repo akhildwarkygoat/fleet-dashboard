@@ -12,7 +12,10 @@
  *
  * Pure apart from the XLSX writer (no React, no storage).
  * ==========================================================================*/
-import * as XLSX from "xlsx";
+// the styling build of SheetJS: the same API, and it keeps cell fonts, fills and borders, which the
+// Costing sheet tab needs to look like the transport department's own report
+import XLSX from "xlsx-js-style";
+import { costingSheet, calendarDates, sheetPeriod } from "./costSheet.js";
 import { COST_TYPE_MAP, profileDailySpend } from "./costModel.js";
 import { DIESEL_PER_LITRE, FALLBACK_KMPL, MAX_SPREAD_DAYS, RECENT_DAYS, ESTIMATE_DAYS, isHiredBus, planOn } from "./dailyCost.js";
 import { vehKey } from "./erp.js";
@@ -422,7 +425,8 @@ function gpsText(gps) {
 }
 
 /**
- * Builds the .xlsx: Totals, Summary by bus, Bus by day, How costs work. Returns the workbook.
+ * Builds the .xlsx: Costing sheet (the transport department's own layout, costSheet.js), Totals,
+ * Summary by bus, Bus by day, How costs work. Returns the workbook.
  * `today` is never in it, whatever the rows hold: its riders are still arriving. `missed` are
  * costRows' bus-days with no row whose planned runs did not run; `noRoute` the owned vehicles on
  * no route (noRouteVehicles), listed under the totals; `gps` the bus app feed's { phase, at } when
@@ -546,7 +550,17 @@ export function costWorkbook({ rows: given, heads, missed = [], period, wd, head
   for (const h of heads.filter((x) => !TITLES[x])) entry(name(h), OTHER_HEAD_WHAT, ["From the ERP costing feed, the last 12 months, spread over working days."]);
   const titleWidth = Math.max(...how.map((r) => (r.length > 1 ? String(r[0]).length : 0))) + 2;
 
+  // Costing sheet: every calendar day of the period up to the day before today, Sundays included
+  const yesterday = today ? iso(new Date(utc(today).getTime() - 864e5)) : null;
+  const lastDay = yesterday && today >= period.from && today <= period.to && period.kind !== "day" ? yesterday : period.to;
+  const sheetDates = calendarDates(period.from, lastDay < period.from ? period.from : lastDay);
+  const costing = costingSheet(XLSX, {
+    rows, dates: sheetDates, heads, name, companyName, XL, xlDate,
+    title: sheetPeriod(period, datesText(sheetDates[0], sheetDates[sheetDates.length - 1])),
+  });
+
   const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, costing, "Costing sheet");
   XLSX.utils.book_append_sheet(wb, sheetOf(totals, widthsOf(scopeCols, scopes)), "Totals");
   XLSX.utils.book_append_sheet(wb, sheetOf(summary, widthsOf(summaryCols, buses)), "Summary by bus");
   XLSX.utils.book_append_sheet(wb, sheetOf(detail, widthsOf(detailCols, detailRows)), "Bus by day");

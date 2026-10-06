@@ -7,7 +7,7 @@
  * to the paisa on every sheet; one name per cost; and a workbook with real dates, ₹ in Indian
  * grouping, columns wide enough for their figures, and explanations that match the code.
  * The records are built by dailyCost.js busDay, as the dashboard builds them. */
-import XLSX from "xlsx"; // the CommonJS build in Node: its default export carries SSF
+import XLSX from "xlsx-js-style"; // the CommonJS build in Node: its default export carries SSF
 import {
   periodRange, shiftPeriod, latestDate, datesIn, datesShown, datesText, costRows, sumRows, groupRows, costWorkbook,
   costHeadNames, companyTotals, busTotals, busCount, costLines, shareOf, costExplainers, explainersFor, noRouteVehicles,
@@ -199,8 +199,39 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
   const wb = costWorkbook({ rows: withToday.rows, heads: withToday.heads, missed: withToday.missed, period: periodRange("month", "2026-10-01"), wd: 312,
     headNames: costHeadNames(busCosts), today: TODAY, holidays: [], noRoute: noRouteVehicles(buses, busCosts, 312),
     gps: { phase: "ok", at: new Date(2026, 9, 5, 10, 30).getTime() } });
-  ok(wb.SheetNames.join("|") === "Totals|Summary by bus|Bus by day|How costs work", "workbook sheets", wb.SheetNames.join("|"));
+  ok(wb.SheetNames.join("|") === "Costing sheet|Totals|Summary by bus|Bus by day|How costs work", "workbook sheets", wb.SheetNames.join("|"));
   const tot = wb.Sheets.Totals, detail = wb.Sheets["Bus by day"], summary = wb.Sheets["Summary by bus"], how = wb.Sheets["How costs work"];
+
+  /* Costing sheet: the transport department's layout, the same money as the other tabs */
+  {
+    const cs = wb.Sheets["Costing sheet"], grid = XLSX.utils.sheet_to_json(cs, { header: 1, defval: null, raw: true });
+    const fleet = XLSX.utils.sheet_to_json(tot, { range: 4, defval: null })[0];
+    const rowOf = (label, c = 0) => grid.findIndex((r) => r[c] === label);
+    const totals = grid[2].map((v, c) => (v === "TOTAL" ? c : -1)).filter((c) => c >= 0);
+    const [oT, hT] = totals, cDate = grid[2].indexOf("DATE", 1);
+    const at = (r, c) => grid[r][c];
+    ok(cs.A1.v === "Company vehicle costing for the month of OCTOBER - 2026" && totals.length === 2 && cDate > oT,
+      "Costing sheet: company vehicles on the left, contract vehicles on the right", `${cs.A1.v} ${totals}`);
+    const dateCells = grid.slice(3).map((r) => r[0]).filter((v) => typeof v === "number");
+    ok(dateCells.length === 4 && dateCells[0] === 46296 && dateCells[3] === 46299, "every calendar day up to yesterday, Sunday included, today left out", dateCells.join());
+    ok(rowOf("Road tax") > 0 && rowOf("Insurance") > 0 && rowOf("Insurance & Taxes") < 0 && rowOf("Maintenance") < 0,
+      "each kind of cost on its own row, named as on the other tabs");
+    const ownCost = at(rowOf("Total Cost"), oT), hireCost = at(rowOf("Total hire", cDate), hT);
+    ok(paise(ownCost + hireCost, fleet["Total by diesel issued"]), "company vehicles + contract hire = the total by diesel issued", `${ownCost} + ${hireCost} vs ${fleet["Total by diesel issued"]}`);
+    ok(paise(at(rowOf("Road tax"), oT), fleet["Road tax"]) && paise(at(rowOf("Diesel cost"), oT), fleet["Diesel as issued"]), "each cost row's total = the Totals tab");
+    ok(paise(at(rowOf("Total hire", cDate), hT), fleet["Hire (rented buses)"]), "the hire bills add up to the hire");
+    const riders = at(rowOf("Total riders"), oT) + at(rowOf("Total riders", cDate), hT);
+    ok(riders === fleet["Rider-days (people × days)"], "riders on the sheet = the rider-days", `${riders} ${fleet["Rider-days (people × days)"]}`);
+    const overall = at(rowOf("OVERALL PER HEAD COST"), 1);
+    ok(paise(overall, Math.round((ownCost + hireCost) / (riders - fleet["Rider-days not priced"]) * 100) / 100) || Math.abs(overall - (ownCost + hireCost) / (riders - 44)) < 0.01,
+      "overall per head leaves the unpriced van's riders out", String(overall));
+    ok(rowOf("Driver Salary") > 0 && at(rowOf("Driver Salary"), oT) === 0, "driver salary: a row, nothing in it");
+    const vanCol = grid[2].findIndex((v) => typeof v === "string" && v.startsWith("VAN1"));
+    const vanBill = cs[XLSX.utils.encode_cell({ r: rowOf("Total hire", cDate), c: vanCol })];
+    ok(vanCol > hT - 99 && vanBill && !vanBill.f && vanBill.v === "", "an unbilled van's hire is an empty cell, not a SUM Excel would read as ₹0");
+    ok(/SUMIF\([^)]*">0"/.test(cs[XLSX.utils.encode_cell({ r: rowOf("PER HEAD COST", cDate - 1), c: hT })].f), "contract per head counts riders only where there is a bill");
+    ok(cs[XLSX.utils.encode_cell({ r: rowOf("Total Cost"), c: oT })].f && cs.A1.s && cs.A1.s.fill.fgColor.rgb === "FFFF00", "totals are formulas, and the sheet carries its look");
+  }
   ok(tot.A1.v === "Fleet costs, 1 to 4 Oct 2026", "the title gives the real dates covered", tot.A1.v);
   ok(/4 Oct is a Sunday/.test(tot.A2.v) && /Today, 5 Oct, is left out until the day is over/.test(tot.A2.v) && !/—/.test(tot.A2.v), "the period line names the Sunday and today", tot.A2.v);
   ok(tot.A2.v.startsWith("4 days with data in October 2026, month to date.") && !/31 Oct/.test(tot.A2.v), "...and names the month, not its 1 to 31 span", tot.A2.v);
