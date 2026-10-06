@@ -310,6 +310,20 @@ export function mapErpCosts(rows, { asOf = Date.now() } = {}) {
   };
 }
 
+/**
+ * When a bus last paid a cost that has dropped out of the 12 months up to `date`: the start of its
+ * newest line of that head (`type`, e.g. "insurance") when every one of them began before the
+ * window, else "". A yearly insurance or FC whose renewal is not entered in the ERP reads this way:
+ * the Costing sheet shows "Last paid Apr 2025" in place of a blank (Akhil, 06-10-2026).
+ */
+export function lastPaidBefore(profile, type, date) {
+  if (!profile || !profile.history || !date) return "";
+  const { from } = costWindow(date);
+  const starts = profile.history.filter((e) => headSpec(e.head).type === type && e.amount > 0).map((e) => e.from).sort();
+  const latest = starts[starts.length - 1];
+  return latest && latest < from ? latest : "";
+}
+
 /* the folded lines of each window a profile has been asked for, by the lines it holds */
 const folded = new WeakMap();
 /**

@@ -95,7 +95,7 @@ export default function CostsPage({ fleet }) {
         </div>
         <Button variant="white" icon={Download} className="w-full sm:w-auto" disabled={waiting || !rows.length || isToday}
           title={isToday ? "Today is left out of the Excel file until the day is over" : "Totals, each bus, each bus each day, and how every cost works"}
-          onClick={() => downloadCosts({ rows, heads, missed, period, wd, headNames, today, holidays: settings.holidays, noRoute, gps: { phase: gpsStatus.phase, at: gpsStatus.at } })}>
+          onClick={() => downloadCosts({ rows, heads, missed, period, wd, headNames, today, busCosts, holidays: settings.holidays, noRoute, gps: { phase: gpsStatus.phase, at: gpsStatus.at } })}>
           Export to Excel
         </Button>
       </>

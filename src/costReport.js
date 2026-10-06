@@ -18,7 +18,7 @@ import XLSX from "xlsx-js-style";
 import { costingSheet, calendarDates, sheetPeriod } from "./costSheet.js";
 import { COST_TYPE_MAP, profileDailySpend } from "./costModel.js";
 import { DIESEL_PER_LITRE, FALLBACK_KMPL, MAX_SPREAD_DAYS, RECENT_DAYS, ESTIMATE_DAYS, isHiredBus, planOn } from "./dailyCost.js";
-import { vehKey } from "./erp.js";
+import { vehKey, lastPaidBefore } from "./erp.js";
 
 export const PERIODS = [["day", "Day"], ["week", "Week"], ["month", "Month"]];
 
@@ -430,9 +430,10 @@ function gpsText(gps) {
  * `today` is never in it, whatever the rows hold: its riders are still arriving. `missed` are
  * costRows' bus-days with no row whose planned runs did not run; `noRoute` the owned vehicles on
  * no route (noRouteVehicles), listed under the totals; `gps` the bus app feed's { phase, at } when
- * exported; `holidays` the declared ones, named on the period line.
+ * exported; `holidays` the declared ones, named on the period line; `busCosts` the cost profiles, for
+ * when a cost that has dropped out of the 12 months was last paid.
  */
-export function costWorkbook({ rows: given, heads, missed = [], period, wd, headNames, today, holidays, noRoute = [], gps }) {
+export function costWorkbook({ rows: given, heads, missed = [], period, wd, headNames, today, holidays, noRoute = [], gps, busCosts }) {
   const rows = today ? given.filter((r) => r.date !== today) : given;
   const name = (h) => costName(h, headNames);
   const dates = [...new Set(rows.map((r) => r.date))].sort();
@@ -554,8 +555,11 @@ export function costWorkbook({ rows: given, heads, missed = [], period, wd, head
   const yesterday = today ? iso(new Date(utc(today).getTime() - 864e5)) : null;
   const lastDay = yesterday && today >= period.from && today <= period.to && period.kind !== "day" ? yesterday : period.to;
   const sheetDates = calendarDates(period.from, lastDay < period.from ? period.from : lastDay);
+  const lastDate = sheetDates[sheetDates.length - 1];
   const costing = costingSheet(XLSX, {
     rows, dates: sheetDates, heads, name, companyName, XL, xlDate,
+    unreliable: new Set(buses.filter((b) => b.s.check).map((b) => b.id)),
+    lastPaid: (busId, head) => lastPaidBefore(busCosts && busCosts[busId], head, lastDate),
     title: sheetPeriod(period, datesText(sheetDates[0], sheetDates[sheetDates.length - 1])),
   });
 

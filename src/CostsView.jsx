@@ -60,7 +60,7 @@ export default function CostsView({ t, buses, records, busCosts, wd, dates, ride
         <div className="flex items-center gap-2">{arrow(-1, ChevronLeft, "Previous")}{picker}{arrow(1, ChevronRight, "Next")}</div>
         <div className="text-sm font-semibold" style={{ color: t.text }}>{period.label}</div>
         <div className="ml-auto">
-          <Btn t={t} onClick={() => downloadCosts({ rows, heads, missed, period, wd, headNames, today, holidays, noRoute, gps })} disabled={!rows.length || isToday}
+          <Btn t={t} onClick={() => downloadCosts({ rows, heads, missed, period, wd, headNames, today, busCosts, holidays, noRoute, gps })} disabled={!rows.length || isToday}
             title={isToday ? "Today is left out of the Excel file until the day is over" : "Totals, each bus, each bus each day, and how every cost works"}>
             <Download size={16} />Export to Excel
           </Btn>

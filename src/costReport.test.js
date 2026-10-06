@@ -226,6 +226,14 @@ const row = (busId, date) => rows.find((r) => r.busId === busId && r.date === da
     ok(paise(overall, Math.round((ownCost + hireCost) / (riders - fleet["Rider-days not priced"]) * 100) / 100) || Math.abs(overall - (ownCost + hireCost) / (riders - 44)) < 0.01,
       "overall per head leaves the unpriced van's riders out", String(overall));
     ok(rowOf("Driver Salary") > 0 && at(rowOf("Driver Salary"), oT) === 0, "driver salary: a row, nothing in it");
+    const ghostCol = grid[2].findIndex((v) => typeof v === "string" && v.startsWith("GHOST")), ownCol = grid[2].findIndex((v) => typeof v === "string" && v.startsWith("OWN1"));
+    const headCell = (c) => cs[XLSX.utils.encode_cell({ r: rowOf("Per head a day (up & down)"), c })];
+    ok(headCell(ghostCol).s.fill.fgColor.rgb === "FFC7CE" && headCell(ownCol).s.fill == null, "a per head the ERP mapping makes unreliable is red, the others are not");
+    ok(grid.some((r) => typeof r[0] === "string" && /^Red per head \(\d+ bus(es)?\)/.test(r[0])), "the red is explained under the sheet");
+    const paid = costWorkbook({ rows: withToday.rows, heads: withToday.heads, period: periodRange("month", "2026-10-01"), wd: 312, headNames: costHeadNames(busCosts), today: TODAY,
+      busCosts: { ...busCosts, GHOST: { lines: [], history: [{ head: "FC WORK", from: "2025-03-01", amount: 9000 }, { head: "FC WORK", from: "2024-03-01", amount: 8000 }] } } }).Sheets["Costing sheet"];
+    const fcCell = paid[XLSX.utils.encode_cell({ r: rowOf("FC works"), c: ghostCol })];
+    ok(rowOf("FC works") > 0 && fcCell && fcCell.v === "Last paid Mar 2025", "a renewal not entered: the cell says when it was last paid", fcCell && fcCell.v);
     const vanCol = grid[2].findIndex((v) => typeof v === "string" && v.startsWith("VAN1"));
     const vanBill = cs[XLSX.utils.encode_cell({ r: rowOf("Total hire", cDate), c: vanCol })];
     ok(vanCol > hT - 99 && vanBill && !vanBill.f && vanBill.v === "", "an unbilled van's hire is an empty cell, not a SUM Excel would read as ₹0");

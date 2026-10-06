@@ -25,6 +25,10 @@
  * if someone types a correction into it.
  * ==========================================================================*/
 
+/* yearly costs a bus renews: when one has dropped out of the 12 months, the sheet says when it was last paid */
+const RENEWED = ["taxes", "insurance", "fc"];
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const monthYear = (iso) => `${SHORT_MONTHS[+iso.slice(5, 7) - 1]} ${iso.slice(0, 4)}`;
 const MONTHS = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"];
 const utc = (s) => new Date(s + "T00:00:00Z");
 const pad = (n) => String(n).padStart(2, "0");
@@ -70,6 +74,11 @@ const S = {
   sumName: { font: font(12, { b: true, name: "Calibri" }), alignment: align("left"), border: box() },
   sumValue: { font: font(14, { b: true, color: RED }), alignment: align("right"), border: box() },
   note: { font: font(9, { i: true, color: GREY }), alignment: align("left") },
+  // red: a per head that divides by far too few riders (the ERP maps few riders to the bus)
+  unreliable: { font: font(12, { b: true, color: "9C0006" }), fill: fill("FFC7CE"), alignment: align("right"), border: box() },
+  unreliableBig: { font: font(14, { b: true, name: "Calibri", color: "9C0006" }), fill: fill("FFC7CE"), alignment: align("right"), border: box() },
+  noteRed: { font: font(9, { i: true, color: "9C0006" }), fill: fill("FFC7CE"), alignment: align("left") },
+  lastPaid: { font: font(9, { i: true, color: "C65911" }), alignment: align("right"), border: box() },
 };
 
 /** Every calendar date from `from` to `to`, Sundays and holidays included, as their sheet lists them. */
@@ -117,9 +126,13 @@ function busColumns(rows, companyName) {
  * @param dates       every calendar date the sheet lists (calendarDates)
  * @param title       "for the month of OCTOBER - 2026" (sheetPeriod)
  * @param heads, name the standing cost heads in the export's order, and each one's name (costName)
+ * @param unreliable  the buses whose per head is not reliable (the ERP maps under a quarter of the
+ *                    riders their plan carries): their per head is shaded red and explained below
+ * @param lastPaid    (busId, head) → the start of the bus's last line of that head when it has dropped
+ *                    out of the 12 months, else "": shown as "Last paid Apr 2025" instead of a blank
  * @param XL, xlDate  costReport's number formats and Excel date serial
  */
-export function costingSheet(XLSX, { rows, dates, title, heads, name, companyName, XL, xlDate }) {
+export function costingSheet(XLSX, { rows, dates, title, heads, name, companyName, XL, xlDate, unreliable = new Set(), lastPaid = () => "" }) {
   const { owned, hired } = busColumns(rows, companyName);
   const ws = {}, merges = [];
   let maxR = 0, maxC = 0;
@@ -144,7 +157,10 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
   // the costing block: diesel, driver salary, then each ERP head on its own row
   const lines = [{ key: "diesel", label: "Diesel cost", get: (b) => b.diesel },
     { key: "driver", label: "Driver Salary", get: (b) => b.head("driver") },
-    ...heads.filter((h) => h !== "driver").map((h) => ({ key: h, label: name(h), get: (b) => b.head(h) }))];
+    // the renewed heads always have a row, so a bus can say when it last paid one nobody paid this year
+    ...[...RENEWED.filter((h) => !heads.includes(h)), ...heads].filter((h) => h !== "driver")
+      .sort((a, b) => (RENEWED.includes(a) ? RENEWED.indexOf(a) : 9) - (RENEWED.includes(b) ? RENEWED.indexOf(b) : 9))
+      .map((h) => ({ key: h, label: name(h), get: (b) => b.head(h) }))];
   const rCosting = rKmpl + 2, rLine = (k) => rCosting + 1 + k, rLastLine = rLine(lines.length - 1);
   const rCost = rLastLine + 1, rHead = rCost + 1, rKmCost = rHead + 1;
   const costOf = (b) => r2(lines.reduce((s, l) => s + (l.get(b) || 0), 0));
@@ -179,10 +195,13 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
     put(rLitres, c, b.litres, S.km, money);
     calc(rKmpl, c, `IFERROR(${col(rKm)}/${col(rLitres)},"")`, b.litres ? b.km / b.litres : null, S.km, "0.0");
     put(rCosting, c, b.id, S.busHead);
-    lines.forEach((l, k) => put(rLine(k), c, l.get(b) || null, S.cost, money));
+    lines.forEach((l, k) => {
+      const v = l.get(b), paid = !v && RENEWED.includes(l.key) ? lastPaid(b.id, l.key) : "";
+      if (paid) put(rLine(k), c, `Last paid ${monthYear(paid)}`, S.lastPaid); else put(rLine(k), c, v || null, S.cost, money);
+    });
     const total = costOf(b);
     calc(rCost, c, `SUM(${col(rLine(0))}:${col(rLastLine)})`, total, S.costBold, money);
-    calc(rHead, c, `IFERROR(${col(rCost)}/${col(rTotal)},"")`, riders ? total / riders : null, S.costBold, perHead);
+    calc(rHead, c, `IFERROR(${col(rCost)}/${col(rTotal)},"")`, riders ? total / riders : null, unreliable.has(b.id) ? S.unreliable : S.costBold, perHead);
     calc(rKmCost, c, `IFERROR(${col(rCost)}/${col(rKm)},"")`, b.km ? total / b.km : null, S.costBold, perHead);
   });
   // the Total column: each row's sum across the buses, and the per-head and per-km of those sums
@@ -239,7 +258,7 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
     if (total == null) put(rBillTotal, c, null, S.billTotal);
     else calc(rBillTotal, c, `SUM(${col(rBills[0])}:${col(rBills[rBills.length - 1])})`, total, S.billTotal, money);
     if (total == null) put(rPerHead, c, null, S.perHead);
-    else calc(rPerHead, c, `IFERROR(${col(rBillTotal)}/${col(rTotal)},"")`, riders ? total / riders : null, S.perHead, perHead);
+    else calc(rPerHead, c, `IFERROR(${col(rBillTotal)}/${col(rTotal)},"")`, riders ? total / riders : null, unreliable.has(b.id) ? S.unreliableBig : S.perHead, perHead);
   });
   // a van not priced has a blank bill: its riders are left out of the contract per head (SUMIF on a
   // bill above 0, so neither an empty cell nor text can count)
@@ -270,6 +289,13 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
   const allF = `IFERROR((${owned.length ? A(rCost, oTotal) : 0}+${hired.length ? A(rBillTotal, hTotal) : 0})/(${owned.length ? A(rTotal, oTotal) : 0}+${hired.length ? `SUMIF(${span(rBillTotal, hFirst, hLast)},">0",${span(rTotal, hFirst, hLast)})` : 0}),"")`;
   calc(rSum + 2, 1, allF, allRiders ? (oCost + hCost) / allRiders : null, { ...S.sumValue, fill: fill(YELLOW) }, perHead);
   const unpricedVans = hired.filter((b, i) => hBills[i] == null).length;
+  const red = [...owned, ...hired].filter((b) => unreliable.has(b.id)).length;
+  const paidRows = owned.some((b) => RENEWED.some((h) => !b.head(h) && lastPaid(b.id, h)));
+  const notes = [
+    red > 0 && ["red", `Red per head (${red} ${red === 1 ? "bus" : "buses"}): the ERP maps fewer than a quarter of the riders this bus's plan carries (often 1 a day against 50 planned), so its cost is divided by too few people and the per head reads far too high. The cost itself is right and is in every total; the riders are mapped to other buses in the ERP. Correct the bus's riders in the ERP to fix it.`],
+    paidRows && ["paid", "\"Last paid\" in a cost row: the bus's newest road tax, insurance or FC in the ERP started more than 12 months ago, so it is not charged in this period. The renewal has not been entered in the ERP yet; once it is, it is charged here."],
+  ].filter(Boolean);
+  notes.forEach(([kind, t], k) => put(rSum + 4 + k, 0, t, kind === "red" ? S.noteRed : S.note));
   [
     "Riders: the people who came that day, from the ERP's punches for the riders mapped to each bus. Per head a day is the cost of one person for a day, up and down.",
     "Diesel cost: the diesel the ERP issued to the bus, at its own price that day (where no fill is on record, the diesel the km should burn). Every other cost has its own row: the ERP's cost lines of the last 12 months, spread over the working days and charged on the days the bus worked.",
@@ -277,7 +303,7 @@ export function costingSheet(XLSX, { rows, dates, title, heads, name, companyNam
     "Contract vehicles: the hire is one day tariff on the day's km (GPS, or the planned runs that ran). Km and diesel for them are the owner's.",
     unpricedVans > 0 && `${unpricedVans} contract ${unpricedVans === 1 ? "vehicle has" : "vehicles have"} no bill: riders but no plan run and no GPS, so the hire is not known. ${unpricedVans === 1 ? "Its" : "Their"} riders are left out of the per head.`,
     "The other tabs carry the same figures day by day, both ways (by km and by diesel), with how each one is worked out.",
-  ].filter(Boolean).forEach((t, k) => put(rSum + 4 + k, 0, t, S.note));
+  ].filter(Boolean).forEach((t, k) => put(rSum + 4 + notes.length + k, 0, t, S.note));
 
   ws["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
   ws["!merges"] = merges;
