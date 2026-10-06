@@ -40,7 +40,7 @@ const Labelled = ({ label, className, children }) => (
 );
 
 /* What was typed or picked, and where the list was scrolled, survive a trip to a bus page and back. */
-const kept = { q: "", show: "all", sort: BASE, y: null };
+const kept = { q: "", show: "all", sort: BASE, side: "both", y: null };
 function useKept(key) {
   const [value, set] = useState(kept[key]);
   return [value, useCallback((v) => { kept[key] = v; set(v); }, [key])];
@@ -57,6 +57,7 @@ export default function LivePage({ fleet }) {
   const [q, setQ] = useKept("q");
   const [show, setShow] = useKept("show");
   const [sort, setSort] = useKept("sort");
+  const [side, setSide] = useKept("side"); // Needs attention: both, under 50% or over 150%
   const [open, setOpen] = useState(readOpen); // companies opened by hand; saved
   const [shut, setShut] = useState({ key: "", units: {} }); // closed by hand while a search, filter or ranking had them open
 
@@ -88,10 +89,10 @@ export default function LivePage({ fleet }) {
     list.forEach((x) => { if (x.h) tally[x.h]++; });
     return { unit, list, tally, agg: aggregate(list, wd) };
   }), [shown, wd]);
-  const attention = useMemo(() => [
-    ...shown.filter((x) => x.h === "bad" && x.m.util < 50).sort((a, b) => a.m.util - b.m.util),
-    ...shown.filter((x) => x.h === "bad" && x.m.util > 150).sort((a, b) => b.m.util - a.m.util),
-  ], [shown]);
+  // the two ways a bus is bad (src/next/health.js): too empty, emptiest first; too full, fullest first
+  const under = useMemo(() => shown.filter((x) => x.h === "bad" && x.m.util < 50).sort((a, b) => a.m.util - b.m.util), [shown]);
+  const over = useMemo(() => shown.filter((x) => x.h === "bad" && x.m.util > 150).sort((a, b) => b.m.util - a.m.util), [shown]);
+  const attention = side === "under" ? under : side === "over" ? over : [...under, ...over];
   const fleetBy = useMemo(() => Object.fromEntries(UNITS.map((u) => [u, buses.filter((b) => b.unit === u).length])), [buses]);
 
   // idle counts as loading only while an automatic sync is about to start
@@ -207,10 +208,21 @@ export default function LivePage({ fleet }) {
           {/* With every company folded shut the page would end here: show the buses to look at first. */}
           {!autoKey && !groups.some(isOpen) && (
             <section data-rise-deep className="mt-5" aria-labelledby="live-attention">
-              <h2 id="live-attention" className="text-[22px] font-bold tracking-[-0.01em] text-ink">Needs attention</h2>
-              <p className="mt-0.5 text-[13px] text-ink-3">
-                {attention.length ? "Bad: under 50% or over 150% seats filled, emptiest and fullest first" : "No bus is under 50% or over 150% today."}
-              </p>
+              <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+                <div className="min-w-0">
+                  <h2 id="live-attention" className="text-[22px] font-bold tracking-[-0.01em] text-ink">Needs attention</h2>
+                  <p className="mt-0.5 text-[13px] text-ink-3">
+                    {!under.length && !over.length ? "No bus is under 50% or over 150% today."
+                      : side === "under" ? (under.length ? "Under 50% seats filled, emptiest first" : "No bus is under 50% today.")
+                      : side === "over" ? (over.length ? "Over 150% seats filled, fullest first" : "No bus is over 150% today.")
+                      : "Bad: under 50% or over 150% seats filled, emptiest and fullest first"}
+                  </p>
+                </div>
+                {(under.length > 0 || over.length > 0) && (
+                  <Choice label="Needs attention" value={side} onChange={setSide} className="[&>button]:h-11"
+                    options={[["both", `Both · ${count(under.length + over.length)}`], ["under", `Under 50% · ${count(under.length)}`], ["over", `Over 150% · ${count(over.length)}`]]} />
+                )}
+              </div>
               {attention.length > 0 && <BusGrid list={attention} newest={newest} showNet={settings.showNetValue} onOpenBus={openBus} />}
             </section>
           )}
