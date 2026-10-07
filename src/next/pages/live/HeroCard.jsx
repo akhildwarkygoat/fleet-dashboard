@@ -7,7 +7,7 @@ import { motion } from "../../motion.js";
 import { pctDigits } from "./figures.js";
 import { healthTone } from "../../health.js";
 
-export default function HeroCard({ agg, companies, fleetTotal, newest, active, onClick, className }) {
+export default function HeroCard({ agg, aside = 0, companies, fleetTotal, newest, active, onClick, className }) {
   const digits = useRef(null), number = useRef(null), last = useRef(null), tween = useRef(null), pulse = useRef(null);
   const value = agg.cap ? agg.util : null; // no seats in the list: "—", not 0%
 
@@ -51,6 +51,7 @@ export default function HeroCard({ agg, companies, fleetTotal, newest, active, o
           </span>
           <span className="mt-1 block text-[13px] tabular-nums text-ink-3">
             {agg.count < fleetTotal ? `${count(agg.count)} of ${plural(fleetTotal, "bus", "buses")}` : plural(agg.count, "bus", "buses")}
+            {aside > 0 && ` · ${count(aside)} set aside`}
             {newest && ` · ${day(newest)}`}
           </span>
         </span>

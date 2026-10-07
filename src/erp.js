@@ -412,6 +412,7 @@ export function mapErpToDashboard(rows) {
   const empDays = {};           // Empl_no -> { date: presentBool }  (one entry per rider-DAY)
   const dayRows = new Set();    // "emp date" already counted — the feed repeats rows
   const rotaHistory = {};       // date -> { Empl_no: [bus, slot, "P"|"A"] }
+  const lastStart = new Map();  // Empl_no -> { date, time, slot } from their newest row with a shift start
 
   for (const r of rows || []) {
     const veh = (r.VehName || r.Veh_Mas || "").trim();
@@ -441,6 +442,12 @@ export function mapErpToDashboard(rows) {
     // Counted once per rider-day (see the dedupe above) and resolved in a second pass, because
     // whether a day counts at all depends on how the whole factory behaved on it — see WORKED.
     if (firstRowToday) (empDays[emp] = empDays[emp] || {})[d] = present;
+
+    // the shift start the ERP gave the rider's newest punch ("14:00"), which says when their bus runs
+    // today (src/next/yetToRun.js); Pun_Shift is the slot, so a rotational rider can be stepped on
+    const start = String(r.StartTime || "").trim();
+    if (/^\d{2}:\d{2}/.test(start) && (!lastStart.has(emp) || d > lastStart.get(emp).date))
+      lastStart.set(emp, { date: d, time: start.slice(0, 5), slot: (r.Pun_Shift || "").trim() });
 
     // employee — keep the latest-dated row (its bus/department/role win)
     const prev = empLatest.get(emp);
@@ -515,6 +522,7 @@ export function mapErpToDashboard(rows) {
     // …and whether this rider sits out the rotation entirely (see NON_ROTATING above)
     fixedShift: doesNotRotate(emp),
     slotSource: slotSourceOf(emp),   // observed | projected | stale — see slotSourceOf
+    start: lastStart.get(emp) || null,  // { date, time, slot } of their newest punched shift
 
     department: (r.DeptName || "").trim(),
     designation: (r.Catagory || "").trim(),

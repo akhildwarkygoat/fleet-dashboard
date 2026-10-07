@@ -8,6 +8,7 @@ import { count, day, money, moneyShortSigned, percent, plural } from "../../form
 import { motion } from "../../motion.js";
 import { driverOf, netYear, pctDigits, perHead, routeOf, utilOf } from "./figures.js";
 import { HEALTH } from "../../health.js";
+import { ASIDE } from "../../setAside.js";
 
 /** A money figure both ways in a bus card, each with its own small label. When neither is known
  *  it reads one "—" with the reason under it, rather than a row of dashes. */
@@ -29,13 +30,19 @@ function Pair({ label, km, diesel, fmt, none }) {
 }
 
 function BusCard({ x, newest, showNet, onOpen }) {
-  const { bus, m } = x;
-  const util = utilOf(m);
-  const cph = perHead(m), net = netYear(m);
+  const { bus, aside } = x;
+  // a bus yet to run today reads its last full day; one with riders missing in the ERP reads its plan
+  const { m, date } = x.ref || x;
+  const missing = aside && aside.kind === "erp";
+  const util = missing ? null : utilOf(m);
+  const cph = missing ? { km: null, diesel: null } : perHead(m), net = netYear(m);
+  const tone = x.h ? HEALTH[x.h].tone : aside ? "nova" : "ink";
   const detail = [
     bus.vehicle, routeOf(bus), driverOf(bus) && "Driver " + driverOf(bus),
-    m.capacity > 0 ? `${count(m.present)} riders on ${count(m.capacity)} seats` : `${count(m.present)} riders · no seat count in the ERP`,
-    "Figures from " + day(x.date),
+    missing ? `The plan has ${count(aside.plan)} riders, the ERP lists ${count(aside.erp)}`
+      : m.capacity > 0 ? `${count(m.present)} riders on ${count(m.capacity)} seats` : `${count(m.present)} riders · no seat count in the ERP`,
+    aside && aside.kind === "yet" && `${plural(aside.pending, "rider starts", "riders start")} later today`,
+    "Figures from " + day(date),
   ].filter(Boolean).join("\n");
   return (
     <button type="button" onClick={() => onOpen(bus.id)} title={detail}
@@ -46,14 +53,20 @@ function BusCard({ x, newest, showNet, onOpen }) {
           <span className="min-w-0 truncate font-code text-[15px] font-bold text-ink">{bus.vehicle}</span>
         </span>
         {x.h && <Badge tone={HEALTH[x.h].tone}>{HEALTH[x.h].label}</Badge>}
-        {x.date < newest && <Badge title="The last day with figures for this bus">{day(x.date)}</Badge>}
+        {aside && <Badge tone={ASIDE[aside.kind].tone}>{ASIDE[aside.kind].label}</Badge>}
+        {!missing && date < newest && <Badge title="The last day with figures for this bus">{day(date)}</Badge>}
       </span>
       <span className="mt-auto block pt-3 text-[28px] font-bold leading-none tracking-[-0.02em] tabular-nums text-ink">
-        {util == null ? "—" : <>{pctDigits(util)}<Unit>%</Unit></>}
+        {missing ? count(aside.plan) : util == null ? "—" : <>{pctDigits(util)}<Unit>%</Unit></>}
       </span>
-      {util != null && <Progress value={util} max={100} size="sm" tone={HEALTH[x.h].tone} label={`${bus.vehicle} seats filled`} className="mt-2.5" />}
-      <span className="mt-1.5 block text-[11px] font-semibold text-ink-3">{util == null ? "No seat count in the ERP" : "Seats filled"}</span>
-      <Pair label="Cost per head a day" km={cph.km} diesel={cph.diesel} fmt={money} none={m.present > 0 ? "no costs yet" : "no riders"} />
+      {util != null && <Progress value={util} max={100} size="sm" tone={tone} label={`${bus.vehicle} seats filled`} className="mt-2.5" />}
+      <span className="mt-1.5 block text-[11px] font-semibold text-ink-3">
+        {missing ? `Riders in the plan · ERP lists ${count(aside.erp)}`
+          : util == null ? "No seat count in the ERP"
+          : aside && aside.kind === "yet" ? (x.ref ? "Seats filled, last full day" : "Seats filled so far") : "Seats filled"}
+      </span>
+      {aside && aside.kind === "yet" && aside.next && <span className="mt-0.5 block text-[11px] font-semibold text-nova-deep">Next run {aside.next}</span>}
+      <Pair label="Cost per head a day" km={cph.km} diesel={cph.diesel} fmt={money} none={missing ? "riders not in ERP" : m.present > 0 ? "no costs yet" : "no riders"} />
       {showNet && <Pair label="Net value a year" km={net.km} diesel={net.diesel} fmt={moneyShortSigned} none="no costs yet" />}
     </button>
   );
@@ -90,6 +103,7 @@ export default function BusGroup({ unit, list, tally, agg, total, open, onToggle
     tally.bad > 0 && <Badge key="bad" tone="bad">{tally.bad} bad</Badge>,
     tally.watch > 0 && <Badge key="watch" tone="warn">{tally.watch} watch</Badge>,
     tally.good > 0 && <Badge key="good" tone="ok">{tally.good} good</Badge>,
+    tally.aside > 0 && <Badge key="aside">{tally.aside} set aside</Badge>,
   ].filter(Boolean);
   // "of" whenever some of the company's buses are not in the list, so it never reads as a second fleet size
   const summary = !list.length ? (total ? `0 of ${buses(total)}` : "0 buses")
